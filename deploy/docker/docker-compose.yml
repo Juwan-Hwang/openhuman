@@ -1,0 +1,30 @@
+# OpenHuman - Local development infrastructure
+#
+# PostgreSQL only: Redis and NATS used to be started here, but nothing in
+# the runtime reads from them, so a compose file that offers them implies
+# capabilities the server does not have.
+#
+# Usage: docker compose up -d
+#
+# The server also runs without any of this -- `cargo run` defaults to an
+# in-memory store, which is enough to develop against.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-openhuman}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openhuman}
+      POSTGRES_DB: ${POSTGRES_DB:-openhuman}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-openhuman}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

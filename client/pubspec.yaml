@@ -1,0 +1,60 @@
+name: openhuman_client
+description: OpenHuman human-endpoint runtime client. The official Flutter client for the OpenHuman platform.
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ">=3.2.0 <4.0.0"
+  flutter: ">=3.19.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^2.4.0
+  flutter_chat_ui: ^1.6.0
+  flutter_chat_types: ^3.6.2
+  go_router: ^13.0.0
+  openhuman_sdk_dart:
+    path: ../sdks/dart
+  firebase_core: ^3.6.0
+  firebase_messaging: ^15.1.3
+  shared_preferences: ^2.2.3
+  window_manager: ^0.5.2
+  tray_manager: ^0.5.3
+  path: ^1.9.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  build_runner: ^2.4.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    # Windows wants an .ico for the tray, and the runner's own icon is
+    # not copied into the build output — so it ships as an asset.
+    - assets/tray_icon.ico
+  fonts:
+    - family: Manrope
+      fonts:
+        - asset: assets/fonts/Manrope-400.ttf
+          weight: 400
+        - asset: assets/fonts/Manrope-500.ttf
+          weight: 500
+        - asset: assets/fonts/Manrope-600.ttf
+          weight: 600
+        - asset: assets/fonts/Manrope-700.ttf
+          weight: 700
+    - family: GeistMono
+      fonts:
+        - asset: assets/fonts/GeistMono-400.ttf
+          weight: 400
+        - asset: assets/fonts/GeistMono-500.ttf
+          weight: 500
+    # Chinese. Manrope and Geist Mono have no CJK glyphs, so this is
+    # listed as a fallback everywhere rather than as a family in its
+    # own right — Latin text keeps its own face.
+    - family: PingFangSF
+      fonts:
+        - asset: assets/fonts/PingFangSF.ttf

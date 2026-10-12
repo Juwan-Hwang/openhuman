@@ -1,0 +1,82 @@
+# ─────────────────────────────────────────────────────────────
+# OpenHuman — Production Docker Compose Configuration
+# ─────────────────────────────────────────────────────────────
+# Designed for production stability, security, and resource isolation.
+#
+# - Database is strictly internal (zero public port exposure)
+# - Container memory and CPU strictly capped (Cgroups) to avoid affecting existing apps
+# - Connects to existing aevum-network for reverse-proxy via aevum-nginx
+# ─────────────────────────────────────────────────────────────
+
+services:
+  openhuman-db:
+    image: postgres:16-alpine
+    container_name: openhuman-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-openhuman}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-openhuman}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - openhuman-internal
+    deploy:
+      resources:
+        limits:
+          cpus: '0.75'
+          memory: 768M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-openhuman} -d ${POSTGRES_DB:-openhuman}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  openhuman-server:
+    build:
+      context: ../../server
+      dockerfile: ../deploy/docker/production.Dockerfile
+    container_name: openhuman-server
+    restart: unless-stopped
+    ports:
+      # Expose ONLY to localhost loopback for local curl/debugging
+      - "127.0.0.1:8088:8080"
+    environment:
+      OPENHUMAN_BACKEND: postgres
+      DATABASE_URL: postgres://${POSTGRES_USER:-openhuman}:${POSTGRES_PASSWORD}@openhuman-db:5432/${POSTGRES_DB:-openhuman}
+      OPENHUMAN_HOST: 0.0.0.0
+      OPENHUMAN_PORT: 8080
+      JWT_SECRET: ${JWT_SECRET}
+      FIREBASE_KEY_PATH: /app/firebase-key.json
+      RUST_LOG: "openhuman_server=info,tower_http=info"
+    volumes:
+      - ./firebase-key.json:/app/firebase-key.json:ro
+    depends_on:
+      openhuman-db:
+        condition: service_healthy
+    networks:
+      - openhuman-internal
+      - aevum-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.25'
+          memory: 1024M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  pgdata:
+    name: openhuman_pgdata
+
+networks:
+  openhuman-internal:
+    internal: true
+  aevum-network:
+    external: true
+    name: aevum_aevum-network
