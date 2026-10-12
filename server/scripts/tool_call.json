@@ -1,0 +1,1 @@
+{"agent_id":"agt_demo_codex","tool_name":"Bash","arguments":{"command":"echo hello"}}

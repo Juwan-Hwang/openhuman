@@ -1,0 +1,71 @@
+[package]
+name = "openhuman-server"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "OpenHuman server core — Human-as-an-API runtime"
+
+[lib]
+name = "openhuman_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "openhuman-server"
+path = "src/main.rs"
+
+[features]
+# Enables the /v1/mock/* harness endpoints at compile time. Off by default:
+# the mock endpoints impersonate the human and must never be reachable in
+# production. Integration tests that need them set OPENHUMAN_MOCK_ENDPOINTS=1
+# at runtime instead (see tests/common setup), so `cargo test` needs no flags.
+mock_endpoints = []
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["ws", "macros"] }
+tower = { version = "0.4", features = ["limit"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "limit"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Futures / streaming / async traits
+futures = "0.3"
+tokio-stream = "0.1"
+async-stream = "0.3"
+async-trait = "0.1"
+
+# Database (Phase 5A: PostgreSQL persistence)
+sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+
+# Auth (jsonwebtoken is used for FCM service-account JWT signing)
+jsonwebtoken = "9"
+
+# Cryptography — real SHA-256 for API key hashing.
+#
+# Replaces the placeholder `DefaultHasher` (64-bit, non-cryptographic, and
+# not stable across processes) that was used to compute `key_hash`.
+sha2 = "0.10"
+hex = "0.4"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+anyhow = "1"
+dotenvy = "0.15"
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+reqwest = { version = "0.11", features = ["json", "stream"] }
+# WebSocket client for integration tests
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }

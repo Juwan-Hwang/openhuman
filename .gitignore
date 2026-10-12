@@ -1,0 +1,91 @@
+# ──────────────────────────────────────────────
+# Root .gitignore for OpenHuman monorepo
+# ──────────────────────────────────────────────
+
+# ── Rust ──
+**/target/
+**/*.rs.bk
+# Lock files: openhuman-server ships a [[bin]], so keep its lock for
+# reproducible builds. The Rust SDK is a library crate — its lock is noise.
+sdks/rust/Cargo.lock
+
+# ── Dart / Flutter ──
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/.pub-cache/
+**/.pub/
+**/build/
+**/.fvm/
+**/coverage/
+
+# ── TypeScript / Node ──
+**/node_modules/
+**/dist/
+**/.turbo/
+**/.parcel-cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── Python ──
+**/__pycache__/
+**/*.py[cod]
+**/.venv/
+**/venv/
+**/.mypy_cache/
+**/.pytest_cache/
+**/*.egg-info/
+
+# ── Environment ──
+.env
+.env.*
+!.env.example
+
+# ── Editor / IDE ──
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Build artifacts ──
+*.log
+tmp/
+
+# ── Local agent workspace (session memory, not project source) ──
+.workbuddy/
+
+# ── Observation fixtures (request captures) ──
+observations/
+
+# ═══════════════════════════════════════════════════════════─
+#  Kept locally, NOT published to the public repository
+# ════════════════════════════════════════════════════════════
+# These stay on disk for the maintainer but are deliberately untracked,
+# so they never reach the public remote. Run `git rm --cached <path>`
+# (not `rm`) if you need to exclude something else: deleting it would
+# throw away work that is only *unpublishable*, not worthless.
+#
+# Untracked here because they are either operator-specific or
+# superseded snapshots whose stale numbers would mislead a reader:
+#
+#   - OpenHuman_ARCHITECTURE_FINAL.md : early vision spec; its stack
+#     section (Redis / NATS / OAuth2) no longer matches the code.
+#   - docs/PHASE9_*.md, docs/PHASE10_*.md : point-in-time validation
+#     reports with counts and claims that have since moved on.
+#   - deploy/nginx/openhuman.conf : a live deployment config naming a
+#     real domain and certificate paths. Use
+#     deploy/nginx/openhuman.conf.template instead.
+#   - .vscode/settings.json : editor-local, and references SDK dirs
+#     that no longer exist.
+OpenHuman_ARCHITECTURE_FINAL.md
+docs/PHASE9_E2E_TEST_ENVIRONMENT.md
+docs/PHASE9_E2E_VALIDATION_REPORT.md
+docs/PHASE10_RELEASE_HARDENING_REPORT.md
+deploy/nginx/openhuman.conf
+.vscode/
