@@ -61,8 +61,8 @@ Results show exit_code=N when the caller's text reports a shell exit code;
 non-zero makes the command exit 1, and so does a result marked success whose
 output is an error (`error: ...`, JSON "success": false): its header then says
 status=failed, whatever the caller marked it.
-opencode's bash results carry no exit status: read the output (or append
-`; echo exit=$?` to the command when the status matters).
+opencode's bash results carry no exit status: append `; echo exit=$?` when
+the status matters; a last line `exit=N` counts as the exit code.
 
 EXIT 0 ok | 1 tool ran but reported an error | 2 nothing new before --timeout
      3 network/auth/server | 4 usage (nothing sent) | 5 no open turn
