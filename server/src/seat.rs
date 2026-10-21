@@ -385,6 +385,15 @@ fn injected_env(tail: &[Value]) -> serde_json::Map<String, Value> {
             continue;
         }
         let text = m.get("content").and_then(|c| c.as_str()).unwrap_or("");
+        // Reasonix: `Current workspace: "/path".`
+        if let Some(a) = text.find("Current workspace: \"") {
+            let rest = &text[a + "Current workspace: \"".len()..];
+            if let Some(b) = rest.find('"') {
+                if !env.contains_key("cwd") && b < 300 {
+                    env.insert("cwd".to_string(), Value::String(rest[..b].to_string()));
+                }
+            }
+        }
         for (tag, key) in [
             ("cwd", "cwd"),
             ("shell", "shell"),

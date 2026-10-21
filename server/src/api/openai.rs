@@ -484,6 +484,60 @@ fn first_user_anchor(req: &ChatCompletionRequest) -> Option<String> {
         .map(|t| prompt_fingerprint(&t))
 }
 
+/// A client with no dedicated detection still names itself in its
+/// User-Agent (`reasonix/2.37`, `Cline/3.1`, `copilot-cli/1.0`): use the
+/// product token so the responder knows what it is talking to. Generic SDK
+/// and runtime agents tell nothing and are skipped.
+fn client_from_user_agent(headers: &HeaderMap) -> Option<String> {
+    let ua = headers.get("user-agent")?.to_str().ok()?;
+    let generic = [
+        "openai",
+        "anthropic",
+        "node",
+        "node-fetch",
+        "undici",
+        "axios",
+        "python",
+        "python-requests",
+        "python-httpx",
+        "httpx",
+        "aiohttp",
+        "go-http-client",
+        "curl",
+        "reqwest",
+        "okhttp",
+        "bun",
+        "deno",
+        "mozilla",
+        "ai-sdk",
+        "ai",
+    ];
+    for tok in ua.split_whitespace().filter(|t| t.contains('/')) {
+        let name = tok
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .trim_matches(|c| c == '(' || c == ')');
+        let low = name.to_ascii_lowercase();
+        if low.len() < 2
+            || !low.starts_with(|c: char| c.is_ascii_alphabetic())
+            || !low
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        {
+            continue;
+        }
+        if generic
+            .iter()
+            .any(|g| low == *g || low.starts_with(&format!("{g}-")) && *g != "ai")
+        {
+            continue;
+        }
+        return Some(low);
+    }
+    None
+}
+
 /// A side call the client makes around the real chat: a session title, an
 /// input-box suggestion, a summary. Recognized by shape and purpose: no
 /// tools, no earlier turns of a conversation (only user messages), and a
@@ -1196,7 +1250,12 @@ pub async fn chat_completions(
     // Auxiliary calls carry no client fingerprint of their own: they belong
     // to whichever client this agent's main chat is running in.
     let client_name = {
-        let detected = profile.client_type.to_string();
+        let mut detected = profile.client_type.to_string();
+        if detected == "unknown" {
+            if let Some(n) = client_from_user_agent(&headers) {
+                detected = n;
+            }
+        }
         if auxiliary {
             if detected == "unknown" || detected == "custom" {
                 crate::session::last_client(&principal.agent.id).unwrap_or(detected)
@@ -2921,6 +2980,25 @@ mod tests {
         );
         let cc = "Return JSON with a single \"title\" field";
         assert!(expected_format(&title, cc).unwrap().contains("{\"title\""));
+    }
+
+    #[test]
+    fn user_agent_names_unknown_clients() {
+        let h = |ua: &str| {
+            let mut m = HeaderMap::new();
+            m.insert("user-agent", ua.parse().unwrap());
+            client_from_user_agent(&m)
+        };
+        assert_eq!(
+            h("reasonix/2.37.0 (linux; arm64)").as_deref(),
+            Some("reasonix")
+        );
+        assert_eq!(h("OpenAI/JS 4.0.0").as_deref(), None);
+        assert_eq!(h("node-fetch/1.0 Cline/3.2").as_deref(), Some("cline"));
+        assert_eq!(
+            h("ai-sdk/openai-compatible/1.0 ai-sdk/provider-utils/3").as_deref(),
+            None
+        );
     }
 
     #[test]
