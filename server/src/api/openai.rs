@@ -423,31 +423,60 @@ fn resolve_session_key(
     //    Auxiliary calls (titles, suggestions) carry a fresh transcript as
     //    their only message, so anchoring them would mint a conversation
     //    per call; they share one conversation per prompt instead.
+    //    The main chat is not keyed on the system prompt any more: clients
+    //    rewrite it between turns (Trae, dsh), which split one session into
+    //    many. Continuity is carried by our own replies in the history (see
+    //    `history_digests`); this key only decides where a brand-new session
+    //    lands.
     let client = client_fingerprint(headers);
-    let base = match system_prompt.filter(|p| !p.trim().is_empty()) {
-        Some(p) => format!("prm:{}:{}", prompt_fingerprint(p), client),
-        None => format!("cli:{}", client),
-    };
     if auxiliary {
+        let base = match system_prompt.filter(|p| !p.trim().is_empty()) {
+            Some(p) => format!("prm:{}:{}", prompt_fingerprint(p), client),
+            None => format!("cli:{}", client),
+        };
         return format!("aux:{}", base);
     }
     match first_user_anchor(req) {
-        Some(anchor) => format!("{}:{}", base, anchor),
-        None => base,
+        Some(anchor) => format!("cli:{}:{}", client, anchor),
+        None => format!("cli:{}", client),
     }
 }
 
-/// Digest of the first `user` message, the anchor of a session's history.
-fn first_user_anchor(req: &ChatCompletionRequest) -> Option<String> {
-    let first = req
-        .messages
-        .iter()
-        .find(|m| m.role == crate::openai_compat::ChatRole::User)?;
-    let text = first.content.to_text();
-    if text.trim().is_empty() {
-        return None;
+/// Digests of the assistant turns in a request's history, newest first: the
+/// replies and tool calls this server sent, as the caller replays them.
+fn history_digests(req: &ChatCompletionRequest) -> Vec<String> {
+    let mut out = Vec::new();
+    for m in req.messages.iter().rev() {
+        if m.role != crate::openai_compat::ChatRole::Assistant {
+            continue;
+        }
+        if let Some(d) = crate::session::text_digest(&m.content.to_text()) {
+            out.push(d);
+        }
+        if let Some(calls) = m.tool_calls.as_ref().and_then(|v| v.as_array()) {
+            for c in calls {
+                let f = c.get("function").cloned().unwrap_or(Value::Null);
+                let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let args = f.get("arguments").cloned().unwrap_or(Value::Null);
+                out.push(crate::session::call_digest(name, &args));
+            }
+        }
     }
-    Some(prompt_fingerprint(text.trim()))
+    out
+}
+
+/// Digest of the first `user` message, the anchor of a session's history.
+///
+/// Injected blocks that change from turn to turn (`<system-reminder>`,
+/// attachment lists) are stripped first, so the anchor is what the person
+/// typed.
+fn first_user_anchor(req: &ChatCompletionRequest) -> Option<String> {
+    req.messages
+        .iter()
+        .filter(|m| m.role == crate::openai_compat::ChatRole::User)
+        .map(|m| crate::session::strip_injections(&m.content.to_text()))
+        .find(|t| !t.is_empty())
+        .map(|t| prompt_fingerprint(&t))
 }
 
 /// A side call the client makes around the real chat: a session title, an
@@ -683,7 +712,7 @@ fn process_inbound_messages(
                 // timeline (see `normalize.rs`).
                 let clean_text =
                     crate::normalize::normalize_user_message(client_type, &msg.content);
-                if !clean_text.trim().is_empty() {
+                if !clean_text.trim().is_empty() && !is_image_placeholder(&clean_text) {
                     user_texts.push(clean_text);
                 }
                 user_images.extend(msg.content.image_urls());
@@ -709,6 +738,24 @@ fn process_inbound_messages(
                     "[tool_result] received from agent"
                 );
 
+                // The call this result answers, as the client echoed it in
+                // its own assistant message. Clients that rewrite our call
+                // ids (Trae) still echo the tool name and arguments, which is
+                // how the result is routed back (see `session`).
+                let echoed = tool_call_id.as_deref().and_then(|id| {
+                    req.messages[..idx].iter().rev().find_map(|m| {
+                        m.tool_calls.as_ref()?.as_array()?.iter().find_map(|c| {
+                            (c.get("id").and_then(|v| v.as_str()) == Some(id)).then(|| {
+                                let f = c.get("function").cloned().unwrap_or(Value::Null);
+                                (
+                                    f.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                    f.get("arguments").cloned().unwrap_or(Value::Null),
+                                )
+                            })
+                        })
+                    })
+                });
+
                 let message = Message {
                     id: format!("msg_{}", Uuid::now_v7().simple()),
                     conversation_id: conversation_id.to_string(),
@@ -720,6 +767,11 @@ fn process_inbound_messages(
                         m.insert("openai_role".to_string(), Value::String("tool".to_string()));
                         if let Some(ref id) = tool_call_id {
                             m.insert("tool_call_id".to_string(), Value::String(id.clone()));
+                            m.insert("client_tool_call_id".to_string(), Value::String(id.clone()));
+                        }
+                        if let Some((name, args)) = echoed {
+                            m.insert("echo_tool".to_string(), Value::String(name));
+                            m.insert("echo_args".to_string(), args);
                         }
                         m
                     },
@@ -729,6 +781,19 @@ fn process_inbound_messages(
                 };
                 messages.push(message);
             }
+        }
+    }
+
+    // A tool that returns an image (Trae's Read on a picture) sends it back
+    // as an extra user turn holding only the image. It belongs to the tool
+    // result, not to a new message from the person.
+    if user_texts.is_empty() && !user_images.is_empty() {
+        if let Some(last_tool) = messages.last_mut() {
+            last_tool.metadata.insert(
+                "images".to_string(),
+                Value::Array(user_images.iter().map(|u| Value::String(u.clone())).collect()),
+            );
+            user_images.clear();
         }
     }
 
@@ -768,12 +833,22 @@ fn process_inbound_messages(
             visibility: crate::model::message::MessageVisibility::HumanVisible,
             created_at: now,
         };
-        // Keep the user's words ahead of tool results from the same request
-        // so the timeline reads naturally.
-        messages.insert(0, message);
+        // Tool results first: they answer the call that closed the previous
+        // turn, and the person's words came after them (a client that held a
+        // result for approval sends both in one request).
+        messages.push(message);
     }
 
     (system_prompt, messages)
+}
+
+/// A user turn that only stands in for an image (`[图片]`, `[image]`).
+fn is_image_placeholder(text: &str) -> bool {
+    let rest = text
+        .replace("[图片]", "")
+        .replace("[image]", "")
+        .replace("[Image]", "");
+    rest.trim().is_empty()
 }
 
 /// Push inbound messages to the human's WebSocket connections.
@@ -916,18 +991,34 @@ async fn build_tool_result_event(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         })
+        .or_else(|| crate::session::tool_name_for(&msg.conversation_id, &tool_call_id))
+        .or_else(|| {
+            msg.metadata
+                .get("echo_tool")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        })
         .unwrap_or_else(|| "unknown".to_string());
 
     let output = serde_json::Value::String(msg.content.as_text().unwrap_or("").to_string());
 
-    Some(crate::ws::protocol::tool_result_event(
+    let mut event = crate::ws::protocol::tool_result_event(
         &msg.conversation_id,
         &tool_call_id,
         &tool_id,
         "success",
         Some(&output),
         None,
-    ))
+    );
+    if let Some(obj) = event.data.as_object_mut() {
+        for key in ["images", "client_tool_call_id"] {
+            if let Some(v) = msg.metadata.get(key) {
+                obj.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+    Some(event)
 }
 
 // ── Handler ──
@@ -980,20 +1071,190 @@ pub async fn chat_completions(
     );
 
     let auxiliary = is_auxiliary_request(&req);
+    let tokenizer = headers
+        .get("x-openhuman-tokenizer")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(crate::session::default_tokenizer);
+    if !crate::session::tokenizer_available(&tokenizer) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": {
+                "message": format!("Unknown tokenizer '{}'.", tokenizer),
+                "type": "invalid_request_error",
+                "code": "unknown_tokenizer",
+                "available": crate::session::available_tokenizers(),
+            }})),
+        )
+            .into_response();
+    }
+    let prompt_tokens = crate::session::count_request_tokens(&tokenizer, &req);
 
-    // 2. Upsert capabilities + context into the registry.
+    // 2. Process inbound messages
+    let (system_prompt, mut inbound_messages) =
+        process_inbound_messages(&req, &principal, "pending", &profile.client_type);
+
+    // Auxiliary calls carry no client fingerprint of their own: they belong
+    // to whichever client this agent's main chat is running in.
+    let client_name = {
+        let detected = profile.client_type.to_string();
+        if auxiliary {
+            if detected == "unknown" || detected == "custom" {
+                crate::session::last_client(&principal.agent.id).unwrap_or(detected)
+            } else {
+                detected
+            }
+        } else {
+            crate::session::set_last_client(&principal.agent.id, &detected);
+            detected
+        }
+    };
+
+    let mut info = request_info(&req, &profile, system_prompt.as_deref(), auxiliary);
+    info["client"] = Value::String(client_name.clone());
+    info["prompt_tokens"] = json!(prompt_tokens);
+    for msg in &mut inbound_messages {
+        if msg.metadata.contains_key("raw_tail") {
+            msg.metadata.insert("request".to_string(), info.clone());
+        }
+    }
+
+    // 3. Resolve which conversation this request belongs to.
     //
-    //    Auxiliary calls carry their own small system prompt and no tools;
-    //    recording them would overwrite the real chat's context with a
-    //    title-generator prompt. And the `capability.updated` event is only
-    //    sent when something actually changed: a client re-sends the same
-    //    tool list with every request.
+    //    An explicit id (header, body field, `user`) wins. Without one, the
+    //    replies we sent earlier identify the conversation: the caller
+    //    replays them in its history. Only a request carrying none of our
+    //    replies (a fresh session) falls back to the fingerprint key.
+    let session_key =
+        resolve_session_key(&headers, &req, system_prompt.as_deref(), auxiliary);
+    let fallback_key = session_key.starts_with("prm:") || session_key.starts_with("cli:");
+    let continued = if fallback_key && !auxiliary {
+        let digests = history_digests(&req);
+        match crate::session::lookup_continuity(&principal.agent.id, &digests) {
+            Some(id) => app
+                .conversation
+                .get(&id)
+                .await
+                .filter(|c| c.human_id() == Some(principal.human.id.as_str())),
+            None => None,
+        }
+    } else {
+        None
+    };
+    tracing::info!(
+        agent_id = %principal.agent.id,
+        session_key = %session_key,
+        continued = continued.is_some(),
+        auxiliary = auxiliary,
+        "Resolved conversation session scope"
+    );
+
+    let request_started = Utc::now();
+    let conversation_id = {
+        let cnv = match continued {
+            Some(c) => c,
+            None => {
+                app.conversation
+                    .find_or_create(
+                        &principal.agent.id,
+                        &principal.human.id,
+                        &session_key,
+                        system_prompt.clone(),
+                    )
+                    .await
+            }
+        };
+        // A conversation minted by this very request is a new session on
+        // the caller's side: say so, so both a human console and an agent
+        // seat can open it as its own thread.
+        if !auxiliary && cnv.created_at >= request_started - chrono::Duration::seconds(1) {
+            let event = crate::ws::protocol::conversation_started(
+                &cnv.id,
+                &principal.agent.id,
+                &principal.agent.name,
+                &client_name,
+            );
+            let _ = app
+                .connections
+                .send_to_human(&principal.human.id, &crate::ws::protocol::event_to_json(&event))
+                .await;
+        }
+
+        // Route tool results to the calls we emitted (clients may rewrite
+        // the ids), and deliver each result and each user turn once: a
+        // client that retries a request, or replays it after a 409, must
+        // not hand the responder the same thing twice.
+        let message_count = req.messages.len();
+        inbound_messages.retain_mut(|msg| {
+            msg.conversation_id = cnv.id.clone();
+            let is_tool = msg.metadata.get("openai_role").and_then(|v| v.as_str()) == Some("tool");
+            let content = msg.content.as_text().unwrap_or("").to_string();
+            if is_tool {
+                let client_id = msg
+                    .metadata
+                    .get("tool_call_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let echo_tool = msg
+                    .metadata
+                    .get("echo_tool")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let echo_args = msg.metadata.get("echo_args").cloned().unwrap_or(Value::Null);
+                let resolved = crate::session::resolve_call_id(
+                    &cnv.id,
+                    client_id.as_deref(),
+                    echo_tool.as_deref().map(|t| (t, &echo_args)),
+                );
+                if let Some(id) = &resolved {
+                    if Some(id) != client_id.as_ref() {
+                        tracing::info!(
+                            client_id = ?client_id,
+                            resolved = %id,
+                            "[tool_result] client rewrote the call id; routed by tool and arguments"
+                        );
+                    }
+                    msg.metadata
+                        .insert("tool_call_id".to_string(), Value::String(id.clone()));
+                }
+                let key = resolved.as_deref().or(client_id.as_deref());
+                crate::session::first_result(&cnv.id, key, &content)
+            } else {
+                let images = msg
+                    .metadata
+                    .get("images")
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                let fingerprint = format!("user:{}:{}:{}", message_count, content, images);
+                crate::session::first_result(&cnv.id, None, &fingerprint)
+            }
+        });
+        for msg in &inbound_messages {
+            app.message.insert(msg.clone()).await;
+        }
+        cnv.id
+    };
+
+    // 4. Context and capabilities of this conversation. Auxiliary calls
+    //    carry their own small prompt and no tools; recording them would
+    //    overwrite the real chat's context with a title-generator prompt.
     if !auxiliary {
         let capabilities = profile.capabilities.clone();
         let has_tools = !capabilities.is_empty();
         let context = profile.to_context();
         let agent_id = profile.agent_id.clone();
         let human_id = principal.human.id.clone();
+        let conv_for_caps = conversation_id.clone();
+        crate::session::set_context(
+            &conversation_id,
+            json!({
+                "client": client_name,
+                "system_prompt": system_prompt,
+                "tools": capabilities,
+                "context": context,
+            }),
+        );
         let app_clone = app.clone();
         tokio::spawn(async move {
             // Only update capabilities if the request actually has tools.
@@ -1007,8 +1268,12 @@ pub async fn chat_completions(
 
             let caps = app_clone.capability.get_capabilities(&agent_id).await;
             let ctx = app_clone.context.get_context(&agent_id).await;
-            let event =
-                crate::ws::protocol::capability_updated(&human_id, &agent_id, &caps, ctx.as_ref());
+            let event = crate::ws::protocol::capability_updated(
+                &conv_for_caps,
+                &agent_id,
+                &caps,
+                ctx.as_ref(),
+            );
             if !capability_changed(&human_id, &agent_id, &event.data) {
                 return;
             }
@@ -1019,63 +1284,6 @@ pub async fn chat_completions(
                 .await;
         });
     }
-
-    // 3. Process inbound messages
-    let (system_prompt, mut inbound_messages) =
-        process_inbound_messages(&req, &principal, "pending", &profile.client_type);
-
-    let info = request_info(&req, &profile, system_prompt.as_deref(), auxiliary);
-    for msg in &mut inbound_messages {
-        if msg.metadata.contains_key("raw_tail") {
-            msg.metadata.insert("request".to_string(), info.clone());
-        }
-    }
-
-    // 4. Resolve which conversation this request belongs to, then store
-    //    the inbound messages under it.
-    let session_key =
-        resolve_session_key(&headers, &req, system_prompt.as_deref(), auxiliary);
-    tracing::info!(
-        agent_id = %principal.agent.id,
-        session_key = %session_key,
-        auxiliary = auxiliary,
-        "Resolved conversation session scope"
-    );
-
-    let request_started = Utc::now();
-    let conversation_id = {
-        let cnv = app
-            .conversation
-            .find_or_create(
-                &principal.agent.id,
-                &principal.human.id,
-                &session_key,
-                system_prompt,
-            )
-            .await;
-        // A conversation minted by this very request is a new session on
-        // the caller's side: say so, so both a human console and an agent
-        // seat can open it as its own thread.
-        if !auxiliary && cnv.created_at >= request_started - chrono::Duration::seconds(1) {
-            let event = crate::ws::protocol::conversation_started(
-                &cnv.id,
-                &principal.agent.id,
-                &principal.agent.name,
-                &profile.client_type.to_string(),
-            );
-            let _ = app
-                .connections
-                .send_to_human(&principal.human.id, &crate::ws::protocol::event_to_json(&event))
-                .await;
-        }
-        for msg in &mut inbound_messages {
-            msg.conversation_id = cnv.id.clone();
-        }
-        for msg in &inbound_messages {
-            app.message.insert(msg.clone()).await;
-        }
-        cnv.id
-    };
 
     // 5. Keepalive interval based on agent's client_type
     let keepalive_secs = principal.agent.client_type.keepalive_secs();
@@ -1111,6 +1319,7 @@ pub async fn chat_completions(
             req.stream,
             is_async_mode(&headers),
             include_usage,
+            TurnCtx { agent_id: principal.agent.id.clone(), prompt_tokens, tokenizer: tokenizer.clone() },
         )
         .await;
     }
@@ -1147,12 +1356,20 @@ pub async fn chat_completions(
             inbound_messages,
             human_id,
             include_usage,
+            TurnCtx { agent_id: principal.agent.id.clone(), prompt_tokens, tokenizer: tokenizer.clone() },
         )
         .await
     } else if is_async_mode(&headers) {
         handle_async(app, conversation_id, inbound_messages, human_id).await
     } else {
-        handle_non_streaming(app, conversation_id, inbound_messages, human_id).await
+        handle_non_streaming(
+            app,
+            conversation_id,
+            inbound_messages,
+            human_id,
+            TurnCtx { agent_id: principal.agent.id.clone(), prompt_tokens, tokenizer: tokenizer.clone() },
+        )
+        .await
     }
 }
 
@@ -1175,6 +1392,64 @@ fn select_backlog_payload(backlog: &[String]) -> String {
 }
 
 /// Answer immediately from a parked reply instead of waiting on the human.
+/// What a turn needs to know about the request that opened it.
+#[derive(Clone)]
+pub(crate) struct TurnCtx {
+    pub agent_id: String,
+    pub prompt_tokens: u32,
+    pub tokenizer: String,
+}
+
+impl TurnCtx {
+    /// Remember what this turn sent, so the caller's next request (which
+    /// replays it) is recognized as the same conversation and its tool
+    /// results route back to these calls.
+    fn record(&self, conversation_id: &str, content: &str, calls: &[(String, String, Value)]) {
+        if let Some(d) = crate::session::text_digest(content) {
+            crate::session::remember_reply(&self.agent_id, d, conversation_id);
+        }
+        for (id, name, args) in calls {
+            crate::session::record_call(conversation_id, id, name, args);
+            crate::session::remember_reply(
+                &self.agent_id,
+                crate::session::call_digest(name, args),
+                conversation_id,
+            );
+        }
+    }
+
+    fn usage(&self, completion_text: &str) -> crate::openai_compat::Usage {
+        let completion = crate::session::count_tokens_with(&self.tokenizer, completion_text);
+        crate::openai_compat::Usage {
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: completion,
+            total_tokens: self.prompt_tokens + completion,
+        }
+    }
+}
+
+/// Seconds between SSE heartbeats while a turn waits for its responder.
+/// Short by default: some clients give up on a silent stream within
+/// seconds (Trae retried every ~5 s).
+fn sse_heartbeat_secs() -> u64 {
+    std::env::var("OPENHUMAN_SSE_HEARTBEAT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|v| *v >= 1)
+        .unwrap_or(3)
+}
+
+/// Heartbeat frame: an SSE comment by default (ignored by every SSE
+/// parser), or an empty-delta chunk with `OPENHUMAN_SSE_HEARTBEAT=chunk`.
+fn heartbeat_event(completion_id: &str) -> SseEvent {
+    if matches!(std::env::var("OPENHUMAN_SSE_HEARTBEAT").as_deref(), Ok("chunk")) {
+        let chunk = ChatCompletionChunk::heartbeat(completion_id);
+        SseEvent::default().data(serde_json::to_string(&chunk).unwrap())
+    } else {
+        SseEvent::default().comment("keepalive")
+    }
+}
+
 async fn handle_backlog(
     app: AppState,
     conversation_id: String,
@@ -1182,6 +1457,7 @@ async fn handle_backlog(
     stream: bool,
     async_mode: bool,
     include_usage: bool,
+    turn: TurnCtx,
 ) -> Response {
     if async_mode {
         // Short-circuit: create and complete in one step so the caller's
@@ -1203,7 +1479,7 @@ async fn handle_backlog(
     }
 
     if !stream {
-        let body = build_nonstreaming_json(&app, &conversation_id, &payload).await;
+        let body = build_nonstreaming_json(&app, &conversation_id, &payload, &turn).await;
         return Response::builder()
             .header("Content-Type", "application/json")
             .body(Body::from(body))
@@ -1222,24 +1498,32 @@ async fn handle_backlog(
             SseEvent::default().data(serde_json::to_string(&role_chunk).unwrap())
         );
 
+        let mut sent_text = String::new();
         match reply {
             HumanReply::Text { text, .. } => {
+                if let Some(r) = crate::session::take_reasoning(&conv) {
+                    let chunk = ChatCompletionChunk::reasoning_delta(&completion_id, &r);
+                    yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
+                }
                 for word in text.split_inclusive(char::is_whitespace) {
                     let chunk = ChatCompletionChunk::content_delta(&completion_id, word);
                     yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                 }
+                sent_text.push_str(&text);
+                turn.record(&conv, &text, &[]);
                 app_c.reply.remove(&conv).await;
                 let chunk = ChatCompletionChunk::finish(&completion_id);
                 yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
             }
             HumanReply::ToolCalls { calls, text } => {
-                if let Some(prose) = text.filter(|t| !t.trim().is_empty()) {
-                    for word in prose.split_inclusive(char::is_whitespace) {
-                        let chunk = ChatCompletionChunk::content_delta(&completion_id, word);
-                        yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
-                    }
+                let prose = text.filter(|t| !t.trim().is_empty()).unwrap_or_default();
+                for word in prose.split_inclusive(char::is_whitespace) {
+                    let chunk = ChatCompletionChunk::content_delta(&completion_id, word);
+                    yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                 }
+                sent_text.push_str(&prose);
 
+                let mut recorded = Vec::new();
                 for call in &calls {
                     let call_id = call
                         .invocation_id
@@ -1253,7 +1537,10 @@ async fn handle_backlog(
                         &call.arguments.to_string(),
                     );
                     yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
+                    sent_text.push_str(&call.arguments.to_string());
+                    recorded.push((call_id, call.tool_name.clone(), call.arguments.clone()));
                 }
+                turn.record(&conv, &prose, &recorded);
 
                 app_c.reply.remove(&conv).await;
                 let chunk = ChatCompletionChunk::finish_tool_calls(&completion_id);
@@ -1267,7 +1554,7 @@ async fn handle_backlog(
         }
 
         if include_usage {
-            let chunk = ChatCompletionChunk::usage_chunk(&completion_id);
+            let chunk = ChatCompletionChunk::usage_chunk_with(&completion_id, turn.usage(&sent_text));
             yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
         }
 
@@ -1490,6 +1777,7 @@ async fn handle_non_streaming(
     conversation_id: String,
     inbound_messages: Vec<Message>,
     human_id: String,
+    turn: TurnCtx,
 ) -> Response {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
@@ -1528,7 +1816,7 @@ async fn handle_non_streaming(
                             payloads.append(&mut collect_rest(&mut rx, merge_window()).await);
                             let reply = merge_replies(&payloads);
                             let json = build_nonstreaming_json_from_reply(
-                                &app_s, &conv_s, reply,
+                                &app_s, &conv_s, reply, &turn,
                             ).await;
                             Bytes::from(json)
                         }
@@ -1569,15 +1857,17 @@ async fn build_nonstreaming_json(
     app: &AppState,
     conversation_id: &str,
     reply_payload: &str,
+    turn: &TurnCtx,
 ) -> String {
     let reply = parse_reply(reply_payload);
-    build_nonstreaming_json_from_reply(app, conversation_id, reply).await
+    build_nonstreaming_json_from_reply(app, conversation_id, reply, turn).await
 }
 
 async fn build_nonstreaming_json_from_reply(
     app: &AppState,
     conversation_id: &str,
     reply: HumanReply,
+    turn: &TurnCtx,
 ) -> String {
     let now = Utc::now();
     let conversation = app.conversation.get(conversation_id).await;
@@ -1600,7 +1890,9 @@ async fn build_nonstreaming_json_from_reply(
                 reply_len = text.len(),
                 "Human text reply received"
             );
-            let resp = ChatCompletionResponse::from_human_reply(&text);
+            let mut resp = ChatCompletionResponse::from_human_reply(&text);
+            resp.usage = turn.usage(&text);
+            turn.record(conversation_id, &text, &[]);
             (resp, text)
         }
         HumanReply::ToolCalls { calls, text } => {
@@ -1643,7 +1935,18 @@ async fn build_nonstreaming_json_from_reply(
 
             // `content` and `tool_calls` coexist: the human's words ride
             // along with the call instead of being discarded.
-            let resp = ChatCompletionResponse::from_tool_calls(specs.clone(), text.clone());
+            let mut resp = ChatCompletionResponse::from_tool_calls(specs.clone(), text.clone());
+            let prose = text.clone().unwrap_or_default();
+            let mut counted = prose.clone();
+            let recorded: Vec<(String, String, Value)> = specs
+                .iter()
+                .map(|s| {
+                    counted.push_str(&s.arguments.to_string());
+                    (s.id.clone(), s.name.clone(), s.arguments.clone())
+                })
+                .collect();
+            resp.usage = turn.usage(&counted);
+            turn.record(conversation_id, &prose, &recorded);
 
             let content = serde_json::to_string(&serde_json::json!({
                 "tool_calls": specs.iter().map(|s| json!({
@@ -1666,6 +1969,14 @@ async fn build_nonstreaming_json_from_reply(
             (resp, "(turn ended)".to_string())
         }
     };
+
+    let mut response = response;
+    if let (Some(r), Some(choice)) = (
+        crate::session::take_reasoning(conversation_id),
+        response.choices.first_mut(),
+    ) {
+        choice.message.reasoning_content = Some(r);
+    }
 
     // Store the human's reply in conversation history.
     app.message
@@ -1747,6 +2058,7 @@ async fn handle_streaming(
     inbound_messages: Vec<Message>,
     human_id: String,
     include_usage: bool,
+    turn: TurnCtx,
 ) -> Response {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
@@ -1762,7 +2074,9 @@ async fn handle_streaming(
     let completion_id = format!("chatcmpl-{}", Uuid::now_v7().simple());
     let conv_id = conversation_id.clone();
     let app_clone = app.clone();
-    let ka_secs = keepalive_secs.max(1);
+    // The client-type keepalive is an upper bound; a silent stream is what
+    // makes clients give up, so beat at least every `sse_heartbeat_secs`.
+    let ka_secs = keepalive_secs.max(1).min(sse_heartbeat_secs());
 
     let stream = async_stream::stream! {
         // ── Multi-turn reply loop ──
@@ -1772,43 +2086,39 @@ async fn handle_streaming(
         // (with keepalive heartbeats) until the human either:
         //   1. Ends the turn explicitly   → `finish_reason: stop` + [DONE]
         //   2. Requests a tool call      → `finish_reason: tool_calls`
-        //      (WorkBuddy executes the tool and opens a NEW request)
+        //      (the client executes the tool and opens a NEW request)
+
+        // Open the stream with the role header at once: a client then has a
+        // well-formed first chunk instead of an empty body while the
+        // responder thinks.
+        let role_chunk = ChatCompletionChunk::role_header(&completion_id);
+        yield Ok::<SseEvent, std::convert::Infallible>(
+            SseEvent::default().data(serde_json::to_string(&role_chunk).unwrap())
+        );
+
         let mut keepalive = interval(Duration::from_secs(ka_secs));
-        // Tick once immediately so the first heartbeat goes out right away.
+        // The first tick completes immediately; consume it so the next one
+        // lands a full interval after the role header.
         keepalive.tick().await;
 
-        let mut sent_role_header = false;
-        // The most recent prose the human sent this turn. Multi-turn
-        // streaming keeps the turn open across several replies, so a human
-        // who types and *then* taps a tool would otherwise lose the prose
-        // when the tool call closes the turn with `content: null`.
+        // Everything this turn put in front of the caller, for the usage
+        // count and the continuity digest.
+        let mut sent_text = String::new();
 
-        // Acknowledge the request straight away, whichever way presence
-        // went. A caller that hears nothing for a minute cannot tell whether
-        // the turn was lost or is simply waiting for a person, so say so
-        // immediately and keep the stream open for the real reply.
         let notice = if seat_only { None } else { status_notice(is_online) };
         if let Some(notice) = notice {
-            sent_role_header = true;
-            let role_chunk = ChatCompletionChunk::role_header(&completion_id);
-            yield Ok::<SseEvent, std::convert::Infallible>(
-                SseEvent::default().data(serde_json::to_string(&role_chunk).unwrap())
-            );
-
             for word in notice.split_inclusive(char::is_whitespace) {
                 let chunk = ChatCompletionChunk::content_delta(&completion_id, word);
                 yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
             }
+            sent_text.push_str(&notice);
         }
 
         let conv_for_cleanup = conv_id.clone();
         let result: HumanReply = loop {
             let msg = tokio::select! {
                 _ = keepalive.tick() => {
-                    let chunk = ChatCompletionChunk::heartbeat(&completion_id);
-                    yield Ok::<SseEvent, std::convert::Infallible>(
-                        SseEvent::default().data(serde_json::to_string(&chunk).unwrap())
-                    );
+                    yield Ok::<SseEvent, std::convert::Infallible>(heartbeat_event(&completion_id));
                     continue;
                 }
                 msg = rx.recv() => {
@@ -1855,19 +2165,28 @@ async fn handle_streaming(
                         created_at: Utc::now(),
                     }).await;
 
-                    // Stream the reply as content deltas.
-                    if !sent_role_header {
-                        sent_role_header = true;
-                        let chunk = ChatCompletionChunk::role_header(&completion_id);
+                    if let Some(r) = crate::session::take_reasoning(&conv_id) {
+                        let chunk = ChatCompletionChunk::reasoning_delta(&completion_id, &r);
                         yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                     }
-                    // Separate consecutive replies with a blank line so
-                    // the agent sees them as distinct messages.
-                    let payload = if text.ends_with('\n') { text.clone() } else { format!("{}\n\n", text) };
+
+                    // Consecutive replies are separated by a blank line put
+                    // in front of the later one. Appending it after every
+                    // reply left a trailing "\n\n" on single answers, which
+                    // strict consumers (Qoder's title generator) rejected.
+                    let payload = if !sent_text.is_empty() && !sent_text.ends_with("\n\n") {
+                        format!("\n\n{}", text)
+                    } else {
+                        text.clone()
+                    };
                     for word in payload.split_inclusive(char::is_whitespace) {
                         let chunk = ChatCompletionChunk::content_delta(&completion_id, word);
                         yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                     }
+                    sent_text.push_str(&payload);
+                    // Each reply on its own too: a client may store them
+                    // apart or only keep the last.
+                    turn.record(&conv_id, &text, &[]);
 
                     // Keep waiting for more — unless the human closed the
                     // turn in the same breath, in which case this prose is
@@ -1897,12 +2216,7 @@ async fn handle_streaming(
                     conversation_id = %conv_for_cleanup,
                     "Human ended the turn (streaming)"
                 );
-                // If no content was sent at all, emit a minimal role header
-                // so the agent SDK still sees a well-formed stream.
-                if !sent_role_header {
-                    let chunk = ChatCompletionChunk::role_header(&completion_id);
-                    yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
-                }
+                turn.record(&conv_for_cleanup, &sent_text, &[]);
                 let chunk = ChatCompletionChunk::finish(&completion_id);
                 yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
             }
@@ -1916,26 +2230,28 @@ async fn handle_streaming(
                     "[tool_call] generated for agent (streaming)"
                 );
 
+                if let Some(r) = crate::session::take_reasoning(&conv_for_cleanup) {
+                    let chunk = ChatCompletionChunk::reasoning_delta(&completion_id, &r);
+                    yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
+                }
+
                 // Stream the companion prose before the calls so the agent
                 // sees both halves of what the human meant to say.
                 if let Some(prose) = companion.as_deref() {
-                    // A tool call closes the turn, so this header is the
-                    // last one — no need to record that it was sent.
-                    if !sent_role_header {
-                        let chunk = ChatCompletionChunk::role_header(&completion_id);
-                        yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
-                    }
-                    let payload = if prose.ends_with('\n') {
-                        prose.to_string()
+                    let payload = if !sent_text.is_empty() && !sent_text.ends_with("\n\n") {
+                        format!("\n\n{}", prose)
                     } else {
-                        format!("{}\n\n", prose)
+                        prose.to_string()
                     };
                     for word in payload.split_inclusive(char::is_whitespace) {
                         let chunk = ChatCompletionChunk::content_delta(&completion_id, word);
                         yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                     }
+                    sent_text.push_str(&payload);
                 }
 
+                let mut recorded = Vec::new();
+                let mut call_text = String::new();
                 for call in calls {
                     let stored_content = format!(
                         "{{\"tool_call\":\"{}\",\"arguments\":{}}}",
@@ -1977,14 +2293,20 @@ async fn handle_streaming(
                         created_at: now,
                     }).await;
 
+                    let args = call.arguments.to_string();
                     let chunk = ChatCompletionChunk::tool_call_delta(
                         &completion_id,
                         &call_id,
                         &call.tool_name,
-                        &call.arguments.to_string(),
+                        &args,
                     );
                     yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
+                    call_text.push_str(&call.tool_name);
+                    call_text.push_str(&args);
+                    recorded.push((call_id, call.tool_name.clone(), call.arguments.clone()));
                 }
+                turn.record(&conv_for_cleanup, &sent_text, &recorded);
+                sent_text.push_str(&call_text);
 
                 // Finish chunk with finish_reason: tool_calls.
                 let chunk = ChatCompletionChunk::finish_tool_calls(&completion_id);
@@ -1995,9 +2317,10 @@ async fn handle_streaming(
             }
         }
 
-        // Usage chunk (if stream_options.include_usage was requested)
+        // Usage chunk (if stream_options.include_usage was requested):
+        // counted by the server, whoever answered.
         if include_usage {
-            let chunk = ChatCompletionChunk::usage_chunk(&completion_id);
+            let chunk = ChatCompletionChunk::usage_chunk_with(&completion_id, turn.usage(&sent_text));
             yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
         }
 
@@ -2339,7 +2662,7 @@ mod tests {
         h2.insert("user-agent", "WorkBuddy/1.0".parse().unwrap());
         let b = resolve_session_key(&h2, &request(req_a()), Some(prompt), false);
 
-        assert!(a.starts_with("prm:"), "got {a}");
+        assert!(a.starts_with("cli:"), "got {a}");
         assert_ne!(a, b, "a shared prompt must not merge two clients");
     }
 
@@ -2384,19 +2707,50 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_fingerprint_is_stable_and_distinct() {
+    fn main_chat_key_ignores_a_changing_system_prompt() {
+        // Clients rewrite their system prompt between turns (Trae, dsh);
+        // keying on it split one session into many. Auxiliary calls still
+        // separate by prompt (a title generator is not the chat).
         let h = HeaderMap::new();
         let req = request(body());
         let first = resolve_session_key(&h, &req, Some("You are a release engineer."), false);
-        let second = resolve_session_key(&h, &req, Some("You are a release engineer."), false);
-        let third = resolve_session_key(&h, &req, Some("You are a lawyer."), false);
+        let second = resolve_session_key(&h, &req, Some("You are a release engineer. (turn 2)"), false);
+        assert_eq!(first, second, "a rewritten prompt must not start a new session");
 
+        let aux_a = resolve_session_key(&h, &req, Some("Make a title."), true);
+        let aux_b = resolve_session_key(&h, &req, Some("Suggest a reply."), true);
+        assert!(aux_a.starts_with("aux:prm:"));
+        assert_ne!(aux_a, aux_b);
+    }
+
+    #[test]
+    fn first_message_anchor_ignores_injected_reminders() {
+        let h = HeaderMap::new();
+        let turn1 = request(json!({"messages": [
+            {"role": "user", "content": "<system-reminder>terminals: 0</system-reminder>\n<user_input>hi</user_input>"},
+        ]}));
+        let turn2 = request(json!({"messages": [
+            {"role": "user", "content": "<system-reminder>terminals: 1</system-reminder>\n<user_input>hi</user_input>"},
+        ]}));
         assert_eq!(
-            first, second,
-            "identical prompts must reuse one conversation"
+            resolve_session_key(&h, &turn1, None, false),
+            resolve_session_key(&h, &turn2, None, false)
         );
-        assert_ne!(first, third);
-        assert!(first.starts_with("prm:"));
+    }
+
+    #[test]
+    fn history_digests_find_our_replies() {
+        let req = request(json!({"messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello there\n\n"},
+            {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "call_theirs", "type": "function", "function": {"name": "Bash", "arguments": "{\"command\":\"ls\"}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "call_theirs", "content": "a.txt"},
+        ]}));
+        let d = history_digests(&req);
+        assert!(d.contains(&crate::session::call_digest("Bash", &json!({"command": "ls"}))));
+        assert!(d.contains(&crate::session::text_digest("hello there").unwrap()));
     }
 
     // ── 2026-10-21 seat fixes ──

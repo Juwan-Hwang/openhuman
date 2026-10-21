@@ -50,6 +50,9 @@ jsonwebtoken = "9"
 # Replaces the placeholder `DefaultHasher` (64-bit, non-cryptographic, and
 # not stable across processes) that was used to compute `key_hash`.
 sha2 = "0.10"
+anyllm_translate = { version = "0.17", default-features = false }
+tiktoken-rs = "0.7"
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 hex = "0.4"
 
 # Observability

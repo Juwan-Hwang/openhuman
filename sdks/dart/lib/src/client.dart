@@ -578,6 +578,16 @@ class OpenHumanClient {
     return _send('/v1/conversations/$conversationId', method: 'DELETE');
   }
 
+  /// Keep a conversation. Messages are not stored on the server by
+  /// default (the caller's transcript is the record); this writes the
+  /// conversation's messages to the database so they survive a restart.
+  Future<bool> saveConversation(String conversationId) async {
+    return _send(
+      '/v1/conversations/$conversationId/save',
+      method: 'POST',
+    );
+  }
+
   /// Take a conversation back out of the trash.
   Future<bool> restoreConversation(String conversationId) async {
     return _send(

@@ -30,8 +30,20 @@ pub async fn require_api_key(
         .get("authorization")
         .and_then(|v| v.to_str().ok());
 
-    let raw_key = match auth_header {
-        Some(h) if h.starts_with("Bearer ") => &h[7..],
+    // Anthropic clients (Claude Code with ANTHROPIC_API_KEY) send the key
+    // as `x-api-key` instead of a bearer token.
+    let x_api_key = request
+        .headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let bearer = auth_header
+        .filter(|h| h.starts_with("Bearer "))
+        .map(|h| h[7..].trim().to_string());
+    let raw_key_owned = bearer.or(x_api_key);
+    let raw_key = match raw_key_owned.as_deref() {
+        Some(k) => k,
         _ => {
             return auth_error(
                 StatusCode::UNAUTHORIZED,
@@ -60,6 +72,9 @@ pub async fn require_api_key(
     let path = request.uri().path();
     let caller_route = path == "/v1/chat/completions"
         || path == "/v1/models"
+        || path == "/v1/tokenizers"
+        || path == "/v1/responses"
+        || path.starts_with("/v1/messages")
         || path.starts_with("/v1/replies");
     let allowed = if caller_route {
         principal.api_key.scope.may_call()

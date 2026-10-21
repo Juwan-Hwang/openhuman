@@ -89,6 +89,17 @@ class ConversationSidebar extends ConsumerWidget {
                           },
                           onRename: () => _askForName(context, ref, conv),
                           onDelete: () => _confirmDelete(context, ref, conv),
+                          onSave: () async {
+                            final ok = await ref
+                                .read(conversationListProvider.notifier)
+                                .saveConversation(conv.id);
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(ok ? '会话记录已保存' : '保存失败'),
+                              ),
+                            );
+                          },
                         ),
                       );
                     },
@@ -573,6 +584,7 @@ class _ConversationTile extends StatelessWidget {
     required this.onTap,
     required this.onRename,
     required this.onDelete,
+    required this.onSave,
   });
 
   final ConversationInfo conversation;
@@ -581,6 +593,7 @@ class _ConversationTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onRename;
   final VoidCallback onDelete;
+  final VoidCallback onSave;
 
   @override
   Widget build(BuildContext context) {
@@ -655,12 +668,16 @@ class _ConversationTile extends StatelessWidget {
                 onSelected: (value) {
                   if (value == 'rename') {
                     onRename();
+                  } else if (value == 'save') {
+                    onSave();
                   } else if (value == 'delete') {
                     onDelete();
                   }
                 },
                 itemBuilder: (context) => const [
                   PopupMenuItem(value: 'rename', child: Text('重命名')),
+                  // Messages are not kept on the server unless saved.
+                  PopupMenuItem(value: 'save', child: Text('保存会话记录')),
                   PopupMenuItem(value: 'delete', child: Text('移到回收站')),
                 ],
               ),

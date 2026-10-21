@@ -265,6 +265,29 @@ pub(crate) async fn drain_pending_messages(
     let mut discarded = Vec::new();
 
     for msg in &pending {
+        // A tool result left in the backlog is still a tool result: it
+        // must settle its call, not show up as words from the caller.
+        if msg.metadata.get("openai_role").and_then(|v| v.as_str()) == Some("tool") {
+            if let Some(call_id) = msg.metadata.get("tool_call_id").and_then(|v| v.as_str()) {
+                let tool_id = crate::session::tool_name_for(&msg.conversation_id, call_id)
+                    .unwrap_or_else(|| "unknown".to_string());
+                let output = serde_json::Value::String(msg.content.as_text().unwrap_or("").to_string());
+                let event = protocol::tool_result_event(
+                    &msg.conversation_id,
+                    call_id,
+                    &tool_id,
+                    "success",
+                    Some(&output),
+                    None,
+                );
+                if push_tx.send(protocol::event_to_json(&event)).is_err() {
+                    break;
+                }
+            }
+            pushed.push(msg.id.clone());
+            continue;
+        }
+
         // Not pushed, but not left pending either: without this they are
         // re-examined on every reconnect and never cleared, so the
         // backlog grows without ever being displayed.
