@@ -678,10 +678,8 @@ async fn handle_tool_invoke(
             a.iter()
                 .any(|t| t.get("id").and_then(|v| v.as_str()) == Some(tool_id))
         });
-    let known = match conv_has_tool {
-        Some(found) => found,
-        None => app.capability.get_capability(agent_id, tool_id).await.is_some(),
-    };
+    let known = conv_has_tool == Some(true)
+        || app.capability.get_capability(agent_id, tool_id).await.is_some();
     if !known {
         let event = protocol::error_event(
             human_id,
