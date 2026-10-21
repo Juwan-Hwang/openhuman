@@ -698,6 +698,37 @@ fn cap_output(body: String, id: &str) -> String {
     )
 }
 
+/// Pictures a tool returned (data URLs saved under ~/.openhuman/images,
+/// links kept as they are).
+fn save_result_images(e: &Value) -> Vec<String> {
+    let Some(imgs) = e.get("images").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let id = s(e, "invocation_id")
+        .unwrap_or("result")
+        .replace(['/', '\\', '.'], "_");
+    let dir = home().join(".openhuman").join("images");
+    let _ = std::fs::create_dir_all(&dir);
+    let mut out = Vec::new();
+    for (i, url) in imgs.iter().filter_map(|v| v.as_str()).enumerate() {
+        match data_url_bytes(url) {
+            Some((mime, bytes)) => {
+                let ext = mime
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("bin")
+                    .replace("jpeg", "jpg");
+                let f = dir.join(format!("{id}-{}.{ext}", i + 1));
+                if std::fs::write(&f, bytes).is_ok() {
+                    out.push(f.display().to_string());
+                }
+            }
+            None => out.push(url.to_string()),
+        }
+    }
+    out
+}
+
 /// `data:image/png;base64,...` → (mime, bytes).
 fn data_url_bytes(url: &str) -> Option<(String, Vec<u8>)> {
     let rest = url.strip_prefix("data:")?;
@@ -788,6 +819,9 @@ fn print_event(e: &Value) {
                 "{}",
                 cap_output(body, s(e, "invocation_id").unwrap_or("result"))
             );
+            for p in save_result_images(e) {
+                println!("  image: {p}  (the tool returned a picture: open it with your own image/file tool)");
+            }
         }
         t => {
             let mut rest = e.as_object().cloned().unwrap_or_default();
