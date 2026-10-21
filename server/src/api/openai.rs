@@ -1022,6 +1022,15 @@ fn process_inbound_messages(
                             m.insert("echo_tool".to_string(), Value::String(name));
                             m.insert("echo_args".to_string(), args);
                         }
+                        // A tool that returns a picture (Read on a PNG): the
+                        // text only says `[图片]`, so carry the image itself.
+                        let imgs = msg.content.image_urls();
+                        if !imgs.is_empty() {
+                            m.insert(
+                                "images".to_string(),
+                                Value::Array(imgs.into_iter().map(Value::String).collect()),
+                            );
+                        }
                         m
                     },
                     status: MessageStatus::Pending,

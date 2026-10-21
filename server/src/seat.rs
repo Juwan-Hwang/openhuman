@@ -436,6 +436,12 @@ fn render(cursor: u64, ev: &Value, full: bool) -> Value {
             if cut {
                 out["truncated"] = Value::Bool(true);
             }
+            if let Some(imgs) = data
+                .get("images")
+                .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+            {
+                out["images"] = imgs.clone();
+            }
         }
         _ => {
             out["data"] = data;
