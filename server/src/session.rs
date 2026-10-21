@@ -264,8 +264,7 @@ pub fn strip_injections(text: &str) -> String {
     ] {
         let open = format!("<{}", tag);
         let close = format!("</{}>", tag);
-        loop {
-            let Some(s) = out.find(&open) else { break };
+        while let Some(s) = out.find(&open) {
             // `<context` must not swallow `<contextual…>` prose.
             let after = &out[s + open.len()..];
             if !after.starts_with('>') && !after.starts_with(' ') && !after.starts_with('\n') {
@@ -488,7 +487,7 @@ mod tests {
         let d = text_digest("unique reply 123").unwrap();
         remember_reply("agt_x", d.clone(), "cnv_x");
         assert_eq!(
-            lookup_continuity("agt_x", &[d.clone()]).as_deref(),
+            lookup_continuity("agt_x", std::slice::from_ref(&d)).as_deref(),
             Some("cnv_x")
         );
         assert_eq!(lookup_continuity("agt_other", &[d]), None);

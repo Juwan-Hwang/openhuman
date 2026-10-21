@@ -937,7 +937,7 @@ fn tool_sig(t: &Value) -> String {
             params.push((!r, format!("{k}{}: {}", if r { "*" } else { "" }, ptype(p))));
         }
     }
-    params.sort_by(|a, b| a.0.cmp(&b.0));
+    params.sort_by_key(|a| a.0);
     format!(
         "{}({})",
         tool_name(t),
