@@ -589,6 +589,10 @@ pub struct HistoryQuery {
     conversation_id: String,
     #[serde(default)]
     limit: Option<usize>,
+    /// Include each image's data (a `data:` URL or a link), so a seat can
+    /// save and look at what the caller attached.
+    #[serde(default)]
+    images: Option<bool>,
 }
 
 /// Recent messages of one of this seat's conversations, oldest first:
@@ -651,6 +655,13 @@ pub async fn history(
             }
             if !m.attachments.is_empty() {
                 o["image_count"] = json!(m.attachments.len());
+                if q.images == Some(true) {
+                    o["images"] = m
+                        .attachments
+                        .iter()
+                        .map(|a| json!({"content_type": a.content_type, "url": a.url}))
+                        .collect();
+                }
             }
             o
         })
