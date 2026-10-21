@@ -958,7 +958,14 @@ fn process_inbound_messages(
                 let clean_text = crate::session::strip_injections_part(
                     &crate::normalize::normalize_user_message(client_type, &msg.content),
                 );
-                if !clean_text.trim().is_empty() && !is_image_placeholder(&clean_text) {
+                // pi sends a tool's picture as a user turn captioned
+                // "Attached image(s) from tool result:": a caption, not words
+                // from the person.
+                let caption_only = msg.content.has_image() && is_tool_image_caption(&clean_text);
+                if !clean_text.trim().is_empty()
+                    && !is_image_placeholder(&clean_text)
+                    && !caption_only
+                {
                     user_texts.push(clean_text);
                 }
                 user_images.extend(msg.content.image_urls());
@@ -1118,6 +1125,12 @@ fn process_inbound_messages(
 }
 
 /// A user turn that only stands in for an image (`[图片]`, `[image]`).
+/// A caption a client puts on a tool's picture it re-sends as a user turn.
+fn is_tool_image_caption(text: &str) -> bool {
+    let t = text.trim().to_ascii_lowercase();
+    t.len() < 80 && (t.starts_with("attached image") || t.contains("from tool result"))
+}
+
 fn is_image_placeholder(text: &str) -> bool {
     let rest = text
         .replace("[图片]", "")
@@ -2648,6 +2661,12 @@ async fn handle_streaming(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_image_captions() {
+        assert!(is_tool_image_caption("Attached image(s) from tool result:"));
+        assert!(!is_tool_image_caption("这张图是什么颜色？"));
+    }
     use crate::openai_compat::ChatCompletionRequest;
 
     /// Build a request the same way the wire does, so the fixtures used here
