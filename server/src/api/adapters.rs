@@ -634,7 +634,15 @@ impl ResponsesBuilder {
             reasoning_item: None,
             calls: Vec::new(),
             output: Vec::new(),
-            usage: json!({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}),
+            // Strict Responses clients (grok) reject usage without the
+            // details objects, and a turn can end before any usage arrives.
+            usage: json!({
+                "input_tokens": 0,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens": 0,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": 0,
+            }),
         }
     }
 
@@ -966,6 +974,14 @@ pub async fn responses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn responses_usage_always_has_details() {
+        let b = ResponsesBuilder::new("m".into(), Vec::new());
+        let u = &b.response_obj("completed")["usage"];
+        assert_eq!(u["input_tokens_details"]["cached_tokens"], 0);
+        assert_eq!(u["output_tokens_details"]["reasoning_tokens"], 0);
+    }
 
     #[test]
     fn tool_search_references_become_text() {
