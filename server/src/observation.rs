@@ -65,8 +65,16 @@ pub async fn observe_request(request: Request, next: Next) -> Response {
     let path = request.uri().path().to_string();
     let method = request.method().to_string();
     let is_chat_completions = path == "/v1/chat/completions" && method == "POST";
+    let enabled = !matches!(
+        std::env::var("OPENHUMAN_OBSERVATION")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "off" | "0" | "false" | "no"
+    );
 
-    if !is_chat_completions {
+    if !is_chat_completions || !enabled {
         return next.run(request).await;
     }
 

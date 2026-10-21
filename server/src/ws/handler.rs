@@ -106,6 +106,13 @@ async fn handle_connection(socket: WebSocket, app: AppState, headers: HeaderMap,
     let principal = app.identity.resolve_principal(&raw_key).await;
 
     let (human_id, display_name, agent_id) = match principal {
+        Some(p) if !p.api_key.scope.may_respond() => {
+            tracing::warn!(
+                "WebSocket rejected: key scope '{}' cannot answer as the human",
+                p.api_key.scope.as_str()
+            );
+            return;
+        }
         Some(p) => (
             p.human.id.clone(),
             p.human.display_name.clone(),
@@ -236,7 +243,7 @@ async fn handle_connection(socket: WebSocket, app: AppState, headers: HeaderMap,
 /// When a human connects, the server looks up all conversations where
 /// this human is a participant, and pushes any `Pending` status messages
 /// to the newly connected client. This provides offline catch-up.
-async fn drain_pending_messages(
+pub(crate) async fn drain_pending_messages(
     app: &AppState,
     human_id: &str,
     push_tx: &tokio::sync::mpsc::UnboundedSender<String>,
@@ -317,7 +324,7 @@ async fn drain_pending_messages(
 }
 
 /// Process a single client → server message.
-async fn handle_client_message(raw: &str, app: &AppState, human_id: &str, agent_id: &str) {
+pub(crate) async fn handle_client_message(raw: &str, app: &AppState, human_id: &str, agent_id: &str) {
     let event = match protocol::ClientMessage::from_json(raw) {
         Ok(e) => e,
         Err(e) => {
@@ -385,7 +392,7 @@ async fn handle_client_message(raw: &str, app: &AppState, human_id: &str, agent_
 /// Conversations with nothing in flight are skipped: the notice would only
 /// end up parked in the outbound queue and surface much later, detached
 /// from whatever it was meant to reassure.
-async fn announce_online(app: &AppState, human_id: &str) {
+pub(crate) async fn announce_online(app: &AppState, human_id: &str) {
     let notice = std::env::var("OPENHUMAN_ONLINE_NOTICE")
         .ok()
         .map(|v| v.trim().to_string())
