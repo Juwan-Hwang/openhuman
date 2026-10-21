@@ -298,19 +298,35 @@ fn strip_injections_with(text: &str, allow_empty: bool) -> String {
     out.trim().to_string()
 }
 
-/// Harness blocks an agent wraps around what the person typed (Reasonix:
+/// Harness blocks an agent wraps around what the person typed: environment
+/// facts, skill indexes, language and policy settings (Reasonix:
 /// `<workspace>`, `<current-date>`, `<available-skills>`,
-/// `<execution-policy preset="…">` …): a line opening `<tag…>` whose
-/// `</tag>` ends a later (or the same) line. Only tags that look machine
-/// made (a `-` or `_` in the name, or a known one) so typed HTML survives,
-/// and never when nothing would be left.
+/// `<execution-policy preset="…">`; Grok: `<user_info>`, `<rules>`). Only
+/// these named blocks go: a tag that carries content the responder must
+/// read (`<agent_reply>`, `<document>`) stays. Blocks that wrap the typed
+/// text itself (`<user_query>`, `<user_message>`) are unwrapped instead.
 fn strip_tag_blocks(text: &str, allow_empty: bool) -> String {
-    const KNOWN: [&str; 5] = ["workspace", "env", "instructions", "context", "rules"];
+    const DROP: [&str; 14] = [
+        "workspace",
+        "current-date",
+        "session-scratch",
+        "available-skills",
+        "reasoning-language",
+        "response-language",
+        "execution-policy",
+        "user_info",
+        "rules",
+        "user_rules",
+        "env",
+        "environment",
+        "current_datetime",
+        "available_skills",
+    ];
+    const UNWRAP: [&str; 3] = ["user_query", "user_message", "user_request"];
     let lines: Vec<&str> = text.lines().collect();
     let mut keep = vec![true; lines.len()];
-    let mut i = 0;
-    while i < lines.len() {
-        let l = lines[i].trim_start();
+    let tag_of = |l: &str| -> (String, bool) {
+        let l = l.trim_start();
         let tag: String = l
             .strip_prefix('<')
             .map(|r| {
@@ -322,17 +338,27 @@ fn strip_tag_blocks(text: &str, allow_empty: bool) -> String {
             })
             .unwrap_or_default();
         let after = l.get(1 + tag.len()..).unwrap_or("");
-        let machine = tag.len() >= 3
-            && (tag.contains('-') || tag.contains('_') || KNOWN.contains(&tag.as_str()))
-            && (after.starts_with('>') || after.starts_with(' '));
-        if machine {
+        let opens = !tag.is_empty() && (after.starts_with('>') || after.starts_with(' '));
+        (tag, opens)
+    };
+    let mut i = 0;
+    while i < lines.len() {
+        let (tag, opens) = tag_of(lines[i]);
+        if opens && (DROP.contains(&tag.as_str()) || UNWRAP.contains(&tag.as_str())) {
             let close = format!("</{tag}>");
             if let Some(end) = (i..lines.len()).find(|&j| lines[j].trim_end().ends_with(&close)) {
-                for k in keep.iter_mut().take(end + 1).skip(i) {
-                    *k = false;
+                if DROP.contains(&tag.as_str()) {
+                    for k in keep.iter_mut().take(end + 1).skip(i) {
+                        *k = false;
+                    }
+                    i = end + 1;
+                    continue;
                 }
-                i = end + 1;
-                continue;
+                // Unwrap: drop only the tag lines, when each stands alone.
+                if end > i && lines[i].trim_end().ends_with('>') && lines[end].trim() == close {
+                    keep[i] = false;
+                    keep[end] = false;
+                }
             }
         }
         i += 1;
@@ -509,6 +535,13 @@ mod tests {
             strip_injections("<only-block>\nx\n</only-block>"),
             "<only-block>\nx\n</only-block>"
         );
+        let dash = "<user_message>\n<user_query>\nrun pwd\n</user_query>\n</user_message>\n\n<agent_reply>\n/w\n</agent_reply>";
+        let out = strip_injections(dash);
+        assert!(
+            out.contains("run pwd") && out.contains("<agent_reply>\n/w\n</agent_reply>"),
+            "{out}"
+        );
+        assert!(!out.contains("<user_query>"), "{out}");
     }
     use serde_json::json;
 
