@@ -23,7 +23,7 @@ case $C in
       -m openhuman-human "$P" > ../cli.out 2> ../cli.err ;;
   opencode)
     cat > opencode.json <<EOF
-{"\$schema":"https://opencode.ai/config.json","provider":{"oh":{"npm":"@ai-sdk/openai-compatible","name":"OpenHuman","options":{"baseURL":"$URL/v1","apiKey":"$KEY"},"models":{"openhuman-human":{"name":"openhuman-human","tool_call":true}}}},"model":"oh/openhuman-human","permission":{"bash":"allow","edit":"allow"}}
+{"\$schema":"https://opencode.ai/config.json","provider":{"oh":{"npm":"@ai-sdk/openai-compatible","name":"OpenHuman","options":{"baseURL":"$URL/v1","apiKey":"$KEY"},"models":{"openhuman-human":{"name":"openhuman-human","tool_call":true,"attachment":true,"modalities":{"input":["text","image"],"output":["text"]}}}}},"model":"oh/openhuman-human","permission":{"bash":"allow","edit":"allow"}}
 EOF
     timeout 300 opencode run -m oh/openhuman-human "$P" > ../cli.out 2> ../cli.err ;;
   pi)
