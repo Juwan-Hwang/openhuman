@@ -252,6 +252,18 @@ pub fn last_client(agent_id: &str) -> Option<String> {
 /// turn to turn (`<system-reminder>`, environment snapshots, attachment
 /// lists), so what is left is what the person typed.
 pub fn strip_injections(text: &str) -> String {
+    strip_injections_with(text, false)
+}
+
+/// One user part of a request with several: it may consist of nothing but
+/// harness blocks (Grok sends `<user_info>`/`<rules>` as their own user
+/// message before the typed one), so it may strip to nothing. The caller
+/// falls back to the raw text when every part does.
+pub fn strip_injections_part(text: &str) -> String {
+    strip_injections_with(text, true)
+}
+
+fn strip_injections_with(text: &str, allow_empty: bool) -> String {
     let mut out = text.to_string();
     for tag in [
         "system-reminder",
@@ -276,7 +288,7 @@ pub fn strip_injections(text: &str) -> String {
             }
         }
     }
-    out = strip_tag_blocks(&out);
+    out = strip_tag_blocks(&out, allow_empty);
     // Trae wraps the typed text itself.
     if let (Some(s), Some(e)) = (out.find("<user_input>"), out.find("</user_input>")) {
         if s < e {
@@ -292,7 +304,7 @@ pub fn strip_injections(text: &str) -> String {
 /// `</tag>` ends a later (or the same) line. Only tags that look machine
 /// made (a `-` or `_` in the name, or a known one) so typed HTML survives,
 /// and never when nothing would be left.
-fn strip_tag_blocks(text: &str) -> String {
+fn strip_tag_blocks(text: &str, allow_empty: bool) -> String {
     const KNOWN: [&str; 5] = ["workspace", "env", "instructions", "context", "rules"];
     let lines: Vec<&str> = text.lines().collect();
     let mut keep = vec![true; lines.len()];
@@ -332,7 +344,7 @@ fn strip_tag_blocks(text: &str) -> String {
         .map(|(l, _)| *l)
         .collect();
     let joined = kept.join("\n");
-    if joined.trim().is_empty() {
+    if joined.trim().is_empty() && !allow_empty {
         text.to_string()
     } else {
         joined
@@ -536,6 +548,10 @@ mod tests {
             "<system-reminder>terminals: 0</system-reminder>\n<user_input>\n你好\n</user_input>";
         assert_eq!(strip_injections(t), "你好");
         assert_eq!(strip_injections("plain"), "plain");
+        assert_eq!(
+            strip_injections_part("<user_info>\nOS: linux\n</user_info>"),
+            ""
+        );
     }
 
     #[test]
