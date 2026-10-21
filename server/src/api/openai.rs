@@ -479,8 +479,11 @@ fn first_user_anchor(req: &ChatCompletionRequest) -> Option<String> {
     req.messages
         .iter()
         .filter(|m| m.role == crate::openai_compat::ChatRole::User)
-        .map(|m| crate::session::strip_injections(&m.content.to_text()))
-        .find(|t| !t.is_empty())
+        // A part that is only harness blocks (Grok's `<user_info>`, the same
+        // in every session in one directory) must not anchor: every new
+        // session would land in the old conversation.
+        .map(|m| crate::session::strip_injections_part(&m.content.to_text()))
+        .find(|t| !t.trim().is_empty())
         .map(|t| prompt_fingerprint(&t))
 }
 
@@ -931,7 +934,7 @@ fn process_inbound_messages(
                 // Then drop the blocks clients inject into user turns
                 // (`<environment_context>`, `<system-reminder>` …): the
                 // responder still has them in `raw_tail`.
-                let clean_text = crate::session::strip_injections(
+                let clean_text = crate::session::strip_injections_part(
                     &crate::normalize::normalize_user_message(client_type, &msg.content),
                 );
                 if !clean_text.trim().is_empty() && !is_image_placeholder(&clean_text) {
@@ -1012,6 +1015,18 @@ fn process_inbound_messages(
     // A tool that returns an image (Trae's Read on a picture) sends it back
     // as an extra user turn holding only the image. It belongs to the tool
     // result, not to a new message from the person.
+    // Every part was harness blocks: keep what was sent rather than nothing.
+    if user_texts.is_empty() && user_images.is_empty() {
+        if let Some(last) = raw_tail
+            .iter()
+            .rev()
+            .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+            .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+            .find(|t| !t.trim().is_empty())
+        {
+            user_texts.push(crate::session::strip_injections(last));
+        }
+    }
     if user_texts.is_empty() && !user_images.is_empty() {
         if let Some(last_tool) = messages.last_mut() {
             last_tool.metadata.insert(
