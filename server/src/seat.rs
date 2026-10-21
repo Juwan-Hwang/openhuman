@@ -317,6 +317,13 @@ fn render(cursor: u64, ev: &Value, full: bool) -> Value {
                 if users > 1 {
                     out["raw_user_parts"] = json!(users);
                 }
+                // Codex puts the caller's machine (cwd, shell, date) in an
+                // injected user block, not the system prompt; the cleaned
+                // text drops it, so lift those few facts out.
+                let env = injected_env(tail);
+                if !env.is_empty() {
+                    out["env"] = Value::Object(env);
+                }
             }
         }
         "capability.updated" => {
@@ -367,6 +374,35 @@ pub struct InboxQuery {
     /// dropped only once every recently active consumer has seen them.
     #[serde(default)]
     consumer: Option<String>,
+}
+
+/// `<cwd>`, `<shell>`, `<current_date>`, `<timezone>` from the raw user
+/// parts of a request tail (Codex's `<environment_context>`).
+fn injected_env(tail: &[Value]) -> serde_json::Map<String, Value> {
+    let mut env = serde_json::Map::new();
+    for m in tail {
+        if m.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        let text = m.get("content").and_then(|c| c.as_str()).unwrap_or("");
+        for (tag, key) in [
+            ("cwd", "cwd"),
+            ("shell", "shell"),
+            ("current_date", "date"),
+            ("timezone", "timezone"),
+        ] {
+            let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+            if let Some(a) = text.find(&open) {
+                if let Some(b) = text[a + open.len()..].find(&close) {
+                    let v = text[a + open.len()..a + open.len() + b].trim();
+                    if !v.is_empty() && v.len() < 300 && !env.contains_key(key) {
+                        env.insert(key.to_string(), Value::String(v.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    env
 }
 
 /// Long-poll the seat's queue. Returns as soon as anything newer than
@@ -916,6 +952,18 @@ pub async fn capabilities(
 #[cfg(test)]
 mod consumer_tests {
     use super::*;
+
+    #[test]
+    fn codex_env_context_is_lifted() {
+        let tail = vec![
+            json!({"role":"user","content":"<environment_context>\n  <cwd>/srv/p</cwd>\n  <shell>zsh</shell>\n</environment_context>"}),
+            json!({"role":"user","content":"run pwd"}),
+        ];
+        let env = injected_env(&tail);
+        assert_eq!(env["cwd"], "/srv/p");
+        assert_eq!(env["shell"], "zsh");
+        assert!(injected_env(&[json!({"role":"user","content":"hi"})]).is_empty());
+    }
 
     fn seat() -> Seat {
         Seat {
