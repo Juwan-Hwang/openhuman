@@ -49,7 +49,12 @@ struct Cli {
 #[derive(Args)]
 struct Global {
     /// Server base URL
-    #[arg(long, env = "OH_SEAT_URL", default_value = "https://api.juwanh.com", global = true)]
+    #[arg(
+        long,
+        env = "OH_SEAT_URL",
+        default_value = "https://api.juwanh.com",
+        global = true
+    )]
     url: String,
     /// Responder API key (prefer OH_SEAT_KEY_FILE so it stays out of your history)
     #[arg(long, env = "OH_SEAT_KEY", hide_env_values = true, global = true)]
@@ -205,11 +210,17 @@ fn home() -> PathBuf {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn rand_hex(n: usize) -> String {
-    let mut x = (SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(1) as u64)
+    let mut x = (SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(1) as u64)
         ^ (std::process::id() as u64).rotate_left(32);
     let mut s = String::new();
     while s.len() < n {
@@ -236,29 +247,49 @@ impl Ctx {
         let key = match g.key.filter(|k| !k.trim().is_empty()) {
             Some(k) => k.trim().to_string(),
             None => {
-                let path = g.key_file.unwrap_or_else(|| home().join(".openhuman").join("seat_key"));
+                let path = g
+                    .key_file
+                    .unwrap_or_else(|| home().join(".openhuman").join("seat_key"));
                 let txt = std::fs::read_to_string(&path).map_err(|e| {
-                    Fail(USAGE, format!("no key: set OH_SEAT_KEY or OH_SEAT_KEY_FILE ({}: {e})", path.display()))
+                    Fail(
+                        USAGE,
+                        format!(
+                            "no key: set OH_SEAT_KEY or OH_SEAT_KEY_FILE ({}: {e})",
+                            path.display()
+                        ),
+                    )
                 })?;
                 txt.lines()
                     .map(|l| l.trim().trim_start_matches("api_key=").to_string())
                     .find(|l| l.starts_with("ohk_"))
-                    .ok_or_else(|| Fail(USAGE, format!("no ohk_ key found in {}", path.display())))?
+                    .ok_or_else(|| {
+                        Fail(USAGE, format!("no ohk_ key found in {}", path.display()))
+                    })?
             }
         };
-        let state_path = g.state.unwrap_or_else(|| home().join(".openhuman").join("seat-state.json"));
+        let state_path = g
+            .state
+            .unwrap_or_else(|| home().join(".openhuman").join("seat-state.json"));
         let mut st: State = std::fs::read_to_string(&state_path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         if st.consumer.is_empty() {
-            st.consumer = std::env::var("OH_SEAT_CONSUMER").unwrap_or_else(|_| format!("oh-seat-{}", rand_hex(8)));
+            st.consumer = std::env::var("OH_SEAT_CONSUMER")
+                .unwrap_or_else(|_| format!("oh-seat-{}", rand_hex(8)));
         }
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(15))
             .user_agent(UA)
             .build();
-        Ok(Ctx { url: g.url.trim_end_matches('/').to_string(), key, state_path, st, json: g.json, agent })
+        Ok(Ctx {
+            url: g.url.trim_end_matches('/').to_string(),
+            key,
+            state_path,
+            st,
+            json: g.json,
+            agent,
+        })
     }
 
     fn save(&self) {
@@ -290,14 +321,19 @@ impl Ctx {
                 if txt.trim().is_empty() {
                     Ok(json!({}))
                 } else {
-                    serde_json::from_str(&txt).map_err(|e| Fail(HTTP, format!("{short}: bad JSON from server: {e}")))
+                    serde_json::from_str(&txt)
+                        .map_err(|e| Fail(HTTP, format!("{short}: bad JSON from server: {e}")))
                 }
             }
             Err(ureq::Error::Status(code, r)) => {
                 let body = r.into_string().unwrap_or_default();
                 let msg = serde_json::from_str::<Value>(&body)
                     .ok()
-                    .and_then(|v| v.pointer("/error/message").and_then(|m| m.as_str()).map(String::from))
+                    .and_then(|v| {
+                        v.pointer("/error/message")
+                            .and_then(|m| m.as_str())
+                            .map(String::from)
+                    })
                     .unwrap_or_else(|| body.chars().take(400).collect());
                 let hint = match code {
                     401 => " (key missing, wrong or revoked)",
@@ -311,19 +347,28 @@ impl Ctx {
     }
 
     /// One long-poll; buffers new events and advances the cursor.
-    fn poll(&mut self, wait: u64) -> R<()> {
+    ///
+    /// Returns the server's `waiting_turns`. If the server's `latest` is
+    /// below our cursor the seat was re-created (idle reclaim or restart) and
+    /// its cursors started over: reset and read again at once, otherwise
+    /// every new event would sit below our cursor and never be returned.
+    fn poll(&mut self, wait: u64) -> R<Value> {
         let wait = wait.min(POLL_MAX);
-        let path = format!(
-            "/v1/seat/inbox?after={}&wait={}&consumer={}",
-            self.st.cursor,
-            wait,
-            enc(&self.st.consumer)
-        );
-        let r = self.call("GET", &path, None, wait + 30)?;
+        let mut r = self.inbox(self.st.cursor, wait)?;
+        let latest = r.get("latest").and_then(|v| v.as_u64());
+        if matches!(latest, Some(l) if l < self.st.cursor) {
+            self.st.cursor = 0;
+            r = self.inbox(0, 0)?;
+        }
         if let Some(c) = r.get("cursor").and_then(|v| v.as_u64()) {
             self.st.cursor = c;
         }
-        for e in r.get("events").and_then(|v| v.as_array()).cloned().unwrap_or_default() {
+        for e in r
+            .get("events")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
             self.note(&e);
             self.st.buffer.push(e);
         }
@@ -332,7 +377,17 @@ impl Ctx {
             self.st.buffer.drain(..cut);
         }
         self.save(); // buffer persisted together with the advanced cursor
-        Ok(())
+        Ok(r.get("waiting_turns").cloned().unwrap_or(json!([])))
+    }
+
+    fn inbox(&self, after: u64, wait: u64) -> R<Value> {
+        let path = format!(
+            "/v1/seat/inbox?after={}&wait={}&consumer={}",
+            after,
+            wait,
+            enc(&self.st.consumer)
+        );
+        self.call("GET", &path, None, wait + 30)
     }
 
     fn note(&mut self, e: &Value) {
@@ -346,7 +401,12 @@ impl Ctx {
             info.t = now_secs();
         }
         if self.st.convs.len() > 50 {
-            let mut v: Vec<_> = self.st.convs.iter().map(|(k, i)| (i.t, k.clone())).collect();
+            let mut v: Vec<_> = self
+                .st
+                .convs
+                .iter()
+                .map(|(k, i)| (i.t, k.clone()))
+                .collect();
             v.sort();
             for (_, k) in v.into_iter().take(self.st.convs.len() - 50) {
                 self.st.convs.remove(&k);
@@ -356,8 +416,12 @@ impl Ctx {
     }
 
     fn conv(&self, c: Option<String>) -> R<String> {
-        c.or_else(|| self.st.active.clone())
-            .ok_or_else(|| Fail(USAGE, "no conversation: pass -c CONV or run `oh-seat next` first".into()))
+        c.or_else(|| self.st.active.clone()).ok_or_else(|| {
+            Fail(
+                USAGE,
+                "no conversation: pass -c CONV or run `oh-seat next` first".into(),
+            )
+        })
     }
 
     fn out(&self, v: &Value) {
@@ -368,7 +432,9 @@ impl Ctx {
 fn enc(x: &str) -> String {
     x.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{:02X}", b),
         })
         .collect()
@@ -398,20 +464,28 @@ fn aux_hint(e: &Value) -> Option<String> {
         Some("JSON {\"suggestions\": [...]} (empty list when none)")
     } else if hay.contains("title") && hay.contains("\"title\"") {
         Some("JSON {\"title\": \"...\"}")
-    } else if (hay.contains("title") && kind == Some("auxiliary")) || text.starts_with("generate a title") {
+    } else if (hay.contains("title") && kind == Some("auxiliary"))
+        || text.starts_with("generate a title")
+    {
         Some("only a short title, no quotes or extra text")
     } else {
         None
     };
     match (guess, kind) {
         (Some(g), _) => Some(format!("answer with {g}")),
-        (None, Some("auxiliary")) => Some("auxiliary call: answer exactly in the format its prompt asks (oh-seat caps --full)".into()),
+        (None, Some("auxiliary")) => Some(
+            "auxiliary call: answer exactly in the format its prompt asks (oh-seat caps --full)"
+                .into(),
+        ),
         _ => None,
     }
 }
 
 fn max_output() -> usize {
-    std::env::var("OH_SEAT_MAX_OUTPUT").ok().and_then(|v| v.parse().ok()).unwrap_or(30000)
+    std::env::var("OH_SEAT_MAX_OUTPUT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30000)
 }
 
 /// Long tool output is cut so it does not flood the agent's context; the
@@ -428,8 +502,15 @@ fn cap_output(body: String, id: &str) -> String {
     let saved = std::fs::write(&path, &body).is_ok();
     let head: String = body.chars().take(max * 2 / 3).collect();
     let tail: String = body.chars().skip(n - max / 3).collect();
-    let note = if saved { format!("full output: {}", path.display()) } else { "full output could not be saved".into() };
-    format!("{head}\n[... {} of {n} chars cut; {note} ...]\n{tail}", n - head.chars().count() - tail.chars().count())
+    let note = if saved {
+        format!("full output: {}", path.display())
+    } else {
+        "full output could not be saved".into()
+    };
+    format!(
+        "{head}\n[... {} of {n} chars cut; {note} ...]\n{tail}",
+        n - head.chars().count() - tail.chars().count()
+    )
 }
 
 fn print_event(e: &Value) {
@@ -442,7 +523,16 @@ fn print_event(e: &Value) {
             }
             println!("{h}");
             println!("{}", s(e, "text").unwrap_or(""));
-            if let Some(n) = e.get("image_count").and_then(|v| v.as_u64()).or_else(|| e.get("images").and_then(|v| v.as_array()).map(|a| a.len() as u64)).filter(|n| *n > 0) {
+            if let Some(n) = e
+                .get("image_count")
+                .and_then(|v| v.as_u64())
+                .or_else(|| {
+                    e.get("images")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len() as u64)
+                })
+                .filter(|n| *n > 0)
+            {
                 println!("[{n} image(s) attached: oh-seat history -c {c}]");
             }
         }
@@ -456,9 +546,18 @@ fn print_event(e: &Value) {
             );
             let body = s(e, "output")
                 .map(String::from)
-                .or_else(|| e.get("error").filter(|v| !v.is_null()).map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string())))
+                .or_else(|| {
+                    e.get("error").filter(|v| !v.is_null()).map(|v| {
+                        v.as_str()
+                            .map(String::from)
+                            .unwrap_or_else(|| v.to_string())
+                    })
+                })
                 .unwrap_or_default();
-            println!("{}", cap_output(body, s(e, "invocation_id").unwrap_or("result")));
+            println!(
+                "{}",
+                cap_output(body, s(e, "invocation_id").unwrap_or("result"))
+            );
         }
         t => {
             let mut rest = e.as_object().cloned().unwrap_or_default();
@@ -479,15 +578,23 @@ fn parse_input(args: &[String]) -> R<Value> {
     }
     if args.len() == 1 && args[0] == "-" {
         let mut b = String::new();
-        std::io::stdin().read_to_string(&mut b).or_else(|e| usage(format!("stdin: {e}")))?;
-        let lines: Vec<String> = b.lines().filter(|l| !l.trim().is_empty()).map(String::from).collect();
+        std::io::stdin()
+            .read_to_string(&mut b)
+            .or_else(|e| usage(format!("stdin: {e}")))?;
+        let lines: Vec<String> = b
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(String::from)
+            .collect();
         if b.trim_start().starts_with('{') {
-            return serde_json::from_str(b.trim()).or_else(|e| usage(format!("stdin is not valid JSON: {e}")));
+            return serde_json::from_str(b.trim())
+                .or_else(|e| usage(format!("stdin is not valid JSON: {e}")));
         }
         return parse_input(&lines);
     }
     if args.len() == 1 && args[0].trim_start().starts_with('{') {
-        return serde_json::from_str(&args[0]).or_else(|e| usage(format!("tool input is not valid JSON: {e}")));
+        return serde_json::from_str(&args[0])
+            .or_else(|e| usage(format!("tool input is not valid JSON: {e}")));
     }
     let mut m = Map::new();
     for a in args {
@@ -498,11 +605,15 @@ fn parse_input(args: &[String]) -> R<Value> {
             }
         }
         let Some((k, v)) = a.split_once('=') else {
-            return usage(format!("tool input `{a}`: use key=value, or one JSON object"));
+            return usage(format!(
+                "tool input `{a}`: use key=value, or one JSON object"
+            ));
         };
         let val = if v == "@-" {
             let mut b = String::new();
-            std::io::stdin().read_to_string(&mut b).or_else(|e| usage(format!("stdin: {e}")))?;
+            std::io::stdin()
+                .read_to_string(&mut b)
+                .or_else(|e| usage(format!("stdin: {e}")))?;
             Value::String(b)
         } else if let Some(p) = v.strip_prefix('@') {
             Value::String(std::fs::read_to_string(p).or_else(|e| usage(format!("{k}=@{p}: {e}")))?)
@@ -522,13 +633,25 @@ fn parse_input(args: &[String]) -> R<Value> {
 fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
     let deadline = Instant::now() + Duration::from_secs(timeout);
     loop {
-        let wanted = |e: &Value| all || matches!(s(e, "type"), Some("message.received") | Some("conversation.started"));
-        let has_msg = cx.st.buffer.iter().any(|e| all || s(e, "type") == Some("message.received"));
+        let wanted = |e: &Value| {
+            all || matches!(
+                s(e, "type"),
+                Some("message.received") | Some("conversation.started")
+            )
+        };
+        let has_msg = cx
+            .st
+            .buffer
+            .iter()
+            .any(|e| all || s(e, "type") == Some("message.received"));
         if has_msg {
             let buf = std::mem::take(&mut cx.st.buffer);
             // tool results nobody asked for yet stay buffered for `result`
             let (show, keep): (Vec<Value>, Vec<Value>) = buf.into_iter().partition(|e| wanted(e));
-            cx.st.buffer = keep.into_iter().filter(|e| s(e, "type") == Some("tool.result")).collect();
+            cx.st.buffer = keep
+                .into_iter()
+                .filter(|e| s(e, "type") == Some("tool.result"))
+                .collect();
             let mut new_convs = Vec::new();
             for e in &show {
                 // Auxiliary calls (titles, suggestions) never take over the
@@ -565,7 +688,10 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
             let mut show = show;
             for e in show.iter_mut() {
                 if s(e, "client").is_none() {
-                    if let Some(cl) = conv_id(e).and_then(|c| cx.st.convs.get(c)).and_then(|i| i.client.clone()) {
+                    if let Some(cl) = conv_id(e)
+                        .and_then(|c| cx.st.convs.get(c))
+                        .and_then(|i| i.client.clone())
+                    {
                         e["client"] = json!(cl);
                     }
                 }
@@ -597,14 +723,25 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
     }
 }
 
-fn cmd_reply(cx: &mut Ctx, text: Option<String>, file: Option<PathBuf>, conv: Option<String>, reasoning: Option<String>, more: bool) -> R<u8> {
+fn cmd_reply(
+    cx: &mut Ctx,
+    text: Option<String>,
+    file: Option<PathBuf>,
+    conv: Option<String>,
+    reasoning: Option<String>,
+    more: bool,
+) -> R<u8> {
     let c = cx.conv(conv)?;
     let text = match (file, text) {
-        (Some(f), _) if f.as_os_str() != "-" => std::fs::read_to_string(&f).or_else(|e| usage(format!("{}: {e}", f.display())))?,
+        (Some(f), _) if f.as_os_str() != "-" => {
+            std::fs::read_to_string(&f).or_else(|e| usage(format!("{}: {e}", f.display())))?
+        }
         (None, Some(t)) if t != "-" => t,
         _ => {
             let mut b = String::new();
-            std::io::stdin().read_to_string(&mut b).or_else(|e| usage(format!("stdin: {e}")))?;
+            std::io::stdin()
+                .read_to_string(&mut b)
+                .or_else(|e| usage(format!("stdin: {e}")))?;
             b
         }
     };
@@ -635,7 +772,11 @@ fn cmd_reply(cx: &mut Ctx, text: Option<String>, file: Option<PathBuf>, conv: Op
 fn wait_result(cx: &mut Ctx, inv: &str, timeout: u64) -> R<u8> {
     let deadline = Instant::now() + Duration::from_secs(timeout);
     loop {
-        if let Some(i) = cx.st.buffer.iter().position(|e| s(e, "type") == Some("tool.result") && s(e, "invocation_id") == Some(inv)) {
+        if let Some(i) =
+            cx.st.buffer.iter().position(|e| {
+                s(e, "type") == Some("tool.result") && s(e, "invocation_id") == Some(inv)
+            })
+        {
             let e = cx.st.buffer.remove(i);
             cx.save();
             if cx.json {
@@ -658,7 +799,15 @@ fn wait_result(cx: &mut Ctx, inv: &str, timeout: u64) -> R<u8> {
     }
 }
 
-fn cmd_tool(cx: &mut Ctx, name: String, input: Vec<String>, conv: Option<String>, text: Option<String>, reasoning: Option<String>, timeout: u64) -> R<u8> {
+fn cmd_tool(
+    cx: &mut Ctx,
+    name: String,
+    input: Vec<String>,
+    conv: Option<String>,
+    text: Option<String>,
+    reasoning: Option<String>,
+    timeout: u64,
+) -> R<u8> {
     let c = cx.conv(conv)?;
     let input = parse_input(&input)?;
     let mut body = json!({
@@ -673,7 +822,12 @@ fn cmd_tool(cx: &mut Ctx, name: String, input: Vec<String>, conv: Option<String>
     }
     let r = match cx.call("POST", "/v1/seat/tool-call", Some(body), 60) {
         Err(Fail(code, m)) if m.contains("404") => {
-            let avail = cx.st.caps.get(&c).map(|t| t.lines().nth(1).unwrap_or("").to_string()).unwrap_or_default();
+            let avail = cx
+                .st
+                .caps
+                .get(&c)
+                .map(|t| t.lines().nth(1).unwrap_or("").to_string())
+                .unwrap_or_default();
             return Err(Fail(code, format!("{m}\n{avail}")));
         }
         x => x?,
@@ -694,12 +848,21 @@ fn cmd_tool(cx: &mut Ctx, name: String, input: Vec<String>, conv: Option<String>
 }
 
 fn fetch_caps(cx: &Ctx, c: &str) -> R<Value> {
-    cx.call("GET", &format!("/v1/seat/capabilities?conversation_id={}&view=full", enc(c)), None, 60)
+    cx.call(
+        "GET",
+        &format!("/v1/seat/capabilities?conversation_id={}&view=full", enc(c)),
+        None,
+        60,
+    )
 }
 
 fn tool_list(r: &Value) -> Vec<Value> {
     for p in ["/context/tools", "/tools", "/capabilities"] {
-        if let Some(a) = r.pointer(p).and_then(|v| v.as_array()).filter(|a| !a.is_empty()) {
+        if let Some(a) = r
+            .pointer(p)
+            .and_then(|v| v.as_array())
+            .filter(|a| !a.is_empty())
+        {
             return a.clone();
         }
     }
@@ -707,19 +870,33 @@ fn tool_list(r: &Value) -> Vec<Value> {
 }
 
 fn tool_name(t: &Value) -> String {
-    ["id", "name"].iter().find_map(|k| s(t, k)).or_else(|| t.pointer("/function/name").and_then(|v| v.as_str())).unwrap_or("?").to_string()
+    ["id", "name"]
+        .iter()
+        .find_map(|k| s(t, k))
+        .or_else(|| t.pointer("/function/name").and_then(|v| v.as_str()))
+        .unwrap_or("?")
+        .to_string()
 }
 
 fn tool_schema(t: &Value) -> &Value {
-    t.get("input_schema").or_else(|| t.get("parameters")).or_else(|| t.pointer("/function/parameters")).unwrap_or(&Value::Null)
+    t.get("input_schema")
+        .or_else(|| t.get("parameters"))
+        .or_else(|| t.pointer("/function/parameters"))
+        .unwrap_or(&Value::Null)
 }
 
 fn tool_desc(t: &Value) -> &str {
-    s(t, "description").or_else(|| t.pointer("/function/description").and_then(|v| v.as_str())).unwrap_or("")
+    s(t, "description")
+        .or_else(|| t.pointer("/function/description").and_then(|v| v.as_str()))
+        .unwrap_or("")
 }
 
 fn first_sentence(d: &str, max: usize) -> String {
-    let line = d.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let line = d
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
     let cut = line.find(". ").map(|i| &line[..=i]).unwrap_or(line);
     let mut out: String = cut.chars().take(max).collect();
     if cut.chars().count() > max {
@@ -735,7 +912,11 @@ fn ptype(p: &Value) -> String {
             format!("{inner}[]")
         }
         Some(Value::String(t)) => t.clone(),
-        Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("|"),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>()
+            .join("|"),
         _ if p.get("enum").is_some() => "enum".into(),
         _ => "any".into(),
     }
@@ -744,7 +925,11 @@ fn ptype(p: &Value) -> String {
 /// `Bash(command*: string, timeout: number)` — required params first, marked *.
 fn tool_sig(t: &Value) -> String {
     let sc = tool_schema(t);
-    let req: Vec<&str> = sc.get("required").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str()).collect()).unwrap_or_default();
+    let req: Vec<&str> = sc
+        .get("required")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
     let mut params: Vec<(bool, String)> = Vec::new();
     if let Some(props) = sc.get("properties").and_then(|v| v.as_object()) {
         for (k, p) in props {
@@ -753,21 +938,44 @@ fn tool_sig(t: &Value) -> String {
         }
     }
     params.sort_by(|a, b| a.0.cmp(&b.0));
-    format!("{}({})", tool_name(t), params.into_iter().map(|p| p.1).collect::<Vec<_>>().join(", "))
+    format!(
+        "{}({})",
+        tool_name(t),
+        params
+            .into_iter()
+            .map(|p| p.1)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn caps_summary(r: &Value) -> (Vec<String>, usize, Option<String>) {
     let tools = tool_list(r).iter().map(tool_name).collect();
-    let sp = r.pointer("/context/system_prompt").or_else(|| r.get("system_prompt")).and_then(|v| v.as_str()).unwrap_or("");
-    let client = r.pointer("/context/client").or_else(|| r.get("client")).and_then(|v| v.as_str()).map(String::from);
+    let sp = r
+        .pointer("/context/system_prompt")
+        .or_else(|| r.get("system_prompt"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let client = r
+        .pointer("/context/client")
+        .or_else(|| r.get("client"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
     (tools, sp.chars().count(), client)
 }
 
 fn caps_text(r: &Value, full: bool) -> String {
     let (tools, sp_len, client) = caps_summary(r);
-    let mut out = vec![format!("client: {}", client.unwrap_or_else(|| "?".into())), format!("tools ({}): {}", tools.len(), tools.join(", "))];
+    let mut out = vec![
+        format!("client: {}", client.unwrap_or_else(|| "?".into())),
+        format!("tools ({}): {}", tools.len(), tools.join(", ")),
+    ];
     if full {
-        let sp = r.pointer("/context/system_prompt").or_else(|| r.get("system_prompt")).and_then(|v| v.as_str()).unwrap_or("");
+        let sp = r
+            .pointer("/context/system_prompt")
+            .or_else(|| r.get("system_prompt"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         out.push(format!("system prompt ({sp_len} chars):"));
         out.push(sp.to_string());
         for t in tool_list(r) {
@@ -776,9 +984,15 @@ fn caps_text(r: &Value, full: bool) -> String {
         }
     } else {
         for t in tool_list(r) {
-            out.push(format!("  {}  {}", tool_sig(&t), first_sentence(tool_desc(&t), 90)));
+            out.push(format!(
+                "  {}  {}",
+                tool_sig(&t),
+                first_sentence(tool_desc(&t), 90)
+            ));
         }
-        out.push(format!("system prompt: {sp_len} chars (--full to read it; * = required)"));
+        out.push(format!(
+            "system prompt: {sp_len} chars (--full to read it; * = required)"
+        ));
     }
     out.join("\n")
 }
@@ -800,19 +1014,32 @@ fn line_diff(old: &str, new: &str) -> String {
     out.join("\n")
 }
 
-fn cmd_caps(cx: &mut Ctx, conv: Option<String>, full: bool, diff: bool, tool: Option<String>, schema: bool) -> R<u8> {
+fn cmd_caps(
+    cx: &mut Ctx,
+    conv: Option<String>,
+    full: bool,
+    diff: bool,
+    tool: Option<String>,
+    schema: bool,
+) -> R<u8> {
     let c = cx.conv(conv)?;
     let r = fetch_caps(cx, &c)?;
     if let Some(name) = tool {
         let list = tool_list(&r);
         let Some(t) = list.iter().find(|t| tool_name(t) == name) else {
             let names: Vec<_> = list.iter().map(tool_name).collect();
-            return usage(format!("no tool `{name}` in {c}; tools: {}", names.join(", ")));
+            return usage(format!(
+                "no tool `{name}` in {c}; tools: {}",
+                names.join(", ")
+            ));
         };
         if cx.json {
             cx.out(t);
         } else if schema {
-            println!("{}", serde_json::to_string_pretty(tool_schema(t)).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(tool_schema(t)).unwrap_or_default()
+            );
         } else {
             println!("{}", tool_sig(t));
             println!("{}", first_sentence(tool_desc(t), 300));
@@ -839,12 +1066,26 @@ fn cmd_caps(cx: &mut Ctx, conv: Option<String>, full: bool, diff: bool, tool: Op
     let txt = caps_text(&r, true);
     if diff {
         match cx.st.caps.get(&c) {
-            None => println!("{}", if full { txt.clone() } else { caps_text(&r, false) }),
+            None => println!(
+                "{}",
+                if full {
+                    txt.clone()
+                } else {
+                    caps_text(&r, false)
+                }
+            ),
             Some(old) if *old == txt => println!("no change since last view"),
             Some(old) => println!("{}", line_diff(old, &txt)),
         }
     } else {
-        println!("{}", if full { txt.clone() } else { caps_text(&r, false) });
+        println!(
+            "{}",
+            if full {
+                txt.clone()
+            } else {
+                caps_text(&r, false)
+            }
+        );
     }
     cx.st.caps.insert(c, txt);
     cx.save();
@@ -853,12 +1094,22 @@ fn cmd_caps(cx: &mut Ctx, conv: Option<String>, full: bool, diff: bool, tool: Op
 
 fn cmd_history(cx: &mut Ctx, conv: Option<String>, limit: usize) -> R<u8> {
     let c = cx.conv(conv)?;
-    let r = cx.call("GET", &format!("/v1/seat/history?conversation_id={}&limit={limit}", enc(&c)), None, 60)?;
+    let r = cx.call(
+        "GET",
+        &format!("/v1/seat/history?conversation_id={}&limit={limit}", enc(&c)),
+        None,
+        60,
+    )?;
     if cx.json {
         cx.out(&r);
         return Ok(OK);
     }
-    let msgs = r.get("messages").and_then(|v| v.as_array()).cloned().or_else(|| r.as_array().cloned()).unwrap_or_default();
+    let msgs = r
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .or_else(|| r.as_array().cloned())
+        .unwrap_or_default();
     if msgs.is_empty() {
         println!("no messages");
     }
@@ -882,32 +1133,29 @@ fn cmd_convs(cx: &Ctx) -> R<u8> {
         println!("no conversations seen yet (run `oh-seat next`)");
     }
     for (c, i) in v {
-        let mark = if cx.st.active.as_deref() == Some(c.as_str()) { "*" } else { " " };
+        let mark = if cx.st.active.as_deref() == Some(c.as_str()) {
+            "*"
+        } else {
+            " "
+        };
         if cx.json {
             cx.out(&json!({"conversation_id": c, "client": i.client, "last": i.last, "active": mark == "*"}));
         } else {
-            println!("{mark} {c} client={} last={:?}", i.client.as_deref().unwrap_or("?"), i.last);
+            println!(
+                "{mark} {c} client={} last={:?}",
+                i.client.as_deref().unwrap_or("?"),
+                i.last
+            );
         }
     }
     Ok(OK)
 }
 
 fn cmd_status(cx: &mut Ctx) -> R<u8> {
-    let r = cx.call("GET", &format!("/v1/seat/inbox?after={}&wait=0&consumer={}", cx.st.cursor, enc(&cx.st.consumer)), None, 30);
     // A wait=0 poll is still a read: keep what it returned.
-    let (waiting, ok) = match &r {
-        Ok(v) => {
-            for e in v.get("events").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
-                cx.note(&e);
-                cx.st.buffer.push(e);
-            }
-            if let Some(c) = v.get("cursor").and_then(|x| x.as_u64()) {
-                cx.st.cursor = c;
-            }
-            cx.save();
-            (v.get("waiting_turns").cloned().unwrap_or(json!([])), "ok".to_string())
-        }
-        Err(Fail(_, m)) => (json!([]), m.clone()),
+    let (waiting, ok) = match cx.poll(0) {
+        Ok(w) => (w, "ok".to_string()),
+        Err(Fail(_, m)) => (json!([]), m),
     };
     let st = json!({
         "url": cx.url, "server": ok, "consumer": cx.st.consumer, "cursor": cx.st.cursor,
@@ -918,17 +1166,30 @@ fn cmd_status(cx: &mut Ctx) -> R<u8> {
         cx.out(&st);
     } else {
         for (k, v) in st.as_object().unwrap() {
-            println!("{k}: {}", v.as_str().map(String::from).unwrap_or_else(|| v.to_string()));
+            println!(
+                "{k}: {}",
+                v.as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| v.to_string())
+            );
         }
     }
-    Ok(if r.is_ok() { OK } else { HTTP })
+    Ok(if ok == "ok" { OK } else { HTTP })
 }
 
 fn run(cli: Cli) -> R<u8> {
     let mut cx = Ctx::new(cli.g)?;
     match cli.cmd {
         Cmd::Next { timeout, all } => cmd_next(&mut cx, timeout, all),
-        Cmd::Reply { text, file, conv, reasoning, more, next, timeout } => {
+        Cmd::Reply {
+            text,
+            file,
+            conv,
+            reasoning,
+            more,
+            next,
+            timeout,
+        } => {
             cmd_reply(&mut cx, text, file, conv, reasoning, more)?;
             if next {
                 cmd_next(&mut cx, timeout, false)
@@ -936,9 +1197,25 @@ fn run(cli: Cli) -> R<u8> {
                 Ok(OK)
             }
         }
-        Cmd::Tool { name, input, conv, text, reasoning, timeout } => cmd_tool(&mut cx, name, input, conv, text, reasoning, timeout),
-        Cmd::Result { invocation_id, timeout } => wait_result(&mut cx, &invocation_id, timeout),
-        Cmd::Caps { conv, full, diff, tool, schema } => cmd_caps(&mut cx, conv, full, diff, tool, schema),
+        Cmd::Tool {
+            name,
+            input,
+            conv,
+            text,
+            reasoning,
+            timeout,
+        } => cmd_tool(&mut cx, name, input, conv, text, reasoning, timeout),
+        Cmd::Result {
+            invocation_id,
+            timeout,
+        } => wait_result(&mut cx, &invocation_id, timeout),
+        Cmd::Caps {
+            conv,
+            full,
+            diff,
+            tool,
+            schema,
+        } => cmd_caps(&mut cx, conv, full, diff, tool, schema),
         Cmd::History { conv, limit } => cmd_history(&mut cx, conv, limit),
         Cmd::Convs => cmd_convs(&cx),
         Cmd::Use { conv } => {
@@ -949,7 +1226,12 @@ fn run(cli: Cli) -> R<u8> {
         }
         Cmd::Save { conv } => {
             let c = cx.conv(conv)?;
-            let r = cx.call("POST", "/v1/seat/save", Some(json!({"conversation_id": c})), 60)?;
+            let r = cx.call(
+                "POST",
+                "/v1/seat/save",
+                Some(json!({"conversation_id": c})),
+                60,
+            )?;
             if cx.json {
                 cx.out(&r);
             } else {
@@ -978,8 +1260,17 @@ mod tests {
 
     #[test]
     fn input_pairs_and_json() {
-        let v = parse_input(&["command=ls -la".into(), "timeout=5".into(), "flag=true".into(), "s:=5".into()]).unwrap();
-        assert_eq!(v, json!({"command": "ls -la", "timeout": 5, "flag": true, "s": "5"}));
+        let v = parse_input(&[
+            "command=ls -la".into(),
+            "timeout=5".into(),
+            "flag=true".into(),
+            "s:=5".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            v,
+            json!({"command": "ls -la", "timeout": 5, "flag": true, "s": "5"})
+        );
         let v = parse_input(&[r#"{"a":[1,2]}"#.into()]).unwrap();
         assert_eq!(v, json!({"a": [1, 2]}));
         assert!(parse_input(&["oops".into()]).is_err());
@@ -990,7 +1281,8 @@ mod tests {
     fn aux_hints() {
         let e = json!({"type": "message.received", "text": "Generate a title for this conversation: hi"});
         assert!(aux_hint(&e).unwrap().contains("short title"));
-        let e = json!({"type": "message.received", "text": "x", "expected_format": "a JSON object"});
+        let e =
+            json!({"type": "message.received", "text": "x", "expected_format": "a JSON object"});
         assert_eq!(aux_hint(&e).unwrap(), "answer with a JSON object");
         let e = json!({"type": "message.received", "text": "hello", "kind": "chat"});
         assert!(aux_hint(&e).is_none());
