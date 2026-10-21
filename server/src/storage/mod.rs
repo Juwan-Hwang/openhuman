@@ -25,6 +25,7 @@
 //! It holds `Arc<dyn Repository>` trait objects + `ConnectionRegistry`,
 //! so handlers never know whether they're talking to memory or PostgreSQL.
 
+pub mod ephemeral;
 pub mod memory;
 pub mod postgres;
 pub mod traits;
@@ -62,6 +63,10 @@ pub struct AppState {
     /// [`crate::async_reply::OutboundQueue`]. Drained by the next request
     /// for the same conversation.
     pub outbound: crate::async_reply::OutboundQueue,
+    /// The in-memory message store when messages are not persisted (the
+    /// default with PostgreSQL); `None` when every message is already in
+    /// the database or the whole backend is in memory.
+    pub ephemeral: Option<Arc<ephemeral::EphemeralMessages>>,
 }
 
 impl AppState {
@@ -89,6 +94,7 @@ impl AppState {
             connections: ConnectionRegistry::new(),
             async_reply: crate::async_reply::AsyncReplyRegistry::new(),
             outbound: crate::async_reply::OutboundQueue::new(),
+            ephemeral: None,
         }
     }
 
@@ -100,7 +106,20 @@ impl AppState {
     ) -> Self {
         let identity: Arc<dyn IdentityRepository> = Arc::new(store.clone());
         let conversation: Arc<dyn ConversationRepository> = Arc::new(store.clone());
-        let message: Arc<dyn MessageRepository> = Arc::new(store.clone());
+        let persistent: Arc<dyn MessageRepository> = Arc::new(store.clone());
+        // Messages stay in memory unless asked otherwise: the caller's
+        // transcript is the record, and a conversation worth keeping is
+        // saved explicitly (see `ephemeral`).
+        let (message, ephemeral): (Arc<dyn MessageRepository>, _) =
+            if ephemeral::persist_all() {
+                (persistent, None)
+            } else {
+                let eph = Arc::new(ephemeral::EphemeralMessages::new(
+                    conversation.clone(),
+                    persistent,
+                ));
+                (eph.clone() as Arc<dyn MessageRepository>, Some(eph))
+            };
         let capability: Arc<dyn CapabilityRepository> = Arc::new(store.clone());
         let context: Arc<dyn ContextRepository> = Arc::new(store);
         let reply: Arc<dyn ReplyRegistry> = Arc::new(reply);
@@ -114,6 +133,7 @@ impl AppState {
             connections: ConnectionRegistry::new(),
             async_reply: crate::async_reply::AsyncReplyRegistry::new(),
             outbound: crate::async_reply::OutboundQueue::new(),
+            ephemeral,
         }
     }
 }

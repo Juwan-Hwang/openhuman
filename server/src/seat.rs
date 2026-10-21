@@ -417,12 +417,25 @@ pub async fn history(
         .map(|m| {
             let text = m.content.as_text().unwrap_or("");
             let (t, cut) = truncate(text, 4000);
+            // Sides, not species: the caller is whoever sent the request,
+            // the responder whoever answered it (this seat or a person).
+            let caller = matches!(
+                m.sender.participant_type,
+                crate::model::identity::ParticipantType::Agent
+            );
+            let role = m
+                .metadata
+                .get("openai_role")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| if caller { "user" } else { "assistant" }.to_string());
             let mut o = json!({
                 "message_id": m.id,
-                "from": format!("{:?}", m.sender.participant_type).to_lowercase(),
-                "role": m.metadata.get("openai_role").cloned().unwrap_or(Value::Null),
+                "from": if caller { "caller" } else { "responder" },
+                "role": role,
                 "text": t,
                 "created_at": m.created_at,
+                "created_at_local": m.created_at.with_timezone(&chrono::Local).to_rfc3339(),
             });
             if cut {
                 o["truncated"] = Value::Bool(true);
@@ -446,6 +459,36 @@ pub async fn history(
     .into_response()
 }
 
+// ── POST /v1/seat/save ──
+
+#[derive(Debug, Deserialize)]
+pub struct SaveBody {
+    conversation_id: String,
+}
+
+/// Keep a conversation: write its in-memory messages to the database
+/// (messages are not stored by default; see `storage::ephemeral`).
+pub async fn save(
+    State(app): State<AppState>,
+    principal: AuthPrincipal,
+    Json(b): Json<SaveBody>,
+) -> Response {
+    let owned = app
+        .conversation
+        .get(&b.conversation_id)
+        .await
+        .and_then(|c| c.human_id().map(|h| h == principal.human.id))
+        .unwrap_or(false);
+    if !owned {
+        return err(StatusCode::NOT_FOUND, "not_found", "No such conversation for this seat.");
+    }
+    let saved = match &app.ephemeral {
+        Some(eph) => eph.save(&b.conversation_id).await,
+        None => 0,
+    };
+    Json(json!({ "ok": true, "saved": saved, "persistent": app.ephemeral.is_none() })).into_response()
+}
+
 // ── POST /v1/seat/send ──
 
 /// Send a raw client event, the same JSON a WebSocket client sends
@@ -462,6 +505,30 @@ pub async fn send(
             return Json(json!({ "ok": true, "duplicate": true })).into_response();
         }
     }
+    // Short form: `{conversation_id, text}` is a reply that leaves the turn
+    // open; with no request in flight it is parked and rides the caller's
+    // next request.
+    let body = if body.get("event_type").is_none() {
+        match (
+            body.get("conversation_id").and_then(|v| v.as_str()),
+            body.get("text").and_then(|v| v.as_str()),
+        ) {
+            (Some(c), Some(t)) => json!({
+                "event_type": "reply.send",
+                "conversation_id": c,
+                "text": t,
+            }),
+            _ => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_event",
+                    "Send {conversation_id, text}, or a full client event with event_type.",
+                )
+            }
+        }
+    } else {
+        body
+    };
     let raw = body.to_string();
     if let Err(e) = crate::ws::protocol::ClientMessage::from_json(&raw) {
         return err(StatusCode::BAD_REQUEST, "invalid_event", &e.to_string());
@@ -489,6 +556,10 @@ pub struct ReplyBody {
     end_turn: bool,
     #[serde(default)]
     client_msg_id: Option<String>,
+    /// Thinking to show ahead of the reply (streamed as
+    /// `reasoning_content`).
+    #[serde(default)]
+    reasoning: Option<String>,
 }
 
 fn yes() -> bool {
@@ -509,6 +580,9 @@ pub async fn reply(
         }
     }
     let had_waiter = app.reply.has_waiter(&b.conversation_id).await;
+    if let Some(r) = &b.reasoning {
+        crate::session::set_reasoning(&b.conversation_id, r);
+    }
     let ev = json!({
         "event_type": "reply.send",
         "conversation_id": b.conversation_id,
@@ -556,6 +630,9 @@ pub struct ToolCallBody {
     wait: Option<u64>,
     #[serde(default)]
     client_msg_id: Option<String>,
+    /// Thinking to show ahead of the call.
+    #[serde(default)]
+    reasoning: Option<String>,
 }
 
 /// Propose a tool call to the calling client. The client executes it under
@@ -572,19 +649,34 @@ pub async fn tool_call(
             return Json(json!({ "ok": true, "duplicate": true })).into_response();
         }
     }
-    if app
-        .capability
-        .get_capability(&principal.agent.id, &b.tool)
-        .await
-        .is_none()
-    {
-        let tools: Vec<String> = app
+    let conv_tools: Option<Vec<String>> = crate::session::get_context(&b.conversation_id)
+        .and_then(|c| c.get("tools").cloned())
+        .and_then(|t| t.as_array().cloned())
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .collect()
+        })
+        .filter(|v: &Vec<String>| !v.is_empty());
+    let known = match &conv_tools {
+        Some(tools) => tools.iter().any(|t| t == &b.tool),
+        None => app
             .capability
-            .get_capabilities(&principal.agent.id)
+            .get_capability(&principal.agent.id, &b.tool)
             .await
-            .into_iter()
-            .map(|c| c.id)
-            .collect();
+            .is_some(),
+    };
+    if !known {
+        let tools: Vec<String> = match conv_tools {
+            Some(t) => t,
+            None => app
+                .capability
+                .get_capabilities(&principal.agent.id)
+                .await
+                .into_iter()
+                .map(|c| c.id)
+                .collect(),
+        };
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": {
@@ -598,6 +690,9 @@ pub async fn tool_call(
 
     let invocation_id = format!("call_{}", Uuid::now_v7().simple());
     let input = if b.input.is_null() { json!({}) } else { b.input };
+    if let Some(r) = &b.reasoning {
+        crate::session::set_reasoning(&b.conversation_id, r);
+    }
     let ev = json!({
         "event_type": "tool.invoke",
         "conversation_id": b.conversation_id,
@@ -656,6 +751,11 @@ pub async fn tool_call(
 pub struct CapQuery {
     #[serde(default)]
     view: Option<String>,
+    /// The conversation whose context to read. Each conversation keeps the
+    /// system prompt and tools of its own last request; without this the
+    /// agent-wide snapshot (whichever window sent last) is returned.
+    #[serde(default)]
+    conversation_id: Option<String>,
 }
 
 /// The tools the calling client declared, and its context.
@@ -664,6 +764,51 @@ pub async fn capabilities(
     principal: AuthPrincipal,
     Query(q): Query<CapQuery>,
 ) -> Response {
+    if let Some(conv) = &q.conversation_id {
+        let owned = app
+            .conversation
+            .get(conv)
+            .await
+            .and_then(|c| c.human_id().map(|h| h == principal.human.id))
+            .unwrap_or(false);
+        let snap = if owned { crate::session::get_context(conv) } else { None };
+        let Some(snap) = snap else {
+            return err(StatusCode::NOT_FOUND, "not_found", "No context for this conversation.");
+        };
+        let full = q.view.as_deref() == Some("full");
+        let tools: Vec<Value> = snap
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .map(|a| {
+                a.iter()
+                    .map(|t| {
+                        if full {
+                            t.clone()
+                        } else {
+                            let d = t.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                            let (d, _) = truncate(d, 200);
+                            let required = t
+                                .pointer("/input_schema/required")
+                                .or_else(|| t.pointer("/parameters/required"))
+                                .cloned()
+                                .unwrap_or(Value::Null);
+                            json!({ "id": t.get("id"), "description": d, "required": required })
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let sp = snap.get("system_prompt").and_then(|v| v.as_str()).unwrap_or("");
+        return Json(json!({
+            "conversation_id": conv,
+            "client": snap.get("client"),
+            "tools": tools,
+            "system_prompt": if full { Value::String(sp.to_string()) } else { Value::String(truncate(sp, 600).0) },
+            "system_prompt_len": sp.chars().count(),
+            "context": snap.get("context"),
+        }))
+        .into_response();
+    }
     let caps = app.capability.get_capabilities(&principal.agent.id).await;
     let ctx = app.context.get_context(&principal.agent.id).await;
     let tools: Vec<Value> = if q.view.as_deref() == Some("full") {

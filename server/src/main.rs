@@ -36,6 +36,22 @@ async fn main() -> anyhow::Result<()> {
         return issue_key(&args[2..]).await;
     }
 
+    // Only tokenizers that load can be chosen; a default naming anything
+    // else is a configuration error, not something to paper over.
+    let tokenizer = openhuman_server::session::default_tokenizer();
+    if !openhuman_server::session::tokenizer_available(&tokenizer) {
+        anyhow::bail!(
+            "OPENHUMAN_TOKENIZER={} is not available; choose one of: {}",
+            tokenizer,
+            openhuman_server::session::available_tokenizers().join(", ")
+        );
+    }
+    tracing::info!(
+        "Usage counted with tokenizer {} (available: {})",
+        tokenizer,
+        openhuman_server::session::available_tokenizers().join(", ")
+    );
+
     tracing::info!("OpenHuman Server starting...");
 
     let backend = std::env::var("OPENHUMAN_BACKEND").unwrap_or_else(|_| "memory".to_string());

@@ -337,6 +337,9 @@ pub struct ResponseMessage {
     /// Present when the response requests tool execution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallResponse>>,
+    /// The responder's reasoning, when it shared any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl ResponseMessage {
@@ -346,6 +349,7 @@ impl ResponseMessage {
             role: "assistant",
             content: Some(text.to_string()),
             tool_calls: None,
+            reasoning_content: None,
         }
     }
 
@@ -392,6 +396,7 @@ impl ResponseMessage {
                     })
                     .collect(),
             ),
+            reasoning_content: None,
         }
     }
 }
@@ -468,6 +473,7 @@ impl ChatCompletionChunk {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
+                    reasoning_content: None,
                     role: Some("assistant"),
                     content: None,
                     tool_calls: None,
@@ -488,6 +494,7 @@ impl ChatCompletionChunk {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
+                    reasoning_content: None,
                     role: None,
                     content: Some(text.to_string()),
                     tool_calls: None,
@@ -508,6 +515,7 @@ impl ChatCompletionChunk {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
+                    reasoning_content: None,
                     role: None,
                     content: None,
                     tool_calls: None,
@@ -532,6 +540,7 @@ impl ChatCompletionChunk {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
+                    reasoning_content: None,
                     role: None,
                     content: None,
                     tool_calls: None,
@@ -540,6 +549,34 @@ impl ChatCompletionChunk {
             }],
             usage: None,
         }
+    }
+
+    /// Reasoning delta — the responder's thinking, streamed before content.
+    pub fn reasoning_delta(id: &str, text: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            object: "chat.completion.chunk",
+            created: Utc::now().timestamp(),
+            model: "openhuman-human",
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta: Delta {
+                    role: None,
+                    reasoning_content: Some(text.to_string()),
+                    content: None,
+                    tool_calls: None,
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+        }
+    }
+
+    /// Usage chunk carrying counted tokens.
+    pub fn usage_chunk_with(id: &str, usage: Usage) -> Self {
+        let mut c = Self::usage_chunk(id);
+        c.usage = Some(usage);
+        c
     }
 
     /// Usage chunk — sent after the finish chunk when the client
@@ -570,6 +607,7 @@ impl ChatCompletionChunk {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
+                    reasoning_content: None,
                     role: None,
                     content: None,
                     tool_calls: Some(vec![ToolCallDelta {
@@ -598,6 +636,7 @@ impl ChatCompletionChunk {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
+                    reasoning_content: None,
                     role: None,
                     content: None,
                     tool_calls: None,
@@ -620,6 +659,11 @@ pub struct ChunkChoice {
 pub struct Delta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<&'static str>,
+    /// Reasoning text ahead of the answer (DeepSeek-style
+    /// `reasoning_content`, which DeepSeek Harness, Trae and most OpenAI-
+    /// compatible clients render as the thinking panel).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     /// Present in tool-call delta chunks.

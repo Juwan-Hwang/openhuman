@@ -333,3 +333,27 @@ fn not_found() -> axum::response::Response {
     )
         .into_response()
 }
+
+/// `POST /v1/conversations/:id/save` — keep this conversation: write its
+/// in-memory messages to the database. Messages are not stored by default
+/// (the caller's transcript is the record); this is the Save button.
+pub async fn save_conversation(
+    State(app): State<AppState>,
+    principal: AuthPrincipal,
+    Path(conversation_id): Path<String>,
+) -> axum::response::Response {
+    if !owns_conversation(&app, &conversation_id, &principal.human.id).await {
+        return not_found();
+    }
+    let saved = match &app.ephemeral {
+        Some(eph) => eph.save(&conversation_id).await,
+        None => 0,
+    };
+    Json(serde_json::json!({
+        "ok": true,
+        "conversation_id": conversation_id,
+        "saved": saved,
+        "persistent": app.ephemeral.is_none(),
+    }))
+    .into_response()
+}

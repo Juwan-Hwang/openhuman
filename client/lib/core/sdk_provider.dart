@@ -268,6 +268,13 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
     _ref.read(activeConversationIdProvider.notifier).state = id;
   }
 
+  /// Save a conversation's messages on the server (see
+  /// `OpenHumanClient.saveConversation`).
+  Future<bool> saveConversation(String conversationId) async {
+    final client = _ref.read(openHumanClientProvider);
+    return client.saveConversation(conversationId);
+  }
+
   /// Rename an agent, updating every conversation it appears in.
   ///
   /// The rename is agent-wide, so it is applied to the whole list rather

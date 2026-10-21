@@ -14,6 +14,7 @@ pub mod observation;
 pub mod openai_compat;
 pub mod profile;
 pub mod seat;
+pub mod session;
 pub mod state;
 pub mod storage;
 pub mod ws;
@@ -74,7 +75,13 @@ fn max_concurrency() -> usize {
 pub fn build_router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/v1/chat/completions", post(api::openai::chat_completions))
+        // Same pipeline, other wires: Anthropic Messages (Claude Code) and
+        // OpenAI Responses (Codex CLI).
+        .route("/v1/messages", post(api::adapters::messages))
+        .route("/v1/messages/count_tokens", post(api::adapters::count_tokens))
+        .route("/v1/responses", post(api::adapters::responses))
         .route("/v1/models", get(list_models))
+        .route("/v1/tokenizers", get(list_tokenizers))
         // Companion to async mode: poll for a human's reply without
         // holding the original request open.
         // axum 0.7 path-parameter syntax is `:name` — `{name}` would be
@@ -95,6 +102,11 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/conversations/:conversation_id",
             delete(api::history::delete_conversation),
         )
+        // Keep a conversation: messages live in memory unless saved.
+        .route(
+            "/v1/conversations/:conversation_id/save",
+            post(api::history::save_conversation),
+        )
         .route(
             "/v1/conversations/:conversation_id/restore",
             post(api::history::restore_conversation),
@@ -113,6 +125,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/seat/tool-call", post(seat::tool_call))
         .route("/v1/seat/capabilities", get(seat::capabilities))
         .route("/v1/seat/history", get(seat::history))
+        .route("/v1/seat/save", post(seat::save))
         // Observation runs *inside* auth: only authenticated requests are
         // captured, so an anonymous caller cannot fill the disk.
         .layer(axum::middleware::from_fn(observation::observe_request))
@@ -204,5 +217,14 @@ async fn list_models() -> axum::Json<serde_json::Value> {
                 "streaming": true
             }
         }]
+    }))
+}
+
+/// `GET /v1/tokenizers` — the tokenizers usage can be counted with. Only
+/// ones that loaded are listed; pick one with `x-openhuman-tokenizer`.
+async fn list_tokenizers() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "default": crate::session::default_tokenizer(),
+        "tokenizers": crate::session::available_tokenizers(),
     }))
 }
