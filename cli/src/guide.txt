@@ -59,7 +59,7 @@ command prints one JSON object per line.
 Results show exit_code=N when the caller's text reports a shell exit code;
 non-zero makes the command exit 1, and so does a result marked success whose
 output is an error (`error: ...`, JSON "success": false): its header then says
-"(output reports a failure)".
+status=failed, whatever the caller marked it.
 opencode's bash results carry no exit status: read the output (or append
 `; echo exit=$?` to the command when the status matters).
 

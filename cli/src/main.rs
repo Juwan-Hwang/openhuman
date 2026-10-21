@@ -793,16 +793,19 @@ fn print_event(e: &Value) {
         }
         "conversation.started" => println!("NEW CONVERSATION conv={c}"),
         "tool.result" => {
-            let mut code = exit_code(e)
-                .map(|c| format!(" exit_code={c}"))
-                .unwrap_or_default();
-            if error_text(e) || json_failed(e) {
-                code.push_str(" (output reports a failure)");
+            let ec = exit_code(e);
+            let code = ec.map(|c| format!(" exit_code={c}")).unwrap_or_default();
+            // Callers mark a failed command "success" (the tool ran): show
+            // the outcome, not the transport status.
+            let mut status = s(e, "status").unwrap_or("?");
+            if status == "success"
+                && (ec.is_some_and(|c| c != 0) || error_text(e) || json_failed(e))
+            {
+                status = "failed";
             }
             println!(
-                "TOOL RESULT {} status={}{code} id={}",
+                "TOOL RESULT {} status={status}{code} id={}",
                 s(e, "tool_id").unwrap_or("?"),
-                s(e, "status").unwrap_or("?"),
                 s(e, "invocation_id").unwrap_or("?")
             );
             let body = s(e, "output")
