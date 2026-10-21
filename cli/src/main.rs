@@ -1009,8 +1009,28 @@ fn trim_codex_header(out: &str) -> String {
     keep.join("\n")
 }
 
+/// A result whose output is JSON carrying `"success": false` (Cline's
+/// run_commands answers a list of per-command records).
+fn json_failed(e: &Value) -> bool {
+    let Some(out) = s(e, "output") else {
+        return false;
+    };
+    let t = out.trim();
+    if !(t.starts_with('[') || t.starts_with('{')) {
+        return false;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(t) else {
+        return false;
+    };
+    let bad = |x: &Value| x.get("success").and_then(|b| b.as_bool()) == Some(false);
+    match &v {
+        Value::Array(a) => a.iter().any(bad),
+        o => bad(o),
+    }
+}
+
 fn result_exit(e: &Value) -> u8 {
-    if matches!(exit_code(e), Some(c) if c != 0) {
+    if matches!(exit_code(e), Some(c) if c != 0) || json_failed(e) {
         return TOOL_ERR;
     }
     match s(e, "status") {
@@ -1400,6 +1420,11 @@ fn env_hints(sp: &str) -> Vec<(&'static str, String)> {
     };
     for line in sp.lines() {
         let l = line.trim().trim_start_matches(['-', '*', ' ']);
+        // "4. Working Directory: /w" (Cline numbers its env lines)
+        let l = match l.split_once(". ") {
+            Some((n, rest)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => rest,
+            _ => l,
+        };
         let low = l.to_ascii_lowercase();
         for (pre, k) in [
             ("current working directory:", "cwd"),
@@ -1813,6 +1838,20 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_success_false_is_an_error() {
+        let r = |o: &str| json!({"type": "tool.result", "status": "success", "output": o});
+        assert_eq!(
+            result_exit(&r(r#"[{"query":"ls nope","success":false}]"#)),
+            TOOL_ERR
+        );
+        assert_eq!(result_exit(&r(r#"[{"query":"pwd","success":true}]"#)), OK);
+        assert_eq!(
+            env_hints("1. Platform: linux\n4. Working Directory: /w")[0].1,
+            "/w"
+        );
+    }
 
     #[test]
     fn codex_header_trimmed() {
