@@ -134,3 +134,4 @@
 - 新问题 G（重要）：Trae 把会变化的 system-reminder（终端数量、模式等）放进第一条 user 消息，导致首条消息哈希每轮都变，会话被拆开（cnv_…5032 → cnv_…d046）。修法：会话锚点改成快照前缀比对，计算锚点前剥离 <system-reminder> 和 <uploaded_files> 这类注入（与 §0c 无记录方案一起做）。
 - 观察：Trae 的用户附件只传本地路径（<uploaded_files>），不内联图片，Seat 需要用 Read 工具去读；请求里带 thinking:{type:enabled}，model 字段为 openhuman-human；UA 是 hertz（字节 Hertz 框架）。
 - 新问题 H：所有客户端都不显示思考。服务器 SSE 从不发送 reasoning_content；Seat 的 reply/tool-call 也没有 reasoning 字段。修法：加可选 reasoning，在 content 之前以 reasoning_content delta 流出（非流式放 message.reasoning_content），请求 thinking 关闭时不发。
+- F/E 关联：Trae 截图报 'Stream error: SSE stream error: Transport error: error decoding response body (origin: downstream) (4028)'。工具 ID 被改写，Seat 一直没回复，流空闲后被切断。心跳（E）+ ID 兜底匹配（F）要一起修。另外：Trae 的 Read 读图片时，把图片放进一条额外的 user 消息（[图片]）送回，服务器把它推成了一条空文本的 message.received，应该归到 tool.result 里。
