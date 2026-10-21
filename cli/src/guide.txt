@@ -1,0 +1,41 @@
+oh-seat: you sit in the OpenHuman responder seat. A caller (Claude Code, Codex,
+opencode, pi, any OpenAI/Anthropic client) talks to you as if you were its model;
+you answer and run tools ON THE CALLER'S MACHINE through its own tools.
+
+SETUP   key file: OH_SEAT_KEY_FILE (default ~/.openhuman/seat_key, responder key)
+        server:   OH_SEAT_URL (default https://api.juwanh.com)
+
+THE LOOP
+  oh-seat next                        wait (<=100s) for a message; prints it and,
+                                      the first time, the caller's tool signatures
+  oh-seat tool bash command='ls -la'  the caller runs it; you get the output
+  oh-seat tool read path=a + read path=b + bash command=pwd
+                                      several calls in one step, results in order
+  oh-seat reply 'Done.' --next        answer (ends the turn), then wait again
+  Exit 2 from next = nothing yet: just run `oh-seat next` again.
+
+TOOL INPUT (checked against the tool's schema before anything is sent)
+  key=value       typed by the schema: string params keep the text exactly
+                  (content=42 stays "42"), numbers/booleans/arrays parse
+  key=@file       file contents      key=@-      stdin (multi-line, any quotes)
+  key:=value      force string       key:json=v  force JSON
+  '{"k":"v"}'     one JSON object    -           whole input from stdin
+  Tool and parameter names are case-insensitive. Mistakes fail at once with a
+  "did you mean" and the signature; --force sends anyway.
+
+REPLY TEXT   'text' | -f FILE | - (stdin)   -r 'reasoning'   --more keeps the turn open
+CONVERSATIONS   the latest message is active; -c takes any unique piece of an id
+  convs  list          use ID  switch          history  what was said
+  caps   tools as signatures   caps --tool X  one tool's parameters   --full  system prompt
+  status  server, cursor, open turns          result ID  a tool result that came late
+
+AUX lines (titles, suggestions) say the exact format to answer in and never
+take over the active conversation: answer them with `reply -c ID '...'`.
+
+RULES  a tool call needs an open turn (the caller waiting): after your final
+reply, wait for the next message before calling tools again (else exit 5).
+Long output is cut at 30000 chars; the full text path is printed. --json on any
+command prints one JSON object per line.
+
+EXIT 0 ok | 1 tool ran but reported an error | 2 nothing new before --timeout
+     3 network/auth/server | 4 usage (nothing sent) | 5 no open turn
