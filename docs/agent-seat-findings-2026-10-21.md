@@ -108,3 +108,9 @@
 - 用户想留档时，通过一个「保存」按键保存当时的会话记录（真人端是按钮，Seat 端是接口）。
 - Hark 提出的方案：每会话内存保留「最后请求快照 + 出站队列 + 水位线」；history/时间线从快照解析；新会话识别改用快照前缀比对。用户让 Hark 自定：出站队列也只放内存。用户要求先别做，先继续测 Qoder 和 dsh。
 - 同轮新发现：history 角色标签反了（调用方=agent、应答方=human），回复 role 为空，时间为 UTC；Seat 重新接入时 drain 会把旧 tool 输出当成 message.received；03:16 的消息因为没有唤醒机制一直没回。
+
+## 0d. 第二轮修复后的 Qoder 复测（2026-10-21 09:10 CST）
+- 通过：识别成 qoder；新会话拿到新 ID；原话干净；26 个工具；Bash 一次往返；tool.result 只推一次、没有重复的 user 消息；标题请求被标成 auxiliary，进入单独的 aux 会话。
+- 新问题 A：Qoder 标题请求同一句话发了 4 次（每次都在约 3 秒内正常 stop）。可能是 Qoder 自己的重试或每轮都会触发，也可能是流式结尾多出的 "\n" chunk（多轮流式在回复后追加了换行）导致解析失败。待查。
+- 新问题 B：标题、建议请求的 system prompt 里没有 Qoder 字样，所以 client 显示为 unknown。可以按同 key 下最近一次主请求的 client 继承。
+- 观察：Qoder 的 model 字段发的是 "OpenHuman"（显示名），不是 id。
