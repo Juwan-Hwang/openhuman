@@ -311,7 +311,7 @@ pub(crate) async fn drain_pending_messages(
             })
             .unwrap_or_default();
 
-        let event = if images.is_empty() {
+        let mut event = if images.is_empty() {
             protocol::message_received(
                 &msg.conversation_id,
                 &msg.id,
@@ -331,6 +331,14 @@ pub(crate) async fn drain_pending_messages(
                 &images,
             )
         };
+        // The same request context a live push carries (client, auxiliary
+        // call and its output contract, raw injected parts): a message that
+        // waited for the seat must read exactly like one delivered at once.
+        for key in ["request", "raw_tail"] {
+            if let (Some(v), Some(obj)) = (msg.metadata.get(key), event.data.as_object_mut()) {
+                obj.insert(key.to_string(), v.clone());
+            }
+        }
 
         if push_tx.send(protocol::event_to_json(&event)).is_err() {
             break;
