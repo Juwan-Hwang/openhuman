@@ -1351,9 +1351,14 @@ fn prepare(
         };
         let real = tool_name(&t);
         match input::build(parsed.clone(), tool_schema(&t)) {
-            Ok(m) => out.push(Prepared {
-                tool: real,
-                input: Value::Object(m),
+            Ok(mut m) => out.push({
+                if let Some(cwd) = caller_cwd(cx, c) {
+                    absolutize_paths(&mut m, &cwd);
+                }
+                Prepared {
+                    tool: real,
+                    input: Value::Object(m),
+                }
             }),
             Err(_) if force => {
                 let m = input::build(parsed, &Value::Null).unwrap_or_default();
@@ -1386,6 +1391,59 @@ fn prepare(
         ));
     }
     Ok(out)
+}
+
+/// The caller's working directory, as its caps' env line names it.
+fn caller_cwd(cx: &Ctx, c: &str) -> Option<String> {
+    let caps = cx.st.caps.get(c)?;
+    let env = caps
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("caller env: "))?;
+    let rest = env.split_once("cwd=")?.1;
+    let cwd = rest.split("  ").next()?.trim();
+    (!cwd.is_empty()).then(|| cwd.to_string())
+}
+
+/// Path parameters given relative (`file_path=src/a.py`) are resolved
+/// against the caller's working directory: most callers' file tools demand
+/// absolute paths, and typing the cwd into every call is pure friction.
+fn absolutize_paths(m: &mut serde_json::Map<String, Value>, cwd: &str) {
+    const KEYS: [&str; 9] = [
+        "file_path",
+        "filePath",
+        "path",
+        "target_file",
+        "notebook_path",
+        "absolute_path",
+        "file",
+        "filename",
+        "dir_path",
+    ];
+    let win = cwd.contains('\\') && !cwd.contains('/');
+    for k in KEYS {
+        let Some(Value::String(v)) = m.get(k) else {
+            continue;
+        };
+        let v = v.trim();
+        let absolute = v.is_empty()
+            || v.starts_with('/')
+            || v.starts_with('~')
+            || v.starts_with('\\')
+            || v.contains("://")
+            || v.as_bytes().get(1) == Some(&b':');
+        if absolute {
+            continue;
+        }
+        let rel = v.strip_prefix("./").unwrap_or(v);
+        let sep = if win { '\\' } else { '/' };
+        let base = cwd.trim_end_matches(['/', '\\']);
+        let joined = if rel == "." {
+            base.to_string()
+        } else {
+            format!("{base}{sep}{rel}")
+        };
+        m.insert(k.to_string(), Value::String(joined));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2165,6 +2223,22 @@ mod tests {
             exit_code(&r("x\n<shellId: 0 completed with exit code 2>")),
             Some(2)
         );
+    }
+
+    #[test]
+    fn relative_paths_resolve_against_caller_cwd() {
+        let mut m = serde_json::Map::new();
+        m.insert("file_path".into(), json!("src/a.py"));
+        m.insert("path".into(), json!("/abs/b"));
+        m.insert("command".into(), json!("ls x"));
+        absolutize_paths(&mut m, "/w/proj/");
+        assert_eq!(m["file_path"], "/w/proj/src/a.py");
+        assert_eq!(m["path"], "/abs/b");
+        assert_eq!(m["command"], "ls x");
+        let mut w = serde_json::Map::new();
+        w.insert("filePath".into(), json!("./a.txt"));
+        absolutize_paths(&mut w, "C:\\work");
+        assert_eq!(w["filePath"], "C:\\work\\a.txt");
     }
 
     #[test]
