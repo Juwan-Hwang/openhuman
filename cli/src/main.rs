@@ -781,6 +781,9 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
                     if let Some(env) = env_line(&r).or_else(|| ev_env(c)) {
                         tools_lines.push(format!("  caller env: {env}"));
                     }
+                    if let Some(d) = deferred_line(&r) {
+                        tools_lines.push(format!("  {d}"));
+                    }
                     cx.st.tools.insert(c.clone(), list);
                     cx.st.caps.insert(c.clone(), caps_text(&r, true));
                 }
@@ -909,12 +912,41 @@ fn await_result(cx: &mut Ctx, inv: &str, deadline: Instant) -> R<Option<Value>> 
             cx.save();
             return Ok(Some(e));
         }
+        // A message while a tool runs may be the tool itself asking (Claude
+        // Code's WebFetch hands the page to the model): waiting on would
+        // deadlock, so stop and show it.
+        if cx
+            .st
+            .buffer
+            .iter()
+            .any(|e| s(e, "type") == Some("message.received"))
+        {
+            return Ok(None);
+        }
         let left = deadline.saturating_duration_since(Instant::now()).as_secs();
         if left == 0 {
             return Ok(None);
         }
         cx.poll(left)?;
     }
+}
+
+fn message_waiting(cx: &Ctx) -> bool {
+    cx.st
+        .buffer
+        .iter()
+        .any(|e| s(e, "type") == Some("message.received"))
+}
+
+/// Show messages that arrived while waiting on a tool, the way `next` would.
+fn show_interrupting(cx: &mut Ctx) -> R<()> {
+    if !message_waiting(cx) {
+        return Ok(());
+    }
+    if !cx.json {
+        println!("-- a message came in while waiting (answer it; the tool may be waiting on it):");
+    }
+    cmd_next(cx, 0, false).map(|_| ())
 }
 
 /// The shell exit code a caller wrote into a result's text. pi and Codex
@@ -985,6 +1017,7 @@ fn wait_result(cx: &mut Ctx, inv: &str, timeout: u64) -> R<u8> {
             } else {
                 println!("result not back yet: run `oh-seat result {inv}` to keep waiting");
             }
+            show_interrupting(cx)?;
             Ok(NOTHING)
         }
     }
@@ -1062,7 +1095,18 @@ fn prepare(
                 });
                 continue;
             }
-            errs.push(unknown_tool(c, &name, &tools));
+            let deferred = cx.st.caps.get(c).and_then(|t| {
+                t.lines()
+                    .find_map(|l| l.trim().strip_prefix(DEFERRED))
+                    .and_then(|d| d.split(", ").find(|n| n.eq_ignore_ascii_case(&name)))
+                    .map(String::from)
+            });
+            match deferred {
+                Some(d) => errs.push(format!(
+                    "`{d}` is a deferred tool in {c}: load it first with\n  oh-seat tool ToolSearch query=select:{d} max_results=1\nthen call it"
+                )),
+                None => errs.push(unknown_tool(c, &name, &tools)),
+            }
             continue;
         };
         let real = tool_name(&t);
@@ -1214,6 +1258,7 @@ fn cmd_tool(
             }
         }
     }
+    show_interrupting(cx)?;
     Ok(worst)
 }
 
@@ -1371,6 +1416,43 @@ fn env_hints(sp: &str) -> Vec<(&'static str, String)> {
     out
 }
 
+const DEFERRED: &str = "deferred tools (ToolSearch query=select:NAME first): ";
+
+/// Tools a caller lists by name only (Claude Code's deferred tools): they
+/// become callable after ToolSearch loads them.
+fn deferred_names(sp: &str) -> Vec<String> {
+    let Some(i) = sp.find("deferred tools are now available via ToolSearch") else {
+        return Vec::new();
+    };
+    let rest = &sp[i..];
+    let mut out = Vec::new();
+    for l in rest.lines().skip(1) {
+        let l = l.trim();
+        if l.is_empty() || l.starts_with('<') {
+            break;
+        }
+        if l.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && l.len() < 64
+        {
+            out.push(l.to_string());
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+fn deferred_line(r: &Value) -> Option<String> {
+    let sp = r
+        .pointer("/context/system_prompt")
+        .or_else(|| r.get("system_prompt"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let d = deferred_names(sp);
+    (!d.is_empty()).then(|| format!("{DEFERRED}{}", d.join(", ")))
+}
+
 fn env_line(r: &Value) -> Option<String> {
     let sp = r
         .pointer("/context/system_prompt")
@@ -1409,6 +1491,9 @@ fn caps_text(r: &Value, full: bool) -> String {
     ];
     if let Some(env) = env_line(r) {
         out.push(format!("caller env: {env}"));
+    }
+    if let Some(d) = deferred_line(r) {
+        out.push(d);
     }
     if full {
         let sp = r
@@ -1705,6 +1790,13 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deferred_tool_names() {
+        let sp = "x\nThe following deferred tools are now available via ToolSearch. Their schemas are NOT loaded:\nCronCreate\nWebFetch\n\nmore";
+        assert_eq!(deferred_names(sp), vec!["CronCreate", "WebFetch"]);
+        assert!(deferred_names("nothing").is_empty());
+    }
 
     #[test]
     fn exit_codes_in_output() {

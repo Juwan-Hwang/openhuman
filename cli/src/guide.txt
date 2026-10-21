@@ -15,6 +15,11 @@ THE LOOP
                                       that needs an earlier one (write + read)
   oh-seat reply 'Done.' --next        answer (ends the turn), then wait again
   Exit 2 from next = nothing yet: just run `oh-seat next` again.
+  First sight also prints `caller env:` (the caller's cwd, platform, shell,
+  date) and any deferred tools (load with ToolSearch before calling).
+  A message arriving while a tool runs stops the wait and is shown (the
+  tool may be waiting on it, e.g. Claude Code's WebFetch): answer it, then
+  `oh-seat result ID`.
 
 TOOL INPUT (checked against the tool's schema before anything is sent)
   key=value       typed by the schema: string params keep the text exactly
@@ -38,6 +43,9 @@ RULES  a tool call needs an open turn (the caller waiting): after your final
 reply, wait for the next message before calling tools again (else exit 5).
 Long output is cut at 30000 chars; the full text path is printed. --json on any
 command prints one JSON object per line.
+
+Results show exit_code=N when the caller's text reports a shell exit code;
+non-zero makes the command exit 1.
 
 EXIT 0 ok | 1 tool ran but reported an error | 2 nothing new before --timeout
      3 network/auth/server | 4 usage (nothing sent) | 5 no open turn
