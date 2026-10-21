@@ -514,6 +514,17 @@ fn is_auxiliary_request(req: &ChatCompletionRequest) -> bool {
     if req.response_format.is_some() {
         return true;
     }
+    // Claude Code's WebFetch hands the fetched page to the model with a
+    // question: a side call, never part of the chat.
+    if req.messages.iter().any(|m| {
+        m.role == ChatRole::User
+            && m.content
+                .to_text()
+                .trim_start()
+                .starts_with("Web page content:")
+    }) {
+        return true;
+    }
     let prompt: String = req
         .messages
         .iter()
@@ -590,6 +601,11 @@ fn expected_format(req: &ChatCompletionRequest, sp: &str) -> Option<String> {
         .find(|m| m.role == crate::openai_compat::ChatRole::User)
         .map(|m| m.content.to_text())
         .unwrap_or_default();
+    if last_user.trim_start().starts_with("Web page content:") {
+        return Some(
+            "plain text: answer the question that follows the page, from the page only".to_string(),
+        );
+    }
     let hay = format!("{}\n{}", sp, last_user).to_lowercase();
     if hay.contains("no_suggestion") {
         return Some("suggestion lines, or exactly NO_SUGGESTION".to_string());
