@@ -69,9 +69,14 @@ pub async fn require_api_key(
     // Which side this route belongs to. The OpenAI-compatible ingress is
     // the caller's; everything else under the protected router (history,
     // trash, renames, the agent seat) is the responder's.
-    let path = request.uri().path();
+    let raw_path = request.uri().path();
+    let path = raw_path
+        .strip_prefix("/v1")
+        .filter(|p| p.starts_with("/v1/"))
+        .unwrap_or(raw_path);
     let caller_route = path == "/v1/chat/completions"
         || path == "/v1/models"
+        || path.starts_with("/v1/models/")
         || path == "/v1/tokenizers"
         || path == "/v1/responses"
         || path.starts_with("/v1/messages")

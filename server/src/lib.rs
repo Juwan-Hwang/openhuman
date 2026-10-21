@@ -84,6 +84,21 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/v1/responses", post(api::adapters::responses))
         .route("/v1/models", get(list_models))
+        .route("/v1/models/:model_id", get(get_model))
+        // A base URL configured as `.../v1` by a client that appends `/v1`
+        // itself (Copilot's Anthropic provider, several SDKs) lands here.
+        .route(
+            "/v1/v1/chat/completions",
+            post(api::openai::chat_completions),
+        )
+        .route("/v1/v1/messages", post(api::adapters::messages))
+        .route(
+            "/v1/v1/messages/count_tokens",
+            post(api::adapters::count_tokens),
+        )
+        .route("/v1/v1/responses", post(api::adapters::responses))
+        .route("/v1/v1/models", get(list_models))
+        .route("/v1/v1/models/:model_id", get(get_model))
         .route("/v1/tokenizers", get(list_tokenizers))
         // Companion to async mode: poll for a human's reply without
         // holding the original request open.
@@ -185,7 +200,7 @@ async fn health() -> &'static str {
 /// `capabilities` object. The responder is a person or an agent, so the
 /// limits are generous defaults, overridable with
 /// `OPENHUMAN_MODEL_CONTEXT_WINDOW` and `OPENHUMAN_MODEL_MAX_OUTPUT`.
-async fn list_models() -> axum::Json<serde_json::Value> {
+fn model_object() -> serde_json::Value {
     fn env_u64(name: &str, default: u64) -> u64 {
         std::env::var(name)
             .ok()
@@ -195,32 +210,53 @@ async fn list_models() -> axum::Json<serde_json::Value> {
     }
     let context = env_u64("OPENHUMAN_MODEL_CONTEXT_WINDOW", 1_000_000);
     let output = env_u64("OPENHUMAN_MODEL_MAX_OUTPUT", 131_072);
+    serde_json::json!({
+        "id": "openhuman-human",
+        "object": "model",
+        // Anthropic's model object.
+        "type": "model",
+        "display_name": "OpenHuman",
+        "created_at": "2023-11-14T22:13:20Z",
+        "created": 1700000000,
+        "owned_by": "openhuman",
+        "name": "OpenHuman",
+        "context_window": context,
+        "context_length": context,
+        "max_output_tokens": output,
+        "max_tokens": output,
+        "contextWindow": context,
+        "maxTokens": output,
+        "input_modalities": ["text", "image"],
+        "input": ["text", "image"],
+        "reasoning": false,
+        "capabilities": {
+            "vision": true,
+            "tools": true,
+            "function_calling": true,
+            "reasoning": false,
+            "streaming": true
+        }
+    })
+}
+
+async fn list_models() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
         "object": "list",
-        "data": [{
-            "id": "openhuman-human",
-            "object": "model",
-            "created": 1700000000,
-            "owned_by": "openhuman",
-            "name": "OpenHuman",
-            "context_window": context,
-            "context_length": context,
-            "max_output_tokens": output,
-            "max_tokens": output,
-            "contextWindow": context,
-            "maxTokens": output,
-            "input_modalities": ["text", "image"],
-            "input": ["text", "image"],
-            "reasoning": false,
-            "capabilities": {
-                "vision": true,
-                "tools": true,
-                "function_calling": true,
-                "reasoning": false,
-                "streaming": true
-            }
-        }]
+        "data": [model_object()],
+        "has_more": false,
+        "first_id": "openhuman-human",
+        "last_id": "openhuman-human",
     }))
+}
+
+/// `GET /v1/models/:id` — every model name reaches the same responder, so
+/// whatever id a client checks for exists (it is reported back as asked).
+async fn get_model(
+    axum::extract::Path(model_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let mut m = model_object();
+    m["id"] = serde_json::Value::String(model_id);
+    axum::Json(m)
 }
 
 /// `GET /v1/tokenizers` — the tokenizers usage can be counted with. Only
