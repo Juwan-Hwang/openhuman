@@ -78,7 +78,10 @@ pub fn build_router(state: AppState) -> Router {
         // Same pipeline, other wires: Anthropic Messages (Claude Code) and
         // OpenAI Responses (Codex CLI).
         .route("/v1/messages", post(api::adapters::messages))
-        .route("/v1/messages/count_tokens", post(api::adapters::count_tokens))
+        .route(
+            "/v1/messages/count_tokens",
+            post(api::adapters::count_tokens),
+        )
         .route("/v1/responses", post(api::adapters::responses))
         .route("/v1/models", get(list_models))
         .route("/v1/tokenizers", get(list_tokenizers))

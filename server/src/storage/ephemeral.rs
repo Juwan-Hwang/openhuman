@@ -80,7 +80,10 @@ impl EphemeralMessages {
 impl MessageRepository for EphemeralMessages {
     async fn insert(&self, message: Message) {
         let mut g = self.inner.lock().await;
-        let v = g.messages.entry(message.conversation_id.clone()).or_default();
+        let v = g
+            .messages
+            .entry(message.conversation_id.clone())
+            .or_default();
         v.push(message);
         if v.len() > PER_CONVERSATION_CAP {
             let drop = v.len() - PER_CONVERSATION_CAP;
@@ -108,7 +111,9 @@ impl MessageRepository for EphemeralMessages {
             g.messages
                 .values()
                 .flatten()
-                .filter(|m| m.status == MessageStatus::Pending && m.sender.participant_id != human_id)
+                .filter(|m| {
+                    m.status == MessageStatus::Pending && m.sender.participant_id != human_id
+                })
                 .cloned()
                 .collect()
         };
@@ -166,8 +171,8 @@ impl MessageRepository for EphemeralMessages {
 mod tests {
     use super::*;
     use crate::model::content::ContentBlock;
-    use crate::model::message::MessageVisibility;
     use crate::model::identity::ParticipantRef;
+    use crate::model::message::MessageVisibility;
     use crate::storage::memory::MemoryStore;
     use crate::storage::traits::ConversationRepository;
 
@@ -188,9 +193,7 @@ mod tests {
     #[tokio::test]
     async fn messages_stay_in_memory_until_saved() {
         let store = Arc::new(MemoryStore::seeded());
-        let conv = store
-            .find_or_create("agt_x", "hum_x", "k", None)
-            .await;
+        let conv = store.find_or_create("agt_x", "hum_x", "k", None).await;
         let eph = EphemeralMessages::new(store.clone(), store.clone());
         eph.insert(msg(&conv.id, "m1")).await;
         assert!(store.list(&conv.id).await.is_empty(), "nothing written yet");
