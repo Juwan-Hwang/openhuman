@@ -33,7 +33,7 @@ EOF
   pi)
     mkdir -p $HOME/.pi/agent
     cat > $HOME/.pi/agent/models.json <<EOF
-{"providers":{"oh":{"baseUrl":"$URL/v1","api":"openai-completions","apiKey":"$KEY","models":[{"id":"openhuman-human","name":"OpenHuman","reasoning":false,"input":["text"],"contextWindow":1000000,"maxTokens":131072}]}}}
+{"providers":{"oh":{"baseUrl":"$URL/v1","api":"openai-completions","apiKey":"$KEY","models":[{"id":"openhuman-human","name":"OpenHuman","reasoning":false,"input":["text","image"],"contextWindow":1000000,"maxTokens":131072}]}}}
 EOF
     timeout 300 pi --provider oh --model openhuman-human -p "$P" > ../cli.out 2> ../cli.err ;;
 esac

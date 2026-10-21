@@ -1510,7 +1510,7 @@ pub async fn chat_completions(
                     .map(|v| v.to_string())
                     .unwrap_or_default();
                 let fingerprint = format!("user:{}:{}:{}", message_count, content, images);
-                crate::session::first_result(&cnv.id, None, &fingerprint)
+                crate::session::first_user_turn(&cnv.id, &fingerprint)
             }
         });
             for msg in &inbound_messages {
@@ -1704,6 +1704,9 @@ impl TurnCtx {
     /// replays it) is recognized as the same conversation and its tool
     /// results route back to these calls.
     fn record(&self, conversation_id: &str, content: &str, calls: &[(String, String, Value)]) {
+        if calls.is_empty() {
+            crate::session::turn_answered(conversation_id);
+        }
         if let Some(d) = crate::session::text_digest(content) {
             crate::session::remember_reply(&self.agent_id, d, conversation_id);
         }
