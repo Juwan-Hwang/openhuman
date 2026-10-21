@@ -6,12 +6,14 @@
 //! timeout the agent picks. See docs/seat-cli.md.
 
 use clap::{Args, Parser, Subcommand};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+mod input;
 
 // stdout closed early (`| head`): stop quietly instead of panicking.
 macro_rules! println {
@@ -28,22 +30,26 @@ const UA: &str = concat!("oh-seat/", env!("CARGO_PKG_VERSION"));
 
 // ── exit codes ──
 const OK: u8 = 0;
+const TOOL_ERR: u8 = 1; // the tool ran on the caller and reported an error
 const NOTHING: u8 = 2; // timed out with nothing new
 const HTTP: u8 = 3; // network / auth / server error
-const USAGE: u8 = 4;
+const USAGE: u8 = 4; // bad command, unknown tool/parameter, unknown conversation
+const NO_TURN: u8 = 5; // the caller is not waiting: no open turn to act in
+
+const GUIDE: &str = include_str!("guide.txt");
 
 #[derive(Parser)]
 #[command(
     name = "oh-seat",
     version,
     about = "OpenHuman Agent Seat: answer callers (Claude Code, Codex, ...) and run tools on their side",
-    after_help = "Typical loop:\n  oh-seat next                         # wait for a message\n  oh-seat tool bash command='ls -la'   # caller runs it, you get the output\n  oh-seat reply 'Done.' --next         # answer, then wait for the next message\n\nExit codes: 0 ok, 2 nothing new before --timeout, 3 network/auth/server error, 4 usage error."
+    after_help = "Start with `oh-seat guide` (one screen, everything you need).\n\nExit codes: 0 ok, 1 tool reported an error, 2 nothing new before --timeout, 3 network/auth/server, 4 usage (unknown tool/parameter/conversation), 5 no open turn."
 )]
 struct Cli {
     #[command(flatten)]
     g: Global,
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Args)]
@@ -83,6 +89,7 @@ enum Cmd {
     },
     /// Reply in a conversation. TEXT may be `-` (or omitted) to read stdin
     Reply {
+        #[arg(allow_hyphen_values = true)]
         text: Option<String>,
         /// Read the reply from a file (no shell quoting problems)
         #[arg(long, short = 'f')]
@@ -102,13 +109,18 @@ enum Cmd {
         #[arg(long, default_value_t = 100)]
         timeout: u64,
     },
-    /// Ask the caller to run one of its tools; waits for and prints the result.
+    /// Ask the caller to run one of its tools (or several: `A k=v + B k=v`); waits and prints results in order.
     ///
-    /// Input: one JSON object, or key=value pairs (value parsed as JSON when it is valid JSON,
-    /// else taken as a string; key=@path reads a file; key:=value forces a string).
+    /// Input: key=value pairs typed by the tool's schema (string params keep the text as is),
+    /// key=@path reads a file, key=@- reads stdin, key:=v forces a string, key:json=v forces JSON;
+    /// or one JSON object; or `-` for the whole input on stdin. Checked before sending.
     Tool {
         name: String,
+        #[arg(allow_hyphen_values = true)]
         input: Vec<String>,
+        /// Send even if the input does not match the tool's schema
+        #[arg(long)]
+        force: bool,
         #[arg(long, short = 'c')]
         conv: Option<String>,
         /// Words shown alongside the call
@@ -161,6 +173,8 @@ enum Cmd {
     },
     /// Show URL, consumer, cursor, active conversation, open turns
     Status,
+    /// Everything you need on one screen: the loop, input rules, exit codes
+    Guide,
 }
 
 // ── errors ──
@@ -190,6 +204,9 @@ struct State {
     /// Last `caps` text per conversation, for --diff.
     #[serde(default)]
     caps: BTreeMap<String, String>,
+    /// Tool list (with schemas) per conversation, to type and check input.
+    #[serde(default)]
+    tools: BTreeMap<String, Vec<Value>>,
 }
 
 #[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -335,12 +352,25 @@ impl Ctx {
                             .map(String::from)
                     })
                     .unwrap_or_else(|| body.chars().take(400).collect());
+                let ecode = serde_json::from_str::<Value>(&body)
+                    .ok()
+                    .and_then(|v| {
+                        v.pointer("/error/code")
+                            .and_then(|c| c.as_str())
+                            .map(String::from)
+                    })
+                    .unwrap_or_default();
                 let hint = match code {
                     401 => " (key missing, wrong or revoked)",
                     403 => " (this key may not sit in the seat: it needs scope responder or both)",
                     _ => "",
                 };
-                Err(Fail(HTTP, format!("HTTP {code} {short}: {msg}{hint}")))
+                let exit = match (code, ecode.as_str()) {
+                    (409, "no_open_turn") => NO_TURN,
+                    (400 | 404 | 409 | 422, _) => USAGE,
+                    _ => HTTP,
+                };
+                Err(Fail(exit, format!("HTTP {code} {short}: {msg}{hint}")))
             }
             Err(e) => Err(Fail(HTTP, format!("{short}: {e}"))),
         }
@@ -369,6 +399,10 @@ impl Ctx {
             .cloned()
             .unwrap_or_default()
         {
+            // Delivery receipts tell the seat nothing it can act on.
+            if matches!(s(&e, "type"), Some("reply.delivered")) {
+                continue;
+            }
             self.note(&e);
             self.st.buffer.push(e);
         }
@@ -411,17 +445,71 @@ impl Ctx {
             for (_, k) in v.into_iter().take(self.st.convs.len() - 50) {
                 self.st.convs.remove(&k);
                 self.st.caps.remove(&k);
+                self.st.tools.remove(&k);
             }
         }
     }
 
     fn conv(&self, c: Option<String>) -> R<String> {
-        c.or_else(|| self.st.active.clone()).ok_or_else(|| {
-            Fail(
-                USAGE,
-                "no conversation: pass -c CONV or run `oh-seat next` first".into(),
-            )
-        })
+        match c {
+            Some(c) => self.resolve_conv(&c),
+            None => self.st.active.clone().ok_or_else(|| {
+                Fail(
+                    USAGE,
+                    "no active conversation: run `oh-seat next` first, or pass -c CONV".into(),
+                )
+            }),
+        }
+    }
+
+    /// A full id, or any unique piece of one this seat has seen (`-c 6da0c`).
+    fn resolve_conv(&self, c: &str) -> R<String> {
+        let c = c.trim();
+        if self.st.convs.contains_key(c) {
+            return Ok(c.to_string());
+        }
+        let hits: Vec<&String> = self.st.convs.keys().filter(|k| k.contains(c)).collect();
+        match hits.len() {
+            1 => Ok(hits[0].clone()),
+            0 if c.starts_with("cnv_") && c.len() >= 20 => Ok(c.to_string()),
+            0 => usage(format!(
+                "no conversation matches `{c}` (known: {}; `oh-seat convs`)",
+                self.short_list()
+            )),
+            _ => usage(format!(
+                "`{c}` matches {} conversations: {}; give more of the id",
+                hits.len(),
+                hits.iter()
+                    .map(|h| h.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    fn short_list(&self) -> String {
+        if self.st.convs.is_empty() {
+            return "none yet".into();
+        }
+        self.st.convs.keys().cloned().collect::<Vec<_>>().join(", ")
+    }
+
+    /// The caller's tools for a conversation, cached; `fresh` re-reads them.
+    fn tools_for(&mut self, c: &str, fresh: bool) -> Vec<Value> {
+        if !fresh {
+            if let Some(t) = self.st.tools.get(c).filter(|t| !t.is_empty()) {
+                return t.clone();
+            }
+        }
+        match fetch_caps(self, c) {
+            Ok(r) => {
+                let t = tool_list(&r);
+                self.st.tools.insert(c.to_string(), t.clone());
+                self.save();
+                t
+            }
+            Err(_) => self.st.tools.get(c).cloned().unwrap_or_default(),
+        }
     }
 
     fn out(&self, v: &Value) {
@@ -570,64 +658,6 @@ fn print_event(e: &Value) {
     }
 }
 
-// ── tool input ──
-
-fn parse_input(args: &[String]) -> R<Value> {
-    if args.is_empty() {
-        return Ok(json!({}));
-    }
-    if args.len() == 1 && args[0] == "-" {
-        let mut b = String::new();
-        std::io::stdin()
-            .read_to_string(&mut b)
-            .or_else(|e| usage(format!("stdin: {e}")))?;
-        let lines: Vec<String> = b
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(String::from)
-            .collect();
-        if b.trim_start().starts_with('{') {
-            return serde_json::from_str(b.trim())
-                .or_else(|e| usage(format!("stdin is not valid JSON: {e}")));
-        }
-        return parse_input(&lines);
-    }
-    if args.len() == 1 && args[0].trim_start().starts_with('{') {
-        return serde_json::from_str(&args[0])
-            .or_else(|e| usage(format!("tool input is not valid JSON: {e}")));
-    }
-    let mut m = Map::new();
-    for a in args {
-        if let Some((k, v)) = a.split_once(":=") {
-            if !k.contains('=') {
-                m.insert(k.to_string(), Value::String(v.to_string()));
-                continue;
-            }
-        }
-        let Some((k, v)) = a.split_once('=') else {
-            return usage(format!(
-                "tool input `{a}`: use key=value, or one JSON object"
-            ));
-        };
-        let val = if v == "@-" {
-            let mut b = String::new();
-            std::io::stdin()
-                .read_to_string(&mut b)
-                .or_else(|e| usage(format!("stdin: {e}")))?;
-            Value::String(b)
-        } else if let Some(p) = v.strip_prefix('@') {
-            Value::String(std::fs::read_to_string(p).or_else(|e| usage(format!("{k}=@{p}: {e}")))?)
-        } else {
-            match serde_json::from_str::<Value>(v) {
-                Ok(j) if !j.is_string() => j,
-                _ => Value::String(v.to_string()),
-            }
-        };
-        m.insert(k.to_string(), val);
-    }
-    Ok(Value::Object(m))
-}
-
 // ── commands ──
 
 fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
@@ -676,11 +706,25 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
             let mut tools_lines = Vec::new();
             for c in &new_convs {
                 if let Ok(r) = fetch_caps(cx, c) {
-                    let (tools, sp_len, client) = caps_summary(&r);
+                    let (_, sp_len, client) = caps_summary(&r);
                     if let Some(cl) = client {
                         cx.st.convs.entry(c.clone()).or_default().client = Some(cl);
                     }
-                    tools_lines.push(format!("tools in {c}: {}  (system prompt {sp_len} chars; `oh-seat caps` for signatures)", tools.join(", ")));
+                    let list = tool_list(&r);
+                    if list.is_empty() {
+                        tools_lines.push(format!(
+                            "{c} declared no tools (system prompt {sp_len} chars): reply only"
+                        ));
+                    } else {
+                        tools_lines.push(format!(
+                            "tools in {c} ({}; * = required; system prompt {sp_len} chars, `oh-seat caps --full`):",
+                            list.len()
+                        ));
+                        for t in &list {
+                            tools_lines.push(format!("  {}", tool_sig(t)));
+                        }
+                    }
+                    cx.st.tools.insert(c.clone(), list);
                     cx.st.caps.insert(c.clone(), caps_text(&r, true));
                 }
             }
@@ -708,6 +752,20 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
             if !cx.json {
                 for l in tools_lines {
                     println!("{l}");
+                }
+                let late: Vec<&str> = cx
+                    .st
+                    .buffer
+                    .iter()
+                    .filter(|e| s(e, "type") == Some("tool.result"))
+                    .filter_map(|e| s(e, "invocation_id"))
+                    .collect();
+                if !late.is_empty() {
+                    println!(
+                        "({} earlier tool result(s) waiting: oh-seat result {})",
+                        late.len(),
+                        late.join(" / ")
+                    );
                 }
             }
             return Ok(OK);
@@ -769,8 +827,8 @@ fn cmd_reply(
     Ok(OK)
 }
 
-fn wait_result(cx: &mut Ctx, inv: &str, timeout: u64) -> R<u8> {
-    let deadline = Instant::now() + Duration::from_secs(timeout);
+/// Wait for one tool result (from the buffer or new polls) until `deadline`.
+fn await_result(cx: &mut Ctx, inv: &str, deadline: Instant) -> R<Option<Value>> {
     loop {
         if let Some(i) =
             cx.st.buffer.iter().position(|e| {
@@ -779,26 +837,151 @@ fn wait_result(cx: &mut Ctx, inv: &str, timeout: u64) -> R<u8> {
         {
             let e = cx.st.buffer.remove(i);
             cx.save();
-            if cx.json {
-                cx.out(&e);
-            } else {
-                print_event(&e);
-            }
-            return Ok(OK);
+            return Ok(Some(e));
         }
         let left = deadline.saturating_duration_since(Instant::now()).as_secs();
         if left == 0 {
-            if cx.json {
-                cx.out(&json!({"pending": inv}));
-            } else {
-                println!("result not back yet: run `oh-seat result {inv}` to keep waiting");
-            }
-            return Ok(NOTHING);
+            return Ok(None);
         }
         cx.poll(left)?;
     }
 }
 
+fn result_exit(e: &Value) -> u8 {
+    match s(e, "status") {
+        Some("error") | Some("failed") | Some("failure") => TOOL_ERR,
+        _ if e.get("error").map(|v| !v.is_null()).unwrap_or(false) => TOOL_ERR,
+        _ => OK,
+    }
+}
+
+fn wait_result(cx: &mut Ctx, inv: &str, timeout: u64) -> R<u8> {
+    let deadline = Instant::now() + Duration::from_secs(timeout);
+    match await_result(cx, inv, deadline)? {
+        Some(e) => {
+            if cx.json {
+                cx.out(&e);
+            } else {
+                print_event(&e);
+            }
+            Ok(result_exit(&e))
+        }
+        None => {
+            if cx.json {
+                cx.out(&json!({"pending": inv}));
+            } else {
+                println!("result not back yet: run `oh-seat result {inv}` to keep waiting");
+            }
+            Ok(NOTHING)
+        }
+    }
+}
+
+/// Find a tool by name: exact, then case-insensitive.
+fn find_tool<'a>(tools: &'a [Value], name: &str) -> Option<&'a Value> {
+    tools.iter().find(|t| tool_name(t) == name).or_else(|| {
+        let hits: Vec<&Value> = tools
+            .iter()
+            .filter(|t| tool_name(t).eq_ignore_ascii_case(name))
+            .collect();
+        (hits.len() == 1).then(|| hits[0])
+    })
+}
+
+fn unknown_tool(c: &str, name: &str, tools: &[Value]) -> String {
+    let names: Vec<String> = tools.iter().map(tool_name).collect();
+    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let mut m = format!("no tool `{name}` in {c}");
+    if let Some(n) = input::closest(name, &refs) {
+        if let Some(t) = find_tool(tools, n) {
+            m.push_str(&format!("; did you mean {}?", tool_sig(t)));
+        }
+    }
+    m.push_str(&format!("\ntools: {}", names.join(", ")));
+    m
+}
+
+struct Prepared {
+    tool: String,
+    input: Value,
+}
+
+fn prepare(
+    cx: &mut Ctx,
+    c: &str,
+    calls: Vec<(String, Vec<String>)>,
+    force: bool,
+) -> R<Vec<Prepared>> {
+    let mut tools = cx.tools_for(c, false);
+    let mut refreshed = false;
+    let mut out = Vec::new();
+    let mut errs = Vec::new();
+    let many = calls.len() > 1;
+    for (i, (name, args)) in calls.into_iter().enumerate() {
+        let tag = if many {
+            format!("call {} ({name})", i + 1)
+        } else {
+            name.clone()
+        };
+        let parsed = input::parse(&args).map_err(|e| Fail(USAGE, format!("{tag}: {e}")))?;
+        if tools.is_empty() {
+            // No tool list known (the caller declared none we can read):
+            // send as written and let the server judge the name.
+            let m = input::build(parsed, &Value::Null).unwrap_or_default();
+            out.push(Prepared {
+                tool: name,
+                input: Value::Object(m),
+            });
+            continue;
+        }
+        let mut t = find_tool(&tools, &name).cloned();
+        if t.is_none() && !refreshed {
+            tools = cx.tools_for(c, true);
+            refreshed = true;
+            t = find_tool(&tools, &name).cloned();
+        }
+        let Some(t) = t else {
+            if force {
+                let m = input::build(parsed, &Value::Null).unwrap_or_default();
+                out.push(Prepared {
+                    tool: name,
+                    input: Value::Object(m),
+                });
+                continue;
+            }
+            errs.push(unknown_tool(c, &name, &tools));
+            continue;
+        };
+        let real = tool_name(&t);
+        match input::build(parsed.clone(), tool_schema(&t)) {
+            Ok(m) => out.push(Prepared {
+                tool: real,
+                input: Value::Object(m),
+            }),
+            Err(_) if force => {
+                let m = input::build(parsed, &Value::Null).unwrap_or_default();
+                out.push(Prepared {
+                    tool: real,
+                    input: Value::Object(m),
+                });
+            }
+            Err(e) => errs.push(format!(
+                "{tag}: {}\n  usage: {}   (`oh-seat caps --tool {real}` explains each parameter)",
+                e.join("; "),
+                tool_sig(&t)
+            )),
+        }
+    }
+    if !errs.is_empty() {
+        return usage(format!(
+            "{}\nnothing was sent (--force sends anyway)",
+            errs.join("\n")
+        ));
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn cmd_tool(
     cx: &mut Ctx,
     name: String,
@@ -807,44 +990,115 @@ fn cmd_tool(
     text: Option<String>,
     reasoning: Option<String>,
     timeout: u64,
+    force: bool,
 ) -> R<u8> {
     let c = cx.conv(conv)?;
-    let input = parse_input(&input)?;
-    let mut body = json!({
-        "conversation_id": c, "tool": name, "input": input, "wait": 0,
-        "client_msg_id": format!("ohs_{}", rand_hex(24)),
-    });
-    if let Some(t) = text {
-        body["text"] = json!(t);
-    }
-    if let Some(r) = reasoning {
-        body["reasoning"] = json!(r);
-    }
-    let r = match cx.call("POST", "/v1/seat/tool-call", Some(body), 60) {
-        Err(Fail(code, m)) if m.contains("404") => {
-            let avail = cx
-                .st
-                .caps
-                .get(&c)
-                .map(|t| t.lines().nth(1).unwrap_or("").to_string())
-                .unwrap_or_default();
-            return Err(Fail(code, format!("{m}\n{avail}")));
-        }
-        x => x?,
+    let calls = input::split_batch(&name, &input).map_err(|e| Fail(USAGE, e))?;
+    let prepared = prepare(cx, &c, calls, force)?;
+    let n = prepared.len();
+    let bodies: Vec<Value> = prepared
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let mut body = json!({
+                "conversation_id": c, "tool": p.tool, "input": p.input, "wait": 0,
+                "client_msg_id": format!("ohs_{}", rand_hex(24)),
+            });
+            // Words and thinking ride on the first call only.
+            if i == 0 {
+                if let Some(t) = &text {
+                    body["text"] = json!(t);
+                }
+                if let Some(r) = &reasoning {
+                    body["reasoning"] = json!(r);
+                }
+            }
+            body
+        })
+        .collect();
+    // All calls go out at once so they land inside the server's merge
+    // window and reach the caller as one assistant message (parallel
+    // tool_calls), exactly like a model calling several tools.
+    let sent: Vec<R<Value>> = if n == 1 {
+        vec![cx.call("POST", "/v1/seat/tool-call", Some(bodies[0].clone()), 60)]
+    } else {
+        let cxr: &Ctx = cx;
+        std::thread::scope(|sc| {
+            let hs: Vec<_> = bodies
+                .iter()
+                .enumerate()
+                .map(|(i, b)| {
+                    sc.spawn(move || {
+                        // keep the caller-visible order stable
+                        std::thread::sleep(Duration::from_millis(40 * i as u64));
+                        cxr.call("POST", "/v1/seat/tool-call", Some(b.clone()), 60)
+                    })
+                })
+                .collect();
+            hs.into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err(Fail(HTTP, "thread panicked".into())))
+                })
+                .collect()
+        })
     };
-    let inv = s(&r, "invocation_id").unwrap_or("").to_string();
-    if let Some(res) = r.get("result").filter(|v| !v.is_null()) {
-        if cx.json {
-            cx.out(res);
-        } else {
-            print_event(res);
+    let mut invs: Vec<R<String>> = Vec::new();
+    for (r, b) in sent.into_iter().zip(&bodies) {
+        invs.push(r.and_then(|r| match s(&r, "invocation_id") {
+            Some(i) => Ok(i.to_string()),
+            None => Err(Fail(
+                HTTP,
+                format!("server returned no invocation id for {}: {r}", b["tool"]),
+            )),
+        }));
+    }
+    if n == 1 {
+        let inv = invs.pop().unwrap()?;
+        return wait_result(cx, &inv, timeout);
+    }
+    let deadline = Instant::now() + Duration::from_secs(timeout);
+    let mut worst = OK;
+    for (i, (inv, b)) in invs.into_iter().zip(&bodies).enumerate() {
+        let tool = b["tool"].as_str().unwrap_or("?").to_string();
+        let res = match inv {
+            Ok(inv) => await_result(cx, &inv, deadline).map(|r| (inv, r)),
+            Err(e) => Err(e),
+        };
+        match res {
+            Ok((_, Some(e))) => {
+                worst = worst.max(result_exit(&e));
+                if cx.json {
+                    let mut e = e;
+                    e["batch_index"] = json!(i + 1);
+                    cx.out(&e);
+                } else {
+                    println!("[{}/{n}]", i + 1);
+                    print_event(&e);
+                }
+            }
+            Ok((inv, None)) => {
+                worst = worst.max(NOTHING);
+                if cx.json {
+                    cx.out(&json!({"batch_index": i + 1, "pending": inv, "tool": tool}));
+                } else {
+                    println!(
+                        "[{}/{n}] {tool}: not back yet: `oh-seat result {inv}`",
+                        i + 1
+                    );
+                }
+            }
+            Err(Fail(code, m)) => {
+                worst = worst.max(code);
+                if cx.json {
+                    cx.out(&json!({"batch_index": i + 1, "tool": tool, "error": m, "exit": code}));
+                } else {
+                    println!("[{}/{n}] {tool}: not sent: {m}", i + 1);
+                }
+            }
         }
-        return Ok(OK);
     }
-    if inv.is_empty() {
-        return Err(Fail(HTTP, format!("server returned no invocation id: {r}")));
-    }
-    wait_result(cx, &inv, timeout)
+    Ok(worst)
 }
 
 fn fetch_caps(cx: &Ctx, c: &str) -> R<Value> {
@@ -1026,13 +1280,11 @@ fn cmd_caps(
     let r = fetch_caps(cx, &c)?;
     if let Some(name) = tool {
         let list = tool_list(&r);
-        let Some(t) = list.iter().find(|t| tool_name(t) == name) else {
-            let names: Vec<_> = list.iter().map(tool_name).collect();
-            return usage(format!(
-                "no tool `{name}` in {c}; tools: {}",
-                names.join(", ")
-            ));
+        cx.st.tools.insert(c.clone(), list.clone());
+        let Some(t) = find_tool(&list, &name) else {
+            return usage(unknown_tool(&c, &name, &list));
         };
+        let name = tool_name(t);
         if cx.json {
             cx.out(t);
         } else if schema {
@@ -1178,8 +1430,15 @@ fn cmd_status(cx: &mut Ctx) -> R<u8> {
 }
 
 fn run(cli: Cli) -> R<u8> {
+    let cmd = match cli.cmd {
+        None | Some(Cmd::Guide) => {
+            println!("{}", GUIDE.trim_end());
+            return Ok(OK);
+        }
+        Some(c) => c,
+    };
     let mut cx = Ctx::new(cli.g)?;
-    match cli.cmd {
+    match cmd {
         Cmd::Next { timeout, all } => cmd_next(&mut cx, timeout, all),
         Cmd::Reply {
             text,
@@ -1204,7 +1463,8 @@ fn run(cli: Cli) -> R<u8> {
             text,
             reasoning,
             timeout,
-        } => cmd_tool(&mut cx, name, input, conv, text, reasoning, timeout),
+            force,
+        } => cmd_tool(&mut cx, name, input, conv, text, reasoning, timeout, force),
         Cmd::Result {
             invocation_id,
             timeout,
@@ -1219,6 +1479,7 @@ fn run(cli: Cli) -> R<u8> {
         Cmd::History { conv, limit } => cmd_history(&mut cx, conv, limit),
         Cmd::Convs => cmd_convs(&cx),
         Cmd::Use { conv } => {
+            let conv = cx.resolve_conv(&conv)?;
             cx.st.active = Some(conv.clone());
             cx.save();
             println!("active conversation: {conv}");
@@ -1240,6 +1501,7 @@ fn run(cli: Cli) -> R<u8> {
             Ok(OK)
         }
         Cmd::Status => cmd_status(&mut cx),
+        Cmd::Guide => unreachable!(),
     }
 }
 
@@ -1257,25 +1519,6 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn input_pairs_and_json() {
-        let v = parse_input(&[
-            "command=ls -la".into(),
-            "timeout=5".into(),
-            "flag=true".into(),
-            "s:=5".into(),
-        ])
-        .unwrap();
-        assert_eq!(
-            v,
-            json!({"command": "ls -la", "timeout": 5, "flag": true, "s": "5"})
-        );
-        let v = parse_input(&[r#"{"a":[1,2]}"#.into()]).unwrap();
-        assert_eq!(v, json!({"a": [1, 2]}));
-        assert!(parse_input(&["oops".into()]).is_err());
-        assert_eq!(parse_input(&[]).unwrap(), json!({}));
-    }
 
     #[test]
     fn aux_hints() {
