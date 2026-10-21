@@ -683,9 +683,12 @@ fn print_event(e: &Value) {
         }
         "conversation.started" => println!("NEW CONVERSATION conv={c}"),
         "tool.result" => {
-            let code = exit_code(e)
+            let mut code = exit_code(e)
                 .map(|c| format!(" exit_code={c}"))
                 .unwrap_or_default();
+            if error_text(e) || json_failed(e) {
+                code.push_str(" (output reports a failure)");
+            }
             println!(
                 "TOOL RESULT {} status={}{code} id={}",
                 s(e, "tool_id").unwrap_or("?"),
@@ -1075,8 +1078,23 @@ fn json_failed(e: &Value) -> bool {
     }
 }
 
+/// A result the caller marked successful whose output is an error message
+/// (Reasonix answers a refused or failed call with `error: ...` and status
+/// success).
+fn error_text(e: &Value) -> bool {
+    if s(e, "status") != Some("success") {
+        return false;
+    }
+    let t = s(e, "output").unwrap_or("").trim_start();
+    let head: String = t.chars().take(24).collect::<String>().to_ascii_lowercase();
+    head.starts_with("error:")
+        || head.starts_with("error -")
+        || head.starts_with("<tool_use_error>")
+        || head.starts_with("tool error")
+}
+
 fn result_exit(e: &Value) -> u8 {
-    if matches!(exit_code(e), Some(c) if c != 0) || json_failed(e) {
+    if matches!(exit_code(e), Some(c) if c != 0) || json_failed(e) || error_text(e) {
         return TOOL_ERR;
     }
     match s(e, "status") {
@@ -1914,6 +1932,16 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_output_is_an_error() {
+        let r = |o: &str| json!({"type": "tool.result", "status": "success", "output": o});
+        assert_eq!(
+            result_exit(&r("error: bash sandbox requested but unavailable")),
+            TOOL_ERR
+        );
+        assert_eq!(result_exit(&r("no errors found")), OK);
+    }
 
     #[test]
     fn json_success_false_is_an_error() {
