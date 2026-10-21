@@ -158,10 +158,7 @@ AUX_HINTS = [
 
 
 def aux_hint(e):
-    if e.get("kind") not in (None, "chat") and e.get("kind") != "chat":
-        kind = e.get("kind")
-    else:
-        kind = None
+    kind = e.get("kind")
     text = (e.get("text") or "").lower()
     for needle, hint in AUX_HINTS:
         if needle in text:
@@ -223,7 +220,7 @@ def cmd_next(a, s):
             if not a.json:
                 print("nothing new (timed out after %ds)" % a.timeout)
             return 2
-        evs = poll(s, min(left, POLL_MAX), full=True)
+        evs = poll(s, min(left, POLL_MAX))
         s["buffer"].extend(evs)
         save_state(s)  # cursor advanced: persist buffer first so nothing is lost
 
@@ -281,7 +278,7 @@ def cmd_tool(a, s):
             save_state(s)
             print("tool result not back yet (invocation %s); it will show up in `oh-seat next --all`" % inv)
             return 2
-        s["buffer"].extend(poll(s, min(left, POLL_MAX), full=True))
+        s["buffer"].extend(poll(s, min(left, POLL_MAX)))
         save_state(s)
 
 
@@ -416,8 +413,6 @@ def main(argv=None):
     sub.add_parser("status")
 
     a = p.parse_args(argv)
-    for sp in (n, r, t, c, h, sv):
-        pass
     s = load_state()
     fn = {"next": cmd_next, "reply": cmd_reply, "tool": cmd_tool, "caps": cmd_caps,
           "history": cmd_history, "convs": cmd_convs, "use": cmd_use, "save": cmd_save,
