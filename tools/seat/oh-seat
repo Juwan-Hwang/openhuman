@@ -117,7 +117,9 @@ def call(method, path, body=None, timeout=100):
 
 def poll(state, wait, full=False):
     """One long-poll. Returns new events and advances the cursor."""
-    q = {"after": state["cursor"], "wait": max(0, min(int(wait), POLL_MAX))}
+    if not state.get("consumer"):
+        state["consumer"] = os.environ.get("OH_SEAT_CONSUMER") or "oh-seat-" + uuid.uuid4().hex[:8]
+    q = {"after": state["cursor"], "wait": max(0, min(int(wait), POLL_MAX)), "consumer": state["consumer"]}
     if full:
         q["view"] = "full"
     r = call("GET", "/v1/seat/inbox?" + urllib.parse.urlencode(q), timeout=q["wait"] + 30)
@@ -367,8 +369,8 @@ def cmd_save(a, s):
 
 
 def cmd_status(a, s):
-    print("url: %s\ncursor: %s\nactive: %s\nbuffered events: %d\nstate: %s" % (
-        base_url(), s["cursor"], s.get("active"), len(s["buffer"]), state_path()))
+    print("url: %s\nconsumer: %s\ncursor: %s\nactive: %s\nbuffered events: %d\nstate: %s" % (
+        base_url(), s.get("consumer"), s["cursor"], s.get("active"), len(s["buffer"]), state_path()))
     return 0
 
 
