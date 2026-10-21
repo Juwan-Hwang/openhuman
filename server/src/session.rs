@@ -276,6 +276,7 @@ pub fn strip_injections(text: &str) -> String {
             }
         }
     }
+    out = strip_tag_blocks(&out);
     // Trae wraps the typed text itself.
     if let (Some(s), Some(e)) = (out.find("<user_input>"), out.find("</user_input>")) {
         if s < e {
@@ -283,6 +284,59 @@ pub fn strip_injections(text: &str) -> String {
         }
     }
     out.trim().to_string()
+}
+
+/// Harness blocks an agent wraps around what the person typed (Reasonix:
+/// `<workspace>`, `<current-date>`, `<available-skills>`,
+/// `<execution-policy preset="…">` …): a line opening `<tag…>` whose
+/// `</tag>` ends a later (or the same) line. Only tags that look machine
+/// made (a `-` or `_` in the name, or a known one) so typed HTML survives,
+/// and never when nothing would be left.
+fn strip_tag_blocks(text: &str) -> String {
+    const KNOWN: [&str; 4] = ["workspace", "env", "instructions", "context"];
+    let lines: Vec<&str> = text.lines().collect();
+    let mut keep = vec![true; lines.len()];
+    let mut i = 0;
+    while i < lines.len() {
+        let l = lines[i].trim_start();
+        let tag: String = l
+            .strip_prefix('<')
+            .map(|r| {
+                r.chars()
+                    .take_while(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-' || *c == '_'
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let after = l.get(1 + tag.len()..).unwrap_or("");
+        let machine = tag.len() >= 3
+            && (tag.contains('-') || tag.contains('_') || KNOWN.contains(&tag.as_str()))
+            && (after.starts_with('>') || after.starts_with(' '));
+        if machine {
+            let close = format!("</{tag}>");
+            if let Some(end) = (i..lines.len()).find(|&j| lines[j].trim_end().ends_with(&close)) {
+                for k in keep.iter_mut().take(end + 1).skip(i) {
+                    *k = false;
+                }
+                i = end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    let kept: Vec<&str> = lines
+        .iter()
+        .zip(&keep)
+        .filter(|(_, k)| **k)
+        .map(|(l, _)| *l)
+        .collect();
+    let joined = kept.join("\n");
+    if joined.trim().is_empty() {
+        text.to_string()
+    } else {
+        joined
+    }
 }
 
 /// Reasoning a responder attached to its next reply or tool call.
@@ -430,6 +484,20 @@ pub fn count_request_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn harness_tag_blocks_are_stripped() {
+        let t = "<workspace>\nCurrent workspace: \"/w\".\n</workspace>\n\n<current-date>\nToday\n</current-date>\n\nrun pwd\n\n<execution-policy preset=\"balanced\" version=\"3\">\nverify=targeted\n</execution-policy>";
+        assert_eq!(strip_injections(t), "run pwd");
+        assert_eq!(
+            strip_injections("<div>hi</div> typed html"),
+            "<div>hi</div> typed html"
+        );
+        assert_eq!(
+            strip_injections("<only-block>\nx\n</only-block>"),
+            "<only-block>\nx\n</only-block>"
+        );
+    }
     use serde_json::json;
 
     #[test]
