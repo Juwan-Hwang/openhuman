@@ -131,7 +131,11 @@ async fn test_non_streaming_completion() {
         "The auth code looks solid. Ship it."
     );
     assert_eq!(body["choices"][0]["finish_reason"], "stop");
-    assert_eq!(body["usage"]["total_tokens"], 0);
+    // Usage is computed server-side with a real tokenizer (never estimated).
+    let prompt = body["usage"]["prompt_tokens"].as_u64().unwrap();
+    let completion = body["usage"]["completion_tokens"].as_u64().unwrap();
+    assert!(prompt > 0 && completion > 0);
+    assert_eq!(body["usage"]["total_tokens"].as_u64().unwrap(), prompt + completion);
 }
 
 // ── 3. Streaming chat completion (SSE) ──
