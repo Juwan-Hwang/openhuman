@@ -122,3 +122,6 @@
 - 新问题 D（更正）：dsh 对 edit 弹确认，约 4 分钟后把 [tool 结果, user, user] 放在同一个请求里发来。tool.result 没有丢，但推送顺序反了：message.received 在 cursor 82，edit 的 tool.result 在 83。seat 的 tool-call 等待（100 秒）在用户确认前就超时了。应该先推 tool.result，再推 user 消息；另外长时间等待确认的情况需要一个 pending 状态。用户是在任务进行中直接插话发的消息（不是排队），dsh 会把插话合并到下一个请求里。
 - 观察：dsh 对 write/edit 带上 justification 却不带 sandbox_permissions 时会报错，但 seat 收到的状态是 success（工具报错被当成成功）。可以考虑识别 "Error:" 前缀，或交给 agent 自己判断。
 - 观察：用户粘贴的内容在 dsh 里会成为第二条 user 消息，服务器已经正确合并。
+- 新问题 E（重要）：Seat 回复慢时（tool 结果回来后约 40 多秒没有输出），dsh 的流空闲超时把请求断开，我的长回复送到了已经断开的流上（reply.delivered 照样报成功），dsh 只显示了前半句，09:28 用相同历史重发。修法：等待期间定时发 SSE 心跳（注释帧 ": keepalive" 或空 delta）；流已断时 reply 不应报 delivered，应该进出站队列，等下一次重发时交付。
+- 问题 C 补充（用户意见）：Seat 本身就是模型，应该允许 Seat 在 reply 里带上 usage（prompt/completion tokens），服务器原样填进去；没带时（比如真人回复）再估算兜底。
+- 观察：dsh 在等重试时，会把用户插话的消息先排队，不发到服务器。
