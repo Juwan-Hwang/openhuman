@@ -130,3 +130,6 @@
 - 识别成 trae ✅（现有检测已经覆盖）。
 - 第一条请求是 Trae 添加模型时的**视觉能力探测**：没有 system prompt、没有工具，只有一张 32×32 纯红 PNG 加上「图片背景是什么颜色」，max_tokens 16000。被标成了 auxiliary（规则：无工具 + 单条消息 + 带 token cap），这个分类是合理的。图片在 full 视图的 data.images 里，能正常拿到。Hark 回了「红色」。
 - compact 视图只给 image_count:1，看图必须用 view=full；可以考虑给 compact 加一个图片 URL 或附件接口（与清单里的「图片/附件专用接口」合并）。
+- 新问题 F（重要）：Trae 会**改写 tool_call_id**。Seat 发出的是 call_01a15c…，Trae 回传 assistant.tool_calls / tool 消息时用的是自己生成的 call_NJeu…。服务器匹配不上：seattool 一直等不到结果，Trae 端看起来卡住；tool_id 显示成 unknown；同一份 tool 结果在之后每次请求里都会被重新推送（共 4 次）。修法：ID 对不上时，按「本轮最后发出的 tool_calls 的名字和参数」兜底匹配，并按 (会话, 内容哈希) 去重。
+- 新问题 G（重要）：Trae 把会变化的 system-reminder（终端数量、模式等）放进第一条 user 消息，导致首条消息哈希每轮都变，会话被拆开（cnv_…5032 → cnv_…d046）。修法：会话锚点改成快照前缀比对，计算锚点前剥离 <system-reminder> 和 <uploaded_files> 这类注入（与 §0c 无记录方案一起做）。
+- 观察：Trae 的用户附件只传本地路径（<uploaded_files>），不内联图片，Seat 需要用 Read 工具去读；请求里带 thinking:{type:enabled}，model 字段为 openhuman-human；UA 是 hertz（字节 Hertz 框架）。
