@@ -116,7 +116,6 @@ enum Cmd {
     /// or one JSON object; or `-` for the whole input on stdin. Checked before sending.
     Tool {
         name: String,
-        #[arg(allow_hyphen_values = true)]
         input: Vec<String>,
         /// Send even if the input does not match the tool's schema
         #[arg(long)]
@@ -390,12 +389,27 @@ impl Ctx {
     /// every new event would sit below our cursor and never be returned.
     fn poll(&mut self, wait: u64) -> R<Value> {
         let wait = wait.min(POLL_MAX);
+        let mut from_zero = self.st.cursor == 0;
         let mut r = self.inbox(self.st.cursor, wait)?;
         let latest = r.get("latest").and_then(|v| v.as_u64());
         if matches!(latest, Some(l) if l < self.st.cursor) {
             self.st.cursor = 0;
+            from_zero = true;
             r = self.inbox(0, 0)?;
         }
+        // Reading from the start (a fresh state file, or a re-created seat)
+        // returns whatever the queue still holds, including messages another
+        // seat process already answered. Only those whose turn is still open
+        // need an answer; replaying the rest makes an agent answer twice.
+        let open: Vec<String> = r
+            .get("waiting_turns")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
         if let Some(c) = r.get("cursor").and_then(|v| v.as_u64()) {
             self.st.cursor = c;
         }
@@ -407,6 +421,14 @@ impl Ctx {
         {
             // Delivery receipts tell the seat nothing it can act on.
             if matches!(s(&e, "type"), Some("reply.delivered")) {
+                continue;
+            }
+            if from_zero
+                && s(&e, "type") == Some("message.received")
+                && !open
+                    .iter()
+                    .any(|o| Some(o.as_str()) == s(&e, "conversation_id"))
+            {
                 continue;
             }
             if s(&e, "type") == Some("tool.result") {

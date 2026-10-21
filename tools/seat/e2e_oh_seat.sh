@@ -12,7 +12,7 @@ set -eu
 URL=${1:-https://api.juwanh.com}
 OHS=${OH_SEAT:-oh-seat}
 CK=$(grep -o 'ohk_[A-Za-z0-9_]*' "$OPENHUMAN_CALLER_KEY_FILE" | head -1)
-T=$(mktemp -d); trap 'rm -rf $T' EXIT
+T=$(mktemp -d); trap 'kill $(jobs -p) 2>/dev/null; rm -rf $T' EXIT
 export OH_SEAT_URL=$URL OH_SEAT_KEY_FILE=$OPENHUMAN_SEAT_KEY_FILE
 A="$OHS --state $T/a.json"; B="$OHS --state $T/b.json"
 pass() { echo "PASS $*"; }; fail() { echo "FAIL $*"; exit 1; }
@@ -28,7 +28,7 @@ CURL=$!
 
 $A next --timeout 60 > $T/a.out || fail "consumer A got nothing"
 grep -q "$TAG" $T/a.out && pass "consumer A sees the message" || fail "A: $(cat $T/a.out)"
-grep -q "tools in .*shell" $T/a.out && pass "first sight lists the conversation's tools" || fail "no tools line"
+grep -q "^  shell(cmd\*: string)" $T/a.out && pass "first sight lists the conversation's tools" || fail "no tools line"
 $B next --timeout 30 > $T/b.out && grep -q "$TAG" $T/b.out && pass "consumer B sees it too (own cursor)" || fail "B: $(cat $T/b.out)"
 
 $A tool shell cmd='echo hi' --timeout 1 > $T/tool.out || true
