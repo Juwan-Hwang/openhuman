@@ -84,6 +84,7 @@ async fn body_json(resp: Response) -> Option<Value> {
     serde_json::from_str(text.trim()).ok()
 }
 
+#[allow(clippy::result_large_err)] // the error is the HTTP response itself, built once
 fn chat_request(v: Value) -> Result<ChatCompletionRequest, Response> {
     serde_json::from_value::<ChatCompletionRequest>(v).map_err(|e| {
         (
