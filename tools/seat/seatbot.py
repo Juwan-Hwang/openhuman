@@ -16,7 +16,7 @@ SHELL_NAMES = ["Bash", "bash", "shell", "exec_command", "local_shell", "RunComma
 def call(method, path, body=None, timeout=100):
     req = urllib.request.Request(BASE + path, method=method,
                                  data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json"})
+                                 headers={"Authorization": "Bearer " + KEY, "Content-Type": "application/json", "User-Agent": "openhuman-seatbot/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read() or b"{}")
@@ -57,6 +57,8 @@ while time.time() < DEADLINE:
         t = ev.get("type")
         log("event", type=t, conv=ev.get("conversation_id"), kind=ev.get("kind"), client=ev.get("client"),
             text=(ev.get("text") or ev.get("output") or "")[:300], tool_id=ev.get("tool_id"))
+        if t in ("error", "tool.result"):
+            log("full", ev=ev)
         if t != "message.received":
             continue
         conv = ev["conversation_id"]
