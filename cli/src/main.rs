@@ -108,6 +108,9 @@ enum Cmd {
         /// Timeout for --next
         #[arg(long, default_value_t = 100)]
         timeout: u64,
+        /// Reply even though a tool call in this conversation has no result yet
+        #[arg(long)]
+        force: bool,
     },
     /// Ask the caller to run one of its tools (or several: `A k=v + B k=v`); waits and prints results in order.
     ///
@@ -212,6 +215,9 @@ struct State {
     /// Late results already mentioned once by `next`.
     #[serde(default)]
     hinted: Vec<String>,
+    /// Tool calls sent whose result has not been seen: [invocation, conv, tool].
+    #[serde(default)]
+    pending: Vec<[String; 3]>,
 }
 
 #[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -468,6 +474,11 @@ impl Ctx {
     }
 
     fn note(&mut self, e: &Value) {
+        if s(e, "type") == Some("tool.result") {
+            if let Some(i) = s(e, "invocation_id") {
+                self.st.pending.retain(|p| p[0] != i);
+            }
+        }
         let Some(c) = conv_id(e) else { return };
         let info = self.st.convs.entry(c.to_string()).or_default();
         if let Some(cl) = s(e, "client") {
@@ -477,6 +488,8 @@ impl Ctx {
             info.last = s(e, "text").unwrap_or("").chars().take(100).collect();
             info.t = now_secs();
             info.aux = aux_hint(e).is_some();
+            // A new message opens a new turn: older calls are settled.
+            self.st.pending.retain(|p| p[1] != c);
         }
         if self.st.convs.len() > 50 {
             let mut v: Vec<_> = self
@@ -860,8 +873,25 @@ fn cmd_reply(
     conv: Option<String>,
     reasoning: Option<String>,
     more: bool,
+    force: bool,
 ) -> R<u8> {
     let c = cx.conv(conv)?;
+    // Ending the turn while a call is out loses the reply: it rides along
+    // with the call and the caller, busy running the tool, never shows it.
+    if !more && !force && cx.st.pending.iter().any(|p| p[1] == c) {
+        let _ = cx.poll(0);
+    }
+    if !more && !force {
+        let out: Vec<&[String; 3]> = cx.st.pending.iter().filter(|p| p[1] == c).collect();
+        if !out.is_empty() {
+            let list: Vec<String> = out.iter().map(|p| format!("{} ({})", p[0], p[2])).collect();
+            return usage(format!(
+                "a tool call in {c} has no result yet: {}\nwait for it with `oh-seat result {}`, then reply (--force replies anyway)",
+                list.join(", "),
+                out[0][0]
+            ));
+        }
+    }
     let text = match (file, text) {
         (Some(f), _) if f.as_os_str() != "-" => {
             std::fs::read_to_string(&f).or_else(|e| usage(format!("{}: {e}", f.display())))?
@@ -909,6 +939,7 @@ fn await_result(cx: &mut Ctx, inv: &str, deadline: Instant) -> R<Option<Value>> 
         {
             let e = cx.st.buffer.remove(i);
             cx.st.done.push(inv.to_string());
+            cx.st.pending.retain(|p| p[0] != inv);
             let n = cx.st.done.len();
             if n > 200 {
                 cx.st.done.drain(..n - 200);
@@ -972,6 +1003,7 @@ fn exit_code(e: &Value) -> Option<i64> {
             "exit code: ",
             "exit code ",
             "exited with code ",
+            "exit: ",
         ] {
             if let Some(rest) = l.strip_prefix(pre) {
                 let n: String = rest
@@ -1267,11 +1299,25 @@ fn cmd_tool(
             )),
         }));
     }
+    for (r, b) in invs.iter().zip(&bodies) {
+        if let Ok(i) = r {
+            cx.st.pending.push([
+                i.clone(),
+                c.clone(),
+                b["tool"].as_str().unwrap_or("?").to_string(),
+            ]);
+        }
+    }
+    let keep = cx.st.pending.len().saturating_sub(50);
+    cx.st.pending.drain(..keep);
+    cx.save();
     if n == 1 {
         let inv = invs.pop().unwrap()?;
         // An auxiliary call answered by a tool call (Grok's session_title)
         // takes the call itself as its answer: nothing comes back.
         if cx.st.convs.get(&c).map(|i| i.aux).unwrap_or(false) {
+            cx.st.pending.retain(|p| p[0] != inv);
+            cx.save();
             if cx.json {
                 cx.out(&json!({"invocation_id": inv, "auxiliary": true}));
             } else {
@@ -1794,8 +1840,9 @@ fn run(cli: Cli) -> R<u8> {
             more,
             next,
             timeout,
+            force,
         } => {
-            cmd_reply(&mut cx, text, file, conv, reasoning, more)?;
+            cmd_reply(&mut cx, text, file, conv, reasoning, more, force)?;
             if next {
                 cmd_next(&mut cx, timeout, false)
             } else {
@@ -1913,6 +1960,7 @@ mod tests {
             Some(127)
         );
         assert_eq!(exit_code(&r("hello")), None);
+        assert_eq!(exit_code(&r("exit: 1\nboom")), Some(1));
         assert_eq!(
             exit_code(&r("x\n<shellId: 0 completed with exit code 2>")),
             Some(2)
