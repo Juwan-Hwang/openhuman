@@ -58,7 +58,7 @@ async fn next_json_skip_capability(
 ) -> serde_json::Value {
     loop {
         let ev = next_json(ws).await;
-        if ev["event_type"] != "capability.updated" {
+        if ev["event_type"] != "capability.updated" && ev["event_type"] != "conversation.started" {
             return ev;
         }
     }

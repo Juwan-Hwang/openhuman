@@ -182,6 +182,28 @@ pub fn capability_updated(
     )
 }
 
+/// Build a `conversation.started` event.
+///
+/// Sent when a request opens a conversation the server has not seen: the
+/// caller started a new session. Consoles and agent seats open it as a
+/// thread of its own.
+pub fn conversation_started(
+    conversation_id: &str,
+    agent_id: &str,
+    agent_name: &str,
+    client: &str,
+) -> Event {
+    Event::new(
+        "conversation.started",
+        conversation_id,
+        serde_json::json!({
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "client": client,
+        }),
+    )
+}
+
 /// Build a `tool.result` event (Phase 7).
 ///
 /// Pushed to the human's WS client when the agent returns a result

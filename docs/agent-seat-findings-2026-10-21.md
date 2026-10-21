@@ -11,6 +11,22 @@
 - [已修] Seat 每次接入都会注入「人类专家已上线」。现在 Seat 默认关闭，可用 `OPENHUMAN_SEAT_ANNOUNCE=1` 打开；**真人 /ws 上线时保持原样**（用户明确要求）。
 - 测试：cargo test 全部通过。clippy 只在生产副本的 `tests/ws_chain.rs` 报了一个旧的 `redundant_locals`，不是这次改动引入的。
 
+## 0b. 第二轮修复（2026-10-21 08:10 CST 已部署，备份 tag 20261021-080626）
+
+- [已修] P0-1 `developer` 角色按 system 处理。
+- [已修] P0-2 只把「最后一条 assistant 之后」的消息当作新内容：tail 中的所有 user 拼接后，用 dsh 规则剥掉注入（runtime context / skill reminder），真实原话不再丢失；原样 tail 放在 `raw_tail`（Seat 的 full 视图里可见）。
+- [已修] P0-3 没有显式 ID 时，会话 key 改为 `prm/cli:<指纹>:<client>:<首条 user 哈希>`，新会话会拿到新的 conversation_id；新会话创建时推送 `conversation.started`（Seat 和 /ws 都会收到）。**Flutter 端需要处理这个事件（新建会话卡片），属于客户端待办。**
+- [部分] P0-4 辅助请求（无 tools、只有 1 条非 system 消息、带 max_tokens 或 response_format）会被标为 `kind: auxiliary`，归入 `aux:` 会话，不覆盖主 context，也不推 conversation.started。Qoder 的「技能复盘」带 tools，暂时识别不了，仍会落进主会话。
+- [已修] P1-5 旧 tool.result 和旧 user 消息不再重复推送。
+- [已修] P1-6 capability.updated 只在内容有变化时推送。
+- [已修] P1-8 message.received 附带 `request`（client、kind、system_prompt_head、response_format、max_tokens、tool_count）；compact 视图对辅助请求直接给出输出格式要求。
+- [已修] P1-9 应答方只有 Seat 时，不再注入「人类专家当前在线」；有真人设备时照旧。
+- [已修] P1-10 新增 `GET /v1/seat/history?conversation_id=&limit=`。
+- [已修] P2-12 `/v1/models` 返回 context_window/context_length、max_output_tokens/max_tokens（以及 camelCase 形式）、input_modalities 和 capabilities；数值可通过 `OPENHUMAN_MODEL_CONTEXT_WINDOW` / `OPENHUMAN_MODEL_MAX_OUTPUT` 覆盖。
+- [已修] P2-13 识别 Qoder（system prompt 指纹）和 DeepSeek Harness（UA）。
+- 线上 e2e 已验证（临时 caller key，测完已撤销）：developer 角色、注入剥离、conversation.started、流式不带在线提示、续轮只推 tool.result。
+- 仍待修：#7 capability.updated 的 conversation_id 字段、#14 compact 视图补参数名、#15 附件接口、#17 seat/send 简化、#18 主动发消息、#19 重启后队列持久化、#20 唤醒机制；新发现：Seat 接入时，drain backlog 会把未送达的旧 tool 消息当成 message.received 推出来。
+
 ## 1. 用户已做的设计决定
 
 | # | 决定 |
