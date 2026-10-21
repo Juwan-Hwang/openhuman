@@ -102,3 +102,9 @@
 - 查看调用方实际发出的请求：`docker exec openhuman-server ls -t observations`，文件里有 headers 和 body，auth 已打码。
 - 想知道某个请求要什么格式：`GET /v1/seat/capabilities?view=full` → `context.system_prompt`（只保留最近一次，见问题 8）。
 - 图片：`GET /v1/seat/inbox?view=full` 里 `data.images[]` 是 data URL。
+
+## 0c. 用户设计决定（2026-10-21 09:05 CST，WorkBuddy 对话中）
+- 服务器默认**无记录**：调用方每次发来的全量上下文就是唯一事实来源，每轮现场解析；原先实现没理解这个意图，要改回来。
+- 用户想留档时，通过一个「保存」按键保存当时的会话记录（真人端是按钮，Seat 端是接口）。
+- Hark 提出的方案：每会话内存保留「最后请求快照 + 出站队列 + 水位线」；history/时间线从快照解析；新会话识别改用快照前缀比对。待用户确认：出站队列是否也只放内存（Hark 倾向是）。
+- 同轮新发现：history 角色标签反了（调用方=agent、应答方=human），回复 role 为空，时间为 UTC；Seat 重新接入时 drain 会把旧 tool 输出当成 message.received；03:16 的消息因为没有唤醒机制一直没回。
