@@ -595,7 +595,9 @@ fn expected_format(req: &ChatCompletionRequest, sp: &str) -> Option<String> {
         return Some("JSON {\"suggestions\": [...]} (empty list when none)".to_string());
     }
     if hay.contains("title") {
-        if hay.contains("\"title\"") || hay.contains("json") {
+        // Only a quoted "title" key means a JSON object: a bare mention of
+        // JSON elsewhere in a long prompt (opencode's) does not.
+        if hay.contains("\"title\"") || hay.contains("{title") {
             return Some("JSON {\"title\": \"...\"}".to_string());
         }
         return Some("only a short title, no quotes or extra text".to_string());
@@ -2850,6 +2852,10 @@ mod tests {
         })).unwrap();
         assert!(expected_format(&sugg, "Reply NO_SUGGESTION if none").unwrap().contains("NO_SUGGESTION"));
         assert_eq!(expected_format(&sugg, "You are helpful."), None);
+        let oc = "You are a title generator. You output ONLY a thread title. Keep exact: technical terms, JSON keys";
+        assert_eq!(expected_format(&title, oc).as_deref(), Some("only a short title, no quotes or extra text"));
+        let cc = "Return JSON with a single \"title\" field";
+        assert!(expected_format(&title, cc).unwrap().contains("{\"title\""));
     }
 
     #[test]

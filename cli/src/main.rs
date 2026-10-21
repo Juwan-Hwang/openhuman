@@ -13,6 +13,16 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+// stdout closed early (`| head`): stop quietly instead of panicking.
+macro_rules! println {
+    ($($t:tt)*) => {{
+        use std::io::Write as _;
+        if writeln!(std::io::stdout(), $($t)*).is_err() {
+            std::process::exit(0)
+        }
+    }};
+}
+
 const POLL_MAX: u64 = 85; // server caps a long-poll at 90 s
 const UA: &str = concat!("oh-seat/", env!("CARGO_PKG_VERSION"));
 
@@ -121,9 +131,12 @@ enum Cmd {
         /// Only what changed since the last `caps` of this conversation
         #[arg(long)]
         diff: bool,
-        /// Print one tool's parameter schema
+        /// One tool: signature and what each parameter means
         #[arg(long)]
         tool: Option<String>,
+        /// With --tool: the raw JSON schema instead
+        #[arg(long)]
+        schema: bool,
     },
     /// Recent messages of a conversation
     History {
@@ -147,6 +160,7 @@ enum Cmd {
 
 // ── errors ──
 
+#[derive(Debug)]
 struct Fail(u8, String);
 type R<T> = Result<T, Fail>;
 fn usage<T>(m: impl Into<String>) -> R<T> {
@@ -382,9 +396,9 @@ fn aux_hint(e: &Value) -> Option<String> {
         Some("suggestion lines, or exactly NO_SUGGESTION")
     } else if hay.contains("\"suggestions\"") {
         Some("JSON {\"suggestions\": [...]} (empty list when none)")
-    } else if hay.contains("title") && (hay.contains("\"title\"") || hay.contains("json")) {
+    } else if hay.contains("title") && hay.contains("\"title\"") {
         Some("JSON {\"title\": \"...\"}")
-    } else if hay.contains("title") && kind == Some("auxiliary") || text.starts_with("generate a title") {
+    } else if (hay.contains("title") && kind == Some("auxiliary")) || text.starts_with("generate a title") {
         Some("only a short title, no quotes or extra text")
     } else {
         None
@@ -396,17 +410,39 @@ fn aux_hint(e: &Value) -> Option<String> {
     }
 }
 
+fn max_output() -> usize {
+    std::env::var("OH_SEAT_MAX_OUTPUT").ok().and_then(|v| v.parse().ok()).unwrap_or(30000)
+}
+
+/// Long tool output is cut so it does not flood the agent's context; the
+/// whole of it is kept in a file the agent can read or grep.
+fn cap_output(body: String, id: &str) -> String {
+    let max = max_output();
+    let n = body.chars().count();
+    if n <= max {
+        return body;
+    }
+    let dir = home().join(".openhuman").join("results");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("{}.txt", id.replace(['/', '\\', '.'], "_")));
+    let saved = std::fs::write(&path, &body).is_ok();
+    let head: String = body.chars().take(max * 2 / 3).collect();
+    let tail: String = body.chars().skip(n - max / 3).collect();
+    let note = if saved { format!("full output: {}", path.display()) } else { "full output could not be saved".into() };
+    format!("{head}\n[... {} of {n} chars cut; {note} ...]\n{tail}", n - head.chars().count() - tail.chars().count())
+}
+
 fn print_event(e: &Value) {
     let c = conv_id(e).unwrap_or("-");
     match s(e, "type").unwrap_or("event") {
         "message.received" => {
             let mut h = format!("MESSAGE conv={c} client={}", s(e, "client").unwrap_or("?"));
             if let Some(a) = aux_hint(e) {
-                h.push_str(&format!("  AUX: {a}"));
+                h.push_str(&format!("  AUX: {a}; reply with -c {c}"));
             }
             println!("{h}");
             println!("{}", s(e, "text").unwrap_or(""));
-            if let Some(n) = e.get("images").and_then(|v| v.as_array()).map(|a| a.len()).filter(|n| *n > 0) {
+            if let Some(n) = e.get("image_count").and_then(|v| v.as_u64()).or_else(|| e.get("images").and_then(|v| v.as_array()).map(|a| a.len() as u64)).filter(|n| *n > 0) {
                 println!("[{n} image(s) attached: oh-seat history -c {c}]");
             }
         }
@@ -422,7 +458,7 @@ fn print_event(e: &Value) {
                 .map(String::from)
                 .or_else(|| e.get("error").filter(|v| !v.is_null()).map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string())))
                 .unwrap_or_default();
-            println!("{body}");
+            println!("{}", cap_output(body, s(e, "invocation_id").unwrap_or("result")));
         }
         t => {
             let mut rest = e.as_object().cloned().unwrap_or_default();
@@ -441,6 +477,15 @@ fn parse_input(args: &[String]) -> R<Value> {
     if args.is_empty() {
         return Ok(json!({}));
     }
+    if args.len() == 1 && args[0] == "-" {
+        let mut b = String::new();
+        std::io::stdin().read_to_string(&mut b).or_else(|e| usage(format!("stdin: {e}")))?;
+        let lines: Vec<String> = b.lines().filter(|l| !l.trim().is_empty()).map(String::from).collect();
+        if b.trim_start().starts_with('{') {
+            return serde_json::from_str(b.trim()).or_else(|e| usage(format!("stdin is not valid JSON: {e}")));
+        }
+        return parse_input(&lines);
+    }
     if args.len() == 1 && args[0].trim_start().starts_with('{') {
         return serde_json::from_str(&args[0]).or_else(|e| usage(format!("tool input is not valid JSON: {e}")));
     }
@@ -455,7 +500,11 @@ fn parse_input(args: &[String]) -> R<Value> {
         let Some((k, v)) = a.split_once('=') else {
             return usage(format!("tool input `{a}`: use key=value, or one JSON object"));
         };
-        let val = if let Some(p) = v.strip_prefix('@') {
+        let val = if v == "@-" {
+            let mut b = String::new();
+            std::io::stdin().read_to_string(&mut b).or_else(|e| usage(format!("stdin: {e}")))?;
+            Value::String(b)
+        } else if let Some(p) = v.strip_prefix('@') {
             Value::String(std::fs::read_to_string(p).or_else(|e| usage(format!("{k}=@{p}: {e}")))?)
         } else {
             match serde_json::from_str::<Value>(v) {
@@ -482,7 +531,10 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
             cx.st.buffer = keep.into_iter().filter(|e| s(e, "type") == Some("tool.result")).collect();
             let mut new_convs = Vec::new();
             for e in &show {
-                if s(e, "type") == Some("message.received") {
+                // Auxiliary calls (titles, suggestions) never take over the
+                // active conversation: a later bare `reply` must still land
+                // in the real chat.
+                if s(e, "type") == Some("message.received") && aux_hint(e).is_none() {
                     cx.st.active = conv_id(e).map(String::from);
                 }
                 if s(e, "type") == Some("conversation.started") {
@@ -491,7 +543,33 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
                     }
                 }
             }
+            for e in &show {
+                if let Some(c) = conv_id(e).filter(|_| aux_hint(e).is_none()) {
+                    if !cx.st.caps.contains_key(c) && !new_convs.iter().any(|n| n == c) {
+                        new_convs.push(c.to_string());
+                    }
+                }
+            }
+            let mut tools_lines = Vec::new();
+            for c in &new_convs {
+                if let Ok(r) = fetch_caps(cx, c) {
+                    let (tools, sp_len, client) = caps_summary(&r);
+                    if let Some(cl) = client {
+                        cx.st.convs.entry(c.clone()).or_default().client = Some(cl);
+                    }
+                    tools_lines.push(format!("tools in {c}: {}  (system prompt {sp_len} chars; `oh-seat caps` for signatures)", tools.join(", ")));
+                    cx.st.caps.insert(c.clone(), caps_text(&r, true));
+                }
+            }
             cx.save();
+            let mut show = show;
+            for e in show.iter_mut() {
+                if s(e, "client").is_none() {
+                    if let Some(cl) = conv_id(e).and_then(|c| cx.st.convs.get(c)).and_then(|i| i.client.clone()) {
+                        e["client"] = json!(cl);
+                    }
+                }
+            }
             for e in &show {
                 if cx.json {
                     cx.out(e);
@@ -499,18 +577,11 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
                     print_event(e);
                 }
             }
-            // A new conversation: say what tools it has, so the next step needs no extra call.
-            for c in new_convs {
-                if let Ok(r) = fetch_caps(cx, &c) {
-                    let (tools, sp_len, client) = caps_summary(&r);
-                    if !cx.json {
-                        println!("tools: {}  (system prompt {} chars; `oh-seat caps --tool NAME` for a schema)", tools.join(", "), sp_len);
-                    }
-                    if let Some(cl) = client {
-                        cx.st.convs.entry(c.clone()).or_default().client = Some(cl);
-                    }
-                    cx.st.caps.insert(c, caps_text(&r, true));
-                    cx.save();
+            // A conversation seen for the first time: say what tools it has,
+            // so the next step needs no extra call.
+            if !cx.json {
+                for l in tools_lines {
+                    println!("{l}");
                 }
             }
             return Ok(OK);
@@ -529,7 +600,7 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
 fn cmd_reply(cx: &mut Ctx, text: Option<String>, file: Option<PathBuf>, conv: Option<String>, reasoning: Option<String>, more: bool) -> R<u8> {
     let c = cx.conv(conv)?;
     let text = match (file, text) {
-        (Some(f), _) => std::fs::read_to_string(&f).or_else(|e| usage(format!("{}: {e}", f.display())))?,
+        (Some(f), _) if f.as_os_str() != "-" => std::fs::read_to_string(&f).or_else(|e| usage(format!("{}: {e}", f.display())))?,
         (None, Some(t)) if t != "-" => t,
         _ => {
             let mut b = String::new();
@@ -639,6 +710,52 @@ fn tool_name(t: &Value) -> String {
     ["id", "name"].iter().find_map(|k| s(t, k)).or_else(|| t.pointer("/function/name").and_then(|v| v.as_str())).unwrap_or("?").to_string()
 }
 
+fn tool_schema(t: &Value) -> &Value {
+    t.get("input_schema").or_else(|| t.get("parameters")).or_else(|| t.pointer("/function/parameters")).unwrap_or(&Value::Null)
+}
+
+fn tool_desc(t: &Value) -> &str {
+    s(t, "description").or_else(|| t.pointer("/function/description").and_then(|v| v.as_str())).unwrap_or("")
+}
+
+fn first_sentence(d: &str, max: usize) -> String {
+    let line = d.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let cut = line.find(". ").map(|i| &line[..=i]).unwrap_or(line);
+    let mut out: String = cut.chars().take(max).collect();
+    if cut.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
+
+fn ptype(p: &Value) -> String {
+    match p.get("type") {
+        Some(Value::String(t)) if t == "array" => {
+            let inner = p.get("items").map(ptype).unwrap_or_else(|| "any".into());
+            format!("{inner}[]")
+        }
+        Some(Value::String(t)) => t.clone(),
+        Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("|"),
+        _ if p.get("enum").is_some() => "enum".into(),
+        _ => "any".into(),
+    }
+}
+
+/// `Bash(command*: string, timeout: number)` — required params first, marked *.
+fn tool_sig(t: &Value) -> String {
+    let sc = tool_schema(t);
+    let req: Vec<&str> = sc.get("required").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str()).collect()).unwrap_or_default();
+    let mut params: Vec<(bool, String)> = Vec::new();
+    if let Some(props) = sc.get("properties").and_then(|v| v.as_object()) {
+        for (k, p) in props {
+            let r = req.contains(&k.as_str());
+            params.push((!r, format!("{k}{}: {}", if r { "*" } else { "" }, ptype(p))));
+        }
+    }
+    params.sort_by(|a, b| a.0.cmp(&b.0));
+    format!("{}({})", tool_name(t), params.into_iter().map(|p| p.1).collect::<Vec<_>>().join(", "))
+}
+
 fn caps_summary(r: &Value) -> (Vec<String>, usize, Option<String>) {
     let tools = tool_list(r).iter().map(tool_name).collect();
     let sp = r.pointer("/context/system_prompt").or_else(|| r.get("system_prompt")).and_then(|v| v.as_str()).unwrap_or("");
@@ -658,7 +775,10 @@ fn caps_text(r: &Value, full: bool) -> String {
             out.push(t.to_string());
         }
     } else {
-        out.push(format!("system prompt: {sp_len} chars (--full to read it)"));
+        for t in tool_list(r) {
+            out.push(format!("  {}  {}", tool_sig(&t), first_sentence(tool_desc(&t), 90)));
+        }
+        out.push(format!("system prompt: {sp_len} chars (--full to read it; * = required)"));
     }
     out.join("\n")
 }
@@ -680,7 +800,7 @@ fn line_diff(old: &str, new: &str) -> String {
     out.join("\n")
 }
 
-fn cmd_caps(cx: &mut Ctx, conv: Option<String>, full: bool, diff: bool, tool: Option<String>) -> R<u8> {
+fn cmd_caps(cx: &mut Ctx, conv: Option<String>, full: bool, diff: bool, tool: Option<String>, schema: bool) -> R<u8> {
     let c = cx.conv(conv)?;
     let r = fetch_caps(cx, &c)?;
     if let Some(name) = tool {
@@ -691,10 +811,24 @@ fn cmd_caps(cx: &mut Ctx, conv: Option<String>, full: bool, diff: bool, tool: Op
         };
         if cx.json {
             cx.out(t);
+        } else if schema {
+            println!("{}", serde_json::to_string_pretty(tool_schema(t)).unwrap_or_default());
         } else {
-            let schema = t.get("input_schema").or_else(|| t.get("parameters")).or_else(|| t.pointer("/function/parameters")).unwrap_or(t);
-            println!("{name}: {}", s(t, "description").unwrap_or("").lines().next().unwrap_or(""));
-            println!("{}", serde_json::to_string_pretty(schema).unwrap_or_default());
+            println!("{}", tool_sig(t));
+            println!("{}", first_sentence(tool_desc(t), 300));
+            if let Some(props) = tool_schema(t).get("properties").and_then(|v| v.as_object()) {
+                for (k, p) in props {
+                    let mut line = format!("  {k}: {}", ptype(p));
+                    if let Some(en) = p.get("enum").and_then(|v| v.as_array()) {
+                        line.push_str(&format!(" one of {}", Value::Array(en.clone())));
+                    }
+                    if let Some(d) = s(p, "description") {
+                        line.push_str(&format!(" — {}", first_sentence(d, 160)));
+                    }
+                    println!("{line}");
+                }
+            }
+            println!("(oh-seat tool {name} key=value ... ; --schema for raw JSON)");
         }
         return Ok(OK);
     }
@@ -804,7 +938,7 @@ fn run(cli: Cli) -> R<u8> {
         }
         Cmd::Tool { name, input, conv, text, reasoning, timeout } => cmd_tool(&mut cx, name, input, conv, text, reasoning, timeout),
         Cmd::Result { invocation_id, timeout } => wait_result(&mut cx, &invocation_id, timeout),
-        Cmd::Caps { conv, full, diff, tool } => cmd_caps(&mut cx, conv, full, diff, tool),
+        Cmd::Caps { conv, full, diff, tool, schema } => cmd_caps(&mut cx, conv, full, diff, tool, schema),
         Cmd::History { conv, limit } => cmd_history(&mut cx, conv, limit),
         Cmd::Convs => cmd_convs(&cx),
         Cmd::Use { conv } => {
