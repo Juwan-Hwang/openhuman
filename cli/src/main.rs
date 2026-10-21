@@ -1180,6 +1180,19 @@ fn show_interrupting(cx: &mut Ctx, conv: Option<&str>) -> R<()> {
 /// with "Command exited with code 2" / "Process exited with code 2".
 fn exit_code(e: &Value) -> Option<i64> {
     let out = s(e, "output")?;
+    // `; echo exit=$?` (what the guide suggests for callers whose shell
+    // results carry no status, like opencode): its last line is the code.
+    if let Some(last) = out.lines().rev().find(|l| !l.trim().is_empty()) {
+        let l = last.trim();
+        if let Some(n) = l
+            .strip_prefix("exit=")
+            .or_else(|| l.strip_prefix("exit_code="))
+        {
+            if let Ok(n) = n.parse::<i64>() {
+                return Some(n);
+            }
+        }
+    }
     let tail: String = {
         let t = out.trim_end();
         let start = t.char_indices().rev().nth(400).map(|(i, _)| i).unwrap_or(0);
@@ -2289,6 +2302,10 @@ mod tests {
         );
         assert_eq!(exit_code(&r("hello")), None);
         assert_eq!(exit_code(&r("exit: 1\nboom")), Some(1));
+        assert_eq!(exit_code(&r("boom\nexit=1\n")), Some(1));
+        assert_eq!(result_exit(&r("boom\nexit=1")), TOOL_ERR);
+        assert_eq!(exit_code(&r("23 passed\nexit=0")), Some(0));
+        assert_eq!(exit_code(&r("exit=1 is a flag\nok")), None);
         assert_eq!(
             exit_code(&r("x\n<shellId: 0 completed with exit code 2>")),
             Some(2)
