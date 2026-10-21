@@ -119,6 +119,6 @@
 ## 0e. dsh 复测（2026-10-21 09:16–09:23 CST，Zephyr 仓库，dsh 已更新）
 - 通过：识别 deepseek_harness；新会话 + conversation.started；developer 角色没关也不报错；/v1/models 自动获取配置成功；注入剥离（raw_user_parts 3）；read / write / edit / pwsh 都能在本地生效；标题辅助请求被标成 auxiliary。
 - 新问题 C：usage 永远为 0，dsh 显示 0 tok / 0.0 tok/s。服务端应估算 prompt / completion tokens（CJK 1 字 ≈ 1 tok，其他 ≈ 4 字符 1 tok，或接 tokenizer），流式最后一帧 include_usage 时也带上。
-- 新问题 D（重要）：dsh 对 edit 弹确认，约 4 分钟后把 [tool 结果, user, user] 放在同一个请求里发来；服务器只推了 message.received，没推 tool.result，seat tool-call 一直等不到结果。尾部提取要先给 tool 消息发 tool.result，再推 user 消息。
+- 新问题 D（更正）：dsh 对 edit 弹确认，约 4 分钟后把 [tool 结果, user, user] 放在同一个请求里发来。tool.result 没有丢，但推送顺序反了：message.received 在 cursor 82，edit 的 tool.result 在 83。seat 的 tool-call 等待（100 秒）在用户确认前就超时了。应该先推 tool.result，再推 user 消息；另外长时间等待确认的情况需要一个 pending 状态。用户是在任务进行中直接插话发的消息（不是排队），dsh 会把插话合并到下一个请求里。
 - 观察：dsh 对 write/edit 带上 justification 却不带 sandbox_permissions 时会报错，但 seat 收到的状态是 success（工具报错被当成成功）。可以考虑识别 "Error:" 前缀，或交给 agent 自己判断。
 - 观察：用户粘贴的内容在 dsh 里会成为第二条 user 消息，服务器已经正确合并。
