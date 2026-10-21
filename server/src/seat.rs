@@ -183,6 +183,26 @@ fn seat_grace() -> Duration {
     Duration::from_secs(secs)
 }
 
+/// Events a reaped seat still held that no consumer had read, by key. They
+/// were already marked delivered (they reached the seat's device), so
+/// without this a message that landed just before the reap was lost.
+fn orphans() -> &'static std::sync::Mutex<HashMap<String, Vec<Value>>> {
+    static O: OnceLock<std::sync::Mutex<HashMap<String, Vec<Value>>>> = OnceLock::new();
+    O.get_or_init(Default::default)
+}
+
+impl SeatState {
+    /// Queued events past every consumer's acknowledgement.
+    fn unread(&self) -> Vec<Value> {
+        let seen = self.consumers.values().map(|(a, _)| *a).max().unwrap_or(0);
+        self.queue
+            .iter()
+            .filter(|(c, _)| *c > seen)
+            .map(|(_, v)| v.clone())
+            .collect()
+    }
+}
+
 /// Whether this human's seat detached within the grace period.
 pub(crate) fn seat_recently_detached(human_id: &str) -> bool {
     detached_at()
@@ -234,6 +254,16 @@ async fn attach(app: &AppState, p: &AuthPrincipal) -> Arc<Seat> {
         }
     });
 
+    // What the previous seat on this key held unread comes first.
+    let carried = orphans()
+        .lock()
+        .ok()
+        .and_then(|mut o| o.remove(&key))
+        .unwrap_or_default();
+    for v in carried {
+        seat.push(v).await;
+    }
+
     // Same backlog + presence handling as a WebSocket connect.
     crate::ws::handler::drain_pending_messages(app, &seat.human_id, &tx).await;
     // The "human expert is online" notice is injected into the caller's
@@ -256,6 +286,12 @@ async fn attach(app: &AppState, p: &AuthPrincipal) -> Arc<Seat> {
             let idle = reap_seat.state.lock().await.last_poll.elapsed();
             if idle > ttl {
                 hub().seats.lock().await.remove(&key);
+                let unread = reap_seat.state.lock().await.unread();
+                if !unread.is_empty() {
+                    if let Ok(mut o) = orphans().lock() {
+                        o.entry(key.clone()).or_default().extend(unread);
+                    }
+                }
                 if let Ok(mut m) = detached_at().lock() {
                     m.insert(reap_seat.human_id.clone(), Instant::now());
                 }
@@ -1110,6 +1146,24 @@ mod cursor_origin_tests {
         assert!(a > 1_600_000_000_000, "origin is a ms timestamp");
         assert!(b > a);
     }
+}
+
+#[test]
+fn unread_is_past_every_consumer() {
+    let now = Instant::now();
+    let mut st = SeatState {
+        queue: VecDeque::new(),
+        next_cursor: 0,
+        last_poll: now,
+        seen_ids: VecDeque::new(),
+        consumers: HashMap::new(),
+    };
+    for c in 1..=4 {
+        st.queue.push_back((c, json!({ "n": c })));
+    }
+    st.consumers.insert("a".into(), (2, now));
+    st.consumers.insert("b".into(), (3, now));
+    assert_eq!(st.unread(), vec![json!({"n": 4})]);
 }
 
 #[test]
