@@ -112,6 +112,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/seat/reply", post(seat::reply))
         .route("/v1/seat/tool-call", post(seat::tool_call))
         .route("/v1/seat/capabilities", get(seat::capabilities))
+        .route("/v1/seat/history", get(seat::history))
         // Observation runs *inside* auth: only authenticated requests are
         // captured, so an anonymous caller cannot fill the disk.
         .layer(axum::middleware::from_fn(observation::observe_request))
@@ -157,18 +158,51 @@ async fn health() -> &'static str {
     "ok"
 }
 
-/// `GET /v1/models` — returns a minimal model list.
+/// `GET /v1/models` — the single "human" model, with its limits.
 ///
 /// Many OpenAI-compatible clients call this on startup to verify
-/// connectivity. We return a single "human" model.
+/// connectivity, and several (DeepSeek Harness, gateway importers) also
+/// auto-fill a model's context window, output cap and abilities from it.
+/// There is no common schema, so the same facts are given under the names
+/// clients are known to read: `context_window` / `context_length`,
+/// `max_output_tokens` / `max_tokens`, their camelCase forms, and a
+/// `capabilities` object. The responder is a person or an agent, so the
+/// limits are generous defaults, overridable with
+/// `OPENHUMAN_MODEL_CONTEXT_WINDOW` and `OPENHUMAN_MODEL_MAX_OUTPUT`.
 async fn list_models() -> axum::Json<serde_json::Value> {
+    fn env_u64(name: &str, default: u64) -> u64 {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(default)
+    }
+    let context = env_u64("OPENHUMAN_MODEL_CONTEXT_WINDOW", 1_000_000);
+    let output = env_u64("OPENHUMAN_MODEL_MAX_OUTPUT", 131_072);
     axum::Json(serde_json::json!({
         "object": "list",
         "data": [{
             "id": "openhuman-human",
             "object": "model",
             "created": 1700000000,
-            "owned_by": "openhuman"
+            "owned_by": "openhuman",
+            "name": "OpenHuman",
+            "context_window": context,
+            "context_length": context,
+            "max_output_tokens": output,
+            "max_tokens": output,
+            "contextWindow": context,
+            "maxTokens": output,
+            "input_modalities": ["text", "image"],
+            "input": ["text", "image"],
+            "reasoning": false,
+            "capabilities": {
+                "vision": true,
+                "tools": true,
+                "function_calling": true,
+                "reasoning": false,
+                "streaming": true
+            }
         }]
     }))
 }

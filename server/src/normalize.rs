@@ -62,9 +62,12 @@ fn normalize_whole(client: &ClientType, text: &str) -> String {
             extract_tag(text, "user_input").unwrap_or_else(|| text.trim().to_string())
         }
         ClientType::ClaudeCode => strip_claude_prefix(text),
-        ClientType::Codex | ClientType::Cursor | ClientType::Unknown => {
-            strip_generic_envelope(text)
-        }
+        ClientType::DeepSeekHarness if is_dsh_injection(text) => String::new(),
+        ClientType::Codex
+        | ClientType::Cursor
+        | ClientType::Qoder
+        | ClientType::DeepSeekHarness
+        | ClientType::Unknown => strip_generic_envelope(text),
     }
 }
 
@@ -115,8 +118,18 @@ fn is_noise_part(client: &ClientType, text: &str) -> bool {
         // Trae prepends a language-detection instruction block that never
         // carries user input.
         ClientType::Trae => trimmed.starts_with("REQUIREMENT:"),
+        ClientType::DeepSeekHarness => is_dsh_injection(trimmed),
         _ => false,
     }
+}
+
+/// DeepSeek Harness appends its own `user` messages after the real one:
+/// a runtime-context snapshot and a `<system-reminder>` skill list. Neither
+/// carries anything the person typed.
+fn is_dsh_injection(text: &str) -> bool {
+    let t = text.trim_start();
+    t.starts_with("Current runtime context.")
+        || (t.starts_with("<system-reminder") && t.trim_end().ends_with("</system-reminder>"))
 }
 
 /// Extract `<tag>...</tag>` content.
@@ -398,4 +411,22 @@ mod tests {
             "<user_query>   </user_query>"
         );
     }
+
+    #[test]
+    fn dsh_injections_are_dropped() {
+        let runtime = ChatContent::Text(
+            "Current runtime context. This snapshot supersedes earlier ones.".to_string(),
+        );
+        assert_eq!(normalize_user_message(&ClientType::DeepSeekHarness, &runtime), "");
+        let skills = ChatContent::Text(
+            "<system-reminder>\nskills...\n</system-reminder>".to_string(),
+        );
+        assert_eq!(normalize_user_message(&ClientType::DeepSeekHarness, &skills), "");
+        let real = ChatContent::Text("这里是创造模式".to_string());
+        assert_eq!(
+            normalize_user_message(&ClientType::DeepSeekHarness, &real),
+            "这里是创造模式"
+        );
+    }
+
 }

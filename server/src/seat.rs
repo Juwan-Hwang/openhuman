@@ -247,6 +247,34 @@ fn render(cursor: u64, ev: &Value, full: bool) -> Value {
             if let Some(imgs) = data.get("images").and_then(|v| v.as_array()) {
                 out["image_count"] = json!(imgs.len());
             }
+            // Request shape: which client, and whether this is an auxiliary
+            // call (a title, a suggestion) whose output contract lives in its
+            // system prompt — compact shows that contract so the seat can
+            // answer in the format the caller will parse.
+            if let Some(req) = data.get("request") {
+                out["client"] = req.get("client").cloned().unwrap_or(Value::Null);
+                let kind = req.get("kind").cloned().unwrap_or(Value::Null);
+                if kind.as_str() == Some("auxiliary") {
+                    for k in ["system_prompt_head", "response_format", "max_tokens"] {
+                        if let Some(v) = req.get(k).filter(|v| !v.is_null()) {
+                            out[k] = v.clone();
+                        }
+                    }
+                }
+                out["kind"] = kind;
+            }
+            // How many raw `user` parts the tail had: more than one means
+            // the agent appended injections the cleaned text leaves out
+            // (full view carries them in `raw_tail`).
+            if let Some(tail) = data.get("raw_tail").and_then(|v| v.as_array()) {
+                let users = tail
+                    .iter()
+                    .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+                    .count();
+                if users > 1 {
+                    out["raw_user_parts"] = json!(users);
+                }
+            }
         }
         "capability.updated" => {
             let names: Vec<Value> = data
@@ -352,6 +380,70 @@ pub async fn inbox(
         }
         let _ = tokio::time::timeout(deadline - now, notified).await;
     }
+}
+
+// ── GET /v1/seat/history ──
+
+#[derive(Debug, Deserialize)]
+pub struct HistoryQuery {
+    conversation_id: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Recent messages of one of this seat's conversations, oldest first:
+/// what the caller said, what was replied, which tools ran. The seat only
+/// sees the newest message per event; this is how it reads back.
+pub async fn history(
+    State(app): State<AppState>,
+    principal: AuthPrincipal,
+    Query(q): Query<HistoryQuery>,
+) -> Response {
+    let owned = app
+        .conversation
+        .get(&q.conversation_id)
+        .await
+        .and_then(|c| c.human_id().map(|h| h == principal.human.id))
+        .unwrap_or(false);
+    if !owned {
+        return err(StatusCode::NOT_FOUND, "not_found", "No such conversation for this seat.");
+    }
+    let limit = q.limit.unwrap_or(30).clamp(1, 200);
+    let all = app.message.list(&q.conversation_id).await;
+    let skip = all.len().saturating_sub(limit);
+    let items: Vec<Value> = all
+        .iter()
+        .skip(skip)
+        .map(|m| {
+            let text = m.content.as_text().unwrap_or("");
+            let (t, cut) = truncate(text, 4000);
+            let mut o = json!({
+                "message_id": m.id,
+                "from": format!("{:?}", m.sender.participant_type).to_lowercase(),
+                "role": m.metadata.get("openai_role").cloned().unwrap_or(Value::Null),
+                "text": t,
+                "created_at": m.created_at,
+            });
+            if cut {
+                o["truncated"] = Value::Bool(true);
+            }
+            for k in ["tool_call_id", "tool_calls"] {
+                if let Some(v) = m.metadata.get(k) {
+                    o[k] = v.clone();
+                }
+            }
+            if !m.attachments.is_empty() {
+                o["image_count"] = json!(m.attachments.len());
+            }
+            o
+        })
+        .collect();
+    Json(json!({
+        "conversation_id": q.conversation_id,
+        "total": all.len(),
+        "messages": items,
+    }))
+    .into_response()
 }
 
 // ── POST /v1/seat/send ──

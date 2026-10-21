@@ -30,6 +30,9 @@ pub struct ChatCompletionRequest {
     pub stream: bool,
     /// Honored as character limit on human reply (default: no limit).
     pub max_tokens: Option<u32>,
+    /// Newer name for `max_tokens`; only read to recognize auxiliary calls.
+    #[serde(default)]
+    pub max_completion_tokens: Option<u32>,
     /// Ignored (human is not stochastic).
     pub temperature: Option<f64>,
     /// Ignored.
@@ -121,6 +124,9 @@ pub struct ChatMessage {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ChatRole {
+    /// `developer` is OpenAI's newer name for the system role (o1 and later);
+    /// clients such as DeepSeek Harness send it by default.
+    #[serde(alias = "developer")]
     System,
     User,
     Assistant,

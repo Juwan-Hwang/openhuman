@@ -352,6 +352,7 @@ fn resolve_session_key(
     headers: &HeaderMap,
     req: &ChatCompletionRequest,
     system_prompt: Option<&str>,
+    auxiliary: bool,
 ) -> String {
     /// Pull a trimmed, non-empty header value (or `None`).
     fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -410,32 +411,105 @@ fn resolve_session_key(
         }
     }
 
-    // 6. System-prompt fingerprint — distinguishes project/mode switches.
+    // 6./7. No explicit id: fall back to fingerprints.
     //
-    //    Scoped by client as well: two different agents sharing a system
-    //    prompt (a CLI, an IDE extension, a desktop app) must not land in
-    //    one conversation, because they would then also share one outbound
-    //    queue and a tool call issued in one would be collected by a
-    //    request from the other.
-    if let Some(p) = system_prompt {
-        if !p.trim().is_empty() {
-            return format!(
-                "prm:{}:{}",
-                prompt_fingerprint(p),
-                client_fingerprint(headers)
-            );
-        }
+    //    The system-prompt fingerprint distinguishes project/mode switches,
+    //    scoped by client so two agents sharing a prompt never share one
+    //    outbound queue. On its own it merged every session a client ever
+    //    opened into one conversation, so the main chat is further anchored
+    //    on its first user message: a session's history always starts with
+    //    it, and a new session starts with a different one.
+    //
+    //    Auxiliary calls (titles, suggestions) carry a fresh transcript as
+    //    their only message, so anchoring them would mint a conversation
+    //    per call; they share one conversation per prompt instead.
+    let client = client_fingerprint(headers);
+    let base = match system_prompt.filter(|p| !p.trim().is_empty()) {
+        Some(p) => format!("prm:{}:{}", prompt_fingerprint(p), client),
+        None => format!("cli:{}", client),
+    };
+    if auxiliary {
+        return format!("aux:{}", base);
     }
+    match first_user_anchor(req) {
+        Some(anchor) => format!("{}:{}", base, anchor),
+        None => base,
+    }
+}
 
-    // 7. Client fingerprint — the last resort.
-    //
-    //    Falling through to a single global `"default"` put every
-    //    unidentified caller in one conversation. That is not a benign
-    //    collision: undelivered replies are queued per conversation, so one
-    //    client's parked tool call gets handed to whichever other client
-    //    happens to ask next. Distinct callers need distinct conversations
-    //    even when they say nothing about who they are.
-    format!("cli:{}", client_fingerprint(headers))
+/// Digest of the first `user` message, the anchor of a session's history.
+fn first_user_anchor(req: &ChatCompletionRequest) -> Option<String> {
+    let first = req
+        .messages
+        .iter()
+        .find(|m| m.role == crate::openai_compat::ChatRole::User)?;
+    let text = first.content.to_text();
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(prompt_fingerprint(text.trim()))
+}
+
+/// A side call the client makes around the real chat: a session title, an
+/// input-box suggestion. Recognized by shape: no tools, a single
+/// non-system message, and a capped or structured output.
+fn is_auxiliary_request(req: &ChatCompletionRequest) -> bool {
+    let has_tools = req
+        .tools
+        .as_ref()
+        .and_then(|t| t.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+    if has_tools {
+        return false;
+    }
+    let turns = req
+        .messages
+        .iter()
+        .filter(|m| m.role != crate::openai_compat::ChatRole::System)
+        .count();
+    let capped = req.max_tokens.or(req.max_completion_tokens).is_some()
+        || req.response_format.is_some();
+    turns == 1 && capped
+}
+
+/// Whether this capability snapshot differs from the last one sent to this
+/// human for this agent (process-local; a restart sends one fresh copy).
+fn capability_changed(human_id: &str, agent_id: &str, data: &Value) -> bool {
+    use sha2::{Digest, Sha256};
+    use std::sync::{Mutex, OnceLock};
+    static LAST: OnceLock<Mutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
+    let digest = Sha256::digest(data.to_string().as_bytes()).to_vec();
+    let key = format!("{}\u{1f}{}", human_id, agent_id);
+    let mut map = LAST.get_or_init(Default::default).lock().unwrap();
+    if map.get(&key) == Some(&digest) {
+        return false;
+    }
+    map.insert(key, digest);
+    true
+}
+
+/// What a responder needs to know about the request a message rode in on:
+/// which client, whether it is an auxiliary call, and for those the output
+/// contract (the instructions live in the system prompt).
+fn request_info(
+    req: &ChatCompletionRequest,
+    profile: &AgentProfile,
+    system_prompt: Option<&str>,
+    auxiliary: bool,
+) -> Value {
+    let sp = system_prompt.unwrap_or("");
+    let head: String = sp.chars().take(600).collect();
+    json!({
+        "client": profile.client_type.to_string(),
+        "kind": if auxiliary { "auxiliary" } else { "chat" },
+        "system_prompt_len": sp.chars().count(),
+        "system_prompt_head": head,
+        "response_format": req.response_format,
+        "max_tokens": req.max_tokens.or(req.max_completion_tokens),
+        "tool_count": req.tools.as_ref().and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0),
+        "message_count": req.messages.len(),
+    })
 }
 
 /// Short, stable digest identifying the calling client.
@@ -565,22 +639,28 @@ fn process_inbound_messages(
     let mut messages = Vec::new();
     let now = Utc::now();
 
-    // ── Deduplication strategy ──
+    // ── Which messages are new ──
     //
-    // WorkBuddy (and most AI tools) send the FULL conversation history
-    // with every request — all previous user/assistant messages are
-    // replayed. If we push every user message to the human timeline,
-    // old messages will appear duplicated on every new request.
+    // Callers send the FULL history with every request. What is new is the
+    // tail after the last `assistant` message: the user's fresh input (one
+    // or more `user` messages: some agents append their own runtime or
+    // skill injections after what the person typed) and any `tool` results
+    // answering the last tool call. Everything before that tail was
+    // delivered on an earlier request.
     //
-    // Solution: find the LAST user message in the batch — that's the
-    // only one that represents new input from the agent. All earlier
-    // user messages have already been delivered in prior requests.
-    //
-    // Edge case: if there's only 1 user message, push it (first turn).
-    let last_user_idx = req
+    // Taking only "the last user message" lost the person's words whenever
+    // an agent appended an injection after them, and re-pushing every
+    // `tool` message re-delivered old results on every follow-up request.
+    let tail_start = req
         .messages
         .iter()
-        .rposition(|m| m.role == crate::openai_compat::ChatRole::User);
+        .rposition(|m| m.role == crate::openai_compat::ChatRole::Assistant)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    let mut user_texts: Vec<String> = Vec::new();
+    let mut user_images: Vec<String> = Vec::new();
+    let mut raw_tail: Vec<Value> = Vec::new();
 
     for (idx, msg) in req.messages.iter().enumerate() {
         match msg.role {
@@ -595,66 +675,34 @@ fn process_inbound_messages(
                 }
             }
             crate::openai_compat::ChatRole::User => {
-                // Only push the LAST user message — earlier ones are
-                // conversation history that was already delivered.
-                if Some(idx) != last_user_idx {
+                if idx < tail_start {
                     continue;
                 }
-
+                raw_tail.push(json!({ "role": "user", "content": msg.content.to_text() }));
                 // Peel the agent wrapper off before anything reaches the
-                // timeline. Per-agent normalizers (see `normalize.rs`) know
-                // each family's envelope tag and noise blocks; the text that
-                // survives is what the human actually reads.
+                // timeline (see `normalize.rs`).
                 let clean_text =
                     crate::normalize::normalize_user_message(client_type, &msg.content);
-
-                // Vision input: carry the images through so the human can
-                // actually see what the question is about.
-                let images = msg.content.image_urls();
-                let message = Message {
-                    id: format!("msg_{}", Uuid::now_v7().simple()),
-                    conversation_id: conversation_id.to_string(),
-                    sender: ParticipantRef::agent_named(&principal.agent.id, &principal.agent.name),
-                    content: ContentBlock::text(&clean_text),
-                    attachments: images
-                        .iter()
-                        .enumerate()
-                        .map(|(i, url)| crate::model::content::Attachment {
-                            id: format!("att_{}_{}", i, Uuid::now_v7().simple()),
-                            filename: format!("image-{}.png", i + 1),
-                            content_type: guess_image_type(url),
-                            size_bytes: url.len() as u64,
-                            url: url.clone(),
-                        })
-                        .collect(),
-                    metadata: {
-                        let mut m = HashMap::new();
-                        m.insert("openai_role".to_string(), Value::String("user".to_string()));
-                        if !images.is_empty() {
-                            m.insert(
-                                "images".to_string(),
-                                Value::Array(
-                                    images.iter().map(|u| Value::String(u.clone())).collect(),
-                                ),
-                            );
-                        }
-                        m
-                    },
-                    status: MessageStatus::Pending,
-                    visibility: crate::model::message::MessageVisibility::HumanVisible,
-                    created_at: now,
-                };
-                messages.push(message);
+                if !clean_text.trim().is_empty() {
+                    user_texts.push(clean_text);
+                }
+                user_images.extend(msg.content.image_urls());
             }
             crate::openai_compat::ChatRole::Assistant => {
-                // Context replay — skip for MVP.
+                // Context replay; the caller already has it.
             }
             crate::openai_compat::ChatRole::Tool => {
-                // Tool execution result from the agent.
+                if idx < tail_start {
+                    continue;
+                }
                 let text = msg.content.to_text();
                 let tool_call_id = msg.tool_call_id.clone();
+                raw_tail.push(json!({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content_len": text.len(),
+                }));
 
-                // [tool_result] debug logging
                 tracing::info!(
                     tool_call_id = %tool_call_id.as_deref().unwrap_or("unknown"),
                     content_len = text.len(),
@@ -682,6 +730,47 @@ fn process_inbound_messages(
                 messages.push(message);
             }
         }
+    }
+
+    if !user_texts.is_empty() || !user_images.is_empty() {
+        let images = user_images;
+        let message = Message {
+            id: format!("msg_{}", Uuid::now_v7().simple()),
+            conversation_id: conversation_id.to_string(),
+            sender: ParticipantRef::agent_named(&principal.agent.id, &principal.agent.name),
+            content: ContentBlock::text(user_texts.join("\n\n")),
+            attachments: images
+                .iter()
+                .enumerate()
+                .map(|(i, url)| crate::model::content::Attachment {
+                    id: format!("att_{}_{}", i, Uuid::now_v7().simple()),
+                    filename: format!("image-{}.png", i + 1),
+                    content_type: guess_image_type(url),
+                    size_bytes: url.len() as u64,
+                    url: url.clone(),
+                })
+                .collect(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("openai_role".to_string(), Value::String("user".to_string()));
+                if !images.is_empty() {
+                    m.insert(
+                        "images".to_string(),
+                        Value::Array(images.iter().map(|u| Value::String(u.clone())).collect()),
+                    );
+                }
+                // The unstripped tail, for responders that read raw context
+                // (agent seats). Humans see `content` only.
+                m.insert("raw_tail".to_string(), Value::Array(raw_tail));
+                m
+            },
+            status: MessageStatus::Pending,
+            visibility: crate::model::message::MessageVisibility::HumanVisible,
+            created_at: now,
+        };
+        // Keep the user's words ahead of tool results from the same request
+        // so the timeline reads naturally.
+        messages.insert(0, message);
     }
 
     (system_prompt, messages)
@@ -729,7 +818,7 @@ fn push_messages_to_human(app: &AppState, inbound_messages: Vec<Message>, human_
                 })
                 .unwrap_or_default();
 
-            let event = if images.is_empty() {
+            let mut event = if images.is_empty() {
                 crate::ws::protocol::message_received(
                     &msg.conversation_id,
                     &msg.id,
@@ -749,6 +838,14 @@ fn push_messages_to_human(app: &AppState, inbound_messages: Vec<Message>, human_
                     &images,
                 )
             };
+            // Raw context for responders that read it (agent seats): what
+            // this request carried beyond the cleaned text, and the request's
+            // shape (client, auxiliary call, output contract).
+            for key in ["request", "raw_tail"] {
+                if let (Some(v), Some(obj)) = (msg.metadata.get(key), event.data.as_object_mut()) {
+                    obj.insert(key.to_string(), v.clone());
+                }
+            }
             let event_json = crate::ws::protocol::event_to_json(&event);
             let delivered = app.connections.send_to_human(&human_id, &event_json).await;
             if delivered {
@@ -882,8 +979,16 @@ pub async fn chat_completions(
         "Extracted agent profile from HTTP request"
     );
 
+    let auxiliary = is_auxiliary_request(&req);
+
     // 2. Upsert capabilities + context into the registry.
-    {
+    //
+    //    Auxiliary calls carry their own small system prompt and no tools;
+    //    recording them would overwrite the real chat's context with a
+    //    title-generator prompt. And the `capability.updated` event is only
+    //    sent when something actually changed: a client re-sends the same
+    //    tool list with every request.
+    if !auxiliary {
         let capabilities = profile.capabilities.clone();
         let has_tools = !capabilities.is_empty();
         let context = profile.to_context();
@@ -892,8 +997,6 @@ pub async fn chat_completions(
         let app_clone = app.clone();
         tokio::spawn(async move {
             // Only update capabilities if the request actually has tools.
-            // Topic/meta requests have 0 tools — they would overwrite the
-            // real tool list with an empty one if we upserted unconditionally.
             if has_tools {
                 app_clone
                     .capability
@@ -906,6 +1009,9 @@ pub async fn chat_completions(
             let ctx = app_clone.context.get_context(&agent_id).await;
             let event =
                 crate::ws::protocol::capability_updated(&human_id, &agent_id, &caps, ctx.as_ref());
+            if !capability_changed(&human_id, &agent_id, &event.data) {
+                return;
+            }
             let event_json = crate::ws::protocol::event_to_json(&event);
             let _ = app_clone
                 .connections
@@ -918,15 +1024,25 @@ pub async fn chat_completions(
     let (system_prompt, mut inbound_messages) =
         process_inbound_messages(&req, &principal, "pending", &profile.client_type);
 
+    let info = request_info(&req, &profile, system_prompt.as_deref(), auxiliary);
+    for msg in &mut inbound_messages {
+        if msg.metadata.contains_key("raw_tail") {
+            msg.metadata.insert("request".to_string(), info.clone());
+        }
+    }
+
     // 4. Resolve which conversation this request belongs to, then store
     //    the inbound messages under it.
-    let session_key = resolve_session_key(&headers, &req, system_prompt.as_deref());
+    let session_key =
+        resolve_session_key(&headers, &req, system_prompt.as_deref(), auxiliary);
     tracing::info!(
         agent_id = %principal.agent.id,
         session_key = %session_key,
+        auxiliary = auxiliary,
         "Resolved conversation session scope"
     );
 
+    let request_started = Utc::now();
     let conversation_id = {
         let cnv = app
             .conversation
@@ -937,6 +1053,21 @@ pub async fn chat_completions(
                 system_prompt,
             )
             .await;
+        // A conversation minted by this very request is a new session on
+        // the caller's side: say so, so both a human console and an agent
+        // seat can open it as its own thread.
+        if !auxiliary && cnv.created_at >= request_started - chrono::Duration::seconds(1) {
+            let event = crate::ws::protocol::conversation_started(
+                &cnv.id,
+                &principal.agent.id,
+                &principal.agent.name,
+                &profile.client_type.to_string(),
+            );
+            let _ = app
+                .connections
+                .send_to_human(&principal.human.id, &crate::ws::protocol::event_to_json(&event))
+                .await;
+        }
         for msg in &mut inbound_messages {
             msg.conversation_id = cnv.id.clone();
         }
@@ -1620,6 +1751,10 @@ async fn handle_streaming(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
     let is_online = app.connections.is_online(&human_id).await;
+    // The presence notice is for a person on the other end. When the only
+    // responder online is an agent seat, it would just be written into the
+    // caller's transcript as if the agent had said it.
+    let seat_only = is_online && !app.connections.has_human_device(&human_id).await;
 
     app.reply.register(&conversation_id, tx).await;
     push_messages_to_human(&app, inbound_messages, human_id);
@@ -1652,7 +1787,7 @@ async fn handle_streaming(
         // went. A caller that hears nothing for a minute cannot tell whether
         // the turn was lost or is simply waiting for a person, so say so
         // immediately and keep the stream open for the real reply.
-        let notice = status_notice(is_online);
+        let notice = if seat_only { None } else { status_notice(is_online) };
         if let Some(notice) = notice {
             sent_role_header = true;
             let role_chunk = ChatCompletionChunk::role_header(&completion_id);
@@ -2155,7 +2290,7 @@ mod tests {
             let name = axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap();
             map.insert(name, v.parse().unwrap());
         }
-        resolve_session_key(&map, &request(body), None)
+        resolve_session_key(&map, &request(body), None, false)
     }
 
     fn body() -> serde_json::Value {
@@ -2198,11 +2333,11 @@ mod tests {
         let prompt = "You are a release engineer.";
         let mut h1 = HeaderMap::new();
         h1.insert("user-agent", "curl/8.4.0".parse().unwrap());
-        let a = resolve_session_key(&h1, &request(req_a()), Some(prompt));
+        let a = resolve_session_key(&h1, &request(req_a()), Some(prompt), false);
 
         let mut h2 = HeaderMap::new();
         h2.insert("user-agent", "WorkBuddy/1.0".parse().unwrap());
-        let b = resolve_session_key(&h2, &request(req_a()), Some(prompt));
+        let b = resolve_session_key(&h2, &request(req_a()), Some(prompt), false);
 
         assert!(a.starts_with("prm:"), "got {a}");
         assert_ne!(a, b, "a shared prompt must not merge two clients");
@@ -2252,9 +2387,9 @@ mod tests {
     fn system_prompt_fingerprint_is_stable_and_distinct() {
         let h = HeaderMap::new();
         let req = request(body());
-        let first = resolve_session_key(&h, &req, Some("You are a release engineer."));
-        let second = resolve_session_key(&h, &req, Some("You are a release engineer."));
-        let third = resolve_session_key(&h, &req, Some("You are a lawyer."));
+        let first = resolve_session_key(&h, &req, Some("You are a release engineer."), false);
+        let second = resolve_session_key(&h, &req, Some("You are a release engineer."), false);
+        let third = resolve_session_key(&h, &req, Some("You are a lawyer."), false);
 
         assert_eq!(
             first, second,
@@ -2263,4 +2398,67 @@ mod tests {
         assert_ne!(first, third);
         assert!(first.starts_with("prm:"));
     }
+
+    // ── 2026-10-21 seat fixes ──
+
+    #[test]
+    fn developer_role_is_accepted_as_system() {
+        let req = request(json!({
+            "model": "openhuman-human",
+            "messages": [
+                {"role": "developer", "content": "be brief"},
+                {"role": "user", "content": "hi"}
+            ]
+        }));
+        assert_eq!(req.messages[0].role, crate::openai_compat::ChatRole::System);
+    }
+
+    #[test]
+    fn title_calls_are_auxiliary_but_chat_is_not() {
+        let title = request(json!({
+            "messages": [
+                {"role": "system", "content": "Create a concise title"},
+                {"role": "user", "content": "Generate the session title"}
+            ],
+            "max_completion_tokens": 64
+        }));
+        assert!(is_auxiliary_request(&title));
+        let chat = request(json!({
+            "messages": [
+                {"role": "system", "content": "You are an agent"},
+                {"role": "user", "content": "hi"}
+            ],
+            "tools": [{"type": "function", "function": {"name": "read", "parameters": {}}}],
+            "max_tokens": 64
+        }));
+        assert!(!is_auxiliary_request(&chat));
+    }
+
+    #[test]
+    fn new_session_of_same_client_gets_its_own_key() {
+        let h = HeaderMap::new();
+        let s1 = request(json!({"messages": [
+            {"role": "system", "content": "P"},
+            {"role": "user", "content": "first session"}
+        ]}));
+        let s1_later = request(json!({"messages": [
+            {"role": "system", "content": "P"},
+            {"role": "user", "content": "first session"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "more"}
+        ]}));
+        let s2 = request(json!({"messages": [
+            {"role": "system", "content": "P"},
+            {"role": "user", "content": "second session"}
+        ]}));
+        let k1 = resolve_session_key(&h, &s1, Some("P"), false);
+        assert_eq!(k1, resolve_session_key(&h, &s1_later, Some("P"), false));
+        assert_ne!(k1, resolve_session_key(&h, &s2, Some("P"), false));
+        // Auxiliary calls share one key per prompt, whatever they carry.
+        assert_eq!(
+            resolve_session_key(&h, &s1, Some("P"), true),
+            resolve_session_key(&h, &s2, Some("P"), true)
+        );
+    }
+
 }

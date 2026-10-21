@@ -57,6 +57,11 @@ pub enum ClientType {
     Codex,
     /// Cursor. Identified by `cursor` in User-Agent.
     Cursor,
+    /// Qoder (Alibaba). Sends only `User-Agent: undici`; identified by its
+    /// system prompt ("You are a Qoder agent").
+    Qoder,
+    /// DeepSeek Harness (`dsh`). Identified by `deepseek-harness` in User-Agent.
+    DeepSeekHarness,
     /// Any other OpenAI-compatible client.
     Unknown,
 }
@@ -69,6 +74,8 @@ impl std::fmt::Display for ClientType {
             Self::WorkBuddy => write!(f, "workbuddy"),
             Self::Codex => write!(f, "codex"),
             Self::Cursor => write!(f, "cursor"),
+            Self::Qoder => write!(f, "qoder"),
+            Self::DeepSeekHarness => write!(f, "deepseek_harness"),
             Self::Unknown => write!(f, "unknown"),
         }
     }
@@ -200,12 +207,21 @@ fn detect_client_type(headers: &HeaderMap, system_prompt: &Option<String>) -> Cl
         if lower.contains("cursor") {
             return ClientType::Cursor;
         }
+        if lower.contains("deepseek-harness") {
+            return ClientType::DeepSeekHarness;
+        }
     }
 
     // Claude Code: system prompt contains billing header
     if let Some(prompt) = system_prompt {
         if prompt.contains("cc_version=") || prompt.contains("Claude Agent SDK") {
             return ClientType::ClaudeCode;
+        }
+        if prompt.contains("You are a Qoder agent") {
+            return ClientType::Qoder;
+        }
+        if prompt.contains("powered by DeepSeek Harness") {
+            return ClientType::DeepSeekHarness;
         }
     }
 
@@ -227,7 +243,12 @@ fn extract_runtime(headers: &HeaderMap, client_type: &ClientType) -> AgentRuntim
     let ide_name = headers
         .get("x-ide-name")
         .and_then(|v| v.to_str().ok())
-        .map(String::from);
+        .map(String::from)
+        .or_else(|| match client_type {
+            ClientType::Qoder => Some("Qoder".to_string()),
+            ClientType::DeepSeekHarness => Some("DeepSeek Harness".to_string()),
+            _ => None,
+        });
 
     let detected_framework = match client_type {
         ClientType::Trae => Some("Hertz (ByteDance)".to_string()),
@@ -238,6 +259,8 @@ fn extract_runtime(headers: &HeaderMap, client_type: &ClientType) -> AgentRuntim
         ClientType::ClaudeCode => Some("Claude Agent SDK".to_string()),
         ClientType::Codex => Some("Codex CLI".to_string()),
         ClientType::Cursor => Some("Cursor".to_string()),
+        ClientType::Qoder => Some("Qoder".to_string()),
+        ClientType::DeepSeekHarness => Some("DeepSeek Harness".to_string()),
         ClientType::Unknown => stainless_version
             .as_ref()
             .map(|v| format!("Stainless JS SDK v{}", v)),
