@@ -857,9 +857,16 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
             let buf = std::mem::take(&mut cx.st.buffer);
             // tool results nobody asked for yet stay buffered for `result`
             let (show, keep): (Vec<Value>, Vec<Value>) = buf.into_iter().partition(|e| wanted(e));
+            // ...but only while someone could still ask: a result whose call
+            // is no longer pending (answered with --force, long gone) would
+            // sit in the buffer forever.
+            let pending: Vec<String> = cx.st.pending.iter().map(|p| p[0].clone()).collect();
             cx.st.buffer = keep
                 .into_iter()
-                .filter(|e| s(e, "type") == Some("tool.result"))
+                .filter(|e| {
+                    s(e, "type") == Some("tool.result")
+                        && s(e, "invocation_id").is_some_and(|i| pending.iter().any(|p| p == i))
+                })
                 .collect();
             let mut new_convs = Vec::new();
             for e in &show {
