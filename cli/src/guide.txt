@@ -42,6 +42,9 @@ CONVERSATIONS   the latest message is active; -c takes any unique piece of an id
   caps   tools as signatures   caps --tool X  one tool's parameters   --full  system prompt
   status  server, cursor, open turns          result ID  a tool result that came late
 
+IMAGES the caller attached are saved as files and their paths printed
+(`image: ...`): open them with your own image/file tool.
+
 AUX lines (titles, suggestions) say the exact format to answer in and never
 take over the active conversation: answer them with `reply -c ID '...'`.
 

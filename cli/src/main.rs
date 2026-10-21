@@ -335,6 +335,46 @@ impl Ctx {
         }
     }
 
+    /// Save the images a caller attached to a message as files, so a
+    /// responder can open them with its own tools. Links stay links.
+    fn save_images(&self, c: &str, msg_id: &str) -> Vec<String> {
+        let path = format!(
+            "/v1/seat/history?conversation_id={}&limit=20&images=true",
+            enc(c)
+        );
+        let Ok(r) = self.call("GET", &path, None, 60) else {
+            return Vec::new();
+        };
+        let Some(m) = r["messages"]
+            .as_array()
+            .and_then(|a| a.iter().find(|m| s(m, "message_id") == Some(msg_id)))
+        else {
+            return Vec::new();
+        };
+        let dir = home().join(".openhuman").join("images");
+        let _ = std::fs::create_dir_all(&dir);
+        let mut out = Vec::new();
+        for (i, img) in m["images"].as_array().into_iter().flatten().enumerate() {
+            let url = s(img, "url").unwrap_or("");
+            match data_url_bytes(url) {
+                Some((mime, bytes)) => {
+                    let ext = mime
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or("bin")
+                        .replace("jpeg", "jpg");
+                    let f = dir.join(format!("{msg_id}-{}.{ext}", i + 1));
+                    if std::fs::write(&f, bytes).is_ok() {
+                        out.push(f.display().to_string());
+                    }
+                }
+                None if !url.is_empty() => out.push(url.to_string()),
+                None => {}
+            }
+        }
+        out
+    }
+
     fn call(&self, method: &str, path: &str, body: Option<Value>, timeout: u64) -> R<Value> {
         let req = self
             .agent
@@ -658,6 +698,37 @@ fn cap_output(body: String, id: &str) -> String {
     )
 }
 
+/// `data:image/png;base64,...` → (mime, bytes).
+fn data_url_bytes(url: &str) -> Option<(String, Vec<u8>)> {
+    let rest = url.strip_prefix("data:")?;
+    let (meta, data) = rest.split_once(',')?;
+    let mime = meta.split(';').next().unwrap_or("application/octet-stream");
+    if !meta.ends_with(";base64") {
+        return None;
+    }
+    let mut out = Vec::with_capacity(data.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for b in data.bytes() {
+        let v = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            b'=' | b'\n' | b'\r' | b' ' => continue,
+            _ => return None,
+        } as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some((mime.to_string(), out))
+}
+
 fn print_event(e: &Value) {
     let c = conv_id(e).unwrap_or("-");
     match s(e, "type").unwrap_or("event") {
@@ -678,7 +749,15 @@ fn print_event(e: &Value) {
                 })
                 .filter(|n| *n > 0)
             {
-                println!("[{n} image(s) attached: oh-seat history -c {c}]");
+                match e.get("image_files").and_then(|v| v.as_array()) {
+                    Some(f) if !f.is_empty() => {
+                        println!("[{n} image(s) attached, saved: open them with your own file/image tool]");
+                        for p in f.iter().filter_map(|v| v.as_str()) {
+                            println!("  image: {p}");
+                        }
+                    }
+                    _ => println!("[{n} image(s) attached: oh-seat history -c {c}]"),
+                }
             }
         }
         "conversation.started" => println!("NEW CONVERSATION conv={c}"),
@@ -817,6 +896,18 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
                         .and_then(|i| i.client.clone())
                     {
                         e["client"] = json!(cl);
+                    }
+                }
+            }
+            for e in show.iter_mut() {
+                let has_images = s(e, "type") == Some("message.received")
+                    && e.get("image_count").and_then(|v| v.as_u64()).unwrap_or(0) > 0;
+                if has_images {
+                    if let (Some(c), Some(m)) = (conv_id(e), s(e, "message_id")) {
+                        let files = cx.save_images(c, m);
+                        if !files.is_empty() {
+                            e["image_files"] = json!(files);
+                        }
                     }
                 }
             }
@@ -1950,6 +2041,16 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_urls_decode() {
+        let (m, b) = data_url_bytes("data:image/png;base64,aGVsbG8=").unwrap();
+        assert_eq!(
+            (m.as_str(), b.as_slice()),
+            ("image/png", b"hello".as_slice())
+        );
+        assert!(data_url_bytes("https://x/y.png").is_none());
+    }
 
     #[test]
     fn exit_code_wordings() {
