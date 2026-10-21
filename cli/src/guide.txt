@@ -25,6 +25,12 @@ TOOL INPUT (checked against the tool's schema before anything is sent)
   key=value       typed by the schema: string params keep the text exactly
                   (content=42 stays "42"), numbers/booleans/arrays parse
   key=@file       file contents      key=@-      stdin (multi-line, any quotes)
+  several key=@-  their texts on stdin in order, split by a line `@@@`:
+                  oh-seat tool Edit file_path=a.py old_string=@- new_string=@- <<'EOF'
+                  old text
+                  @@@
+                  new text
+                  EOF
   key:=value      force string       key:json=v  force JSON
   '{"k":"v"}'     one JSON object    -           whole input from stdin
   Tool and parameter names are case-insensitive. Mistakes fail at once with a

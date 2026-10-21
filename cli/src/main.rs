@@ -115,7 +115,7 @@ enum Cmd {
     /// Ask the caller to run one of its tools (or several: `A k=v + B k=v`); waits and prints results in order.
     ///
     /// Input: key=value pairs typed by the tool's schema (string params keep the text as is),
-    /// key=@path reads a file, key=@- reads stdin, key:=v forces a string, key:json=v forces JSON;
+    /// key=@path reads a file, key=@- reads stdin (several key=@-: texts split by a `@@@` line), key:=v forces a string, key:json=v forces JSON;
     /// or one JSON object; or `-` for the whole input on stdin. Checked before sending.
     Tool {
         name: String,
@@ -1243,6 +1243,16 @@ fn prepare(
                 tool_sig(&t)
             )),
         }
+    }
+    let left = input::stdin_leftover();
+    if left > 0 {
+        return Err(Fail(
+            USAGE,
+            format!(
+                "stdin has {left} more text(s) than there are key=@- (texts are separated by `{}` lines); nothing was sent",
+                input::STDIN_SPLIT
+            ),
+        ));
     }
     if !errs.is_empty() {
         return usage(format!(
