@@ -50,6 +50,8 @@ const MAX_WAIT_SECS: u64 = 90;
 const DEFAULT_WAIT_SECS: u64 = 25;
 /// Events kept per seat before the oldest are dropped.
 const QUEUE_CAP: usize = 1000;
+/// A consumer that has not polled for this long no longer holds events back.
+const CONSUMER_IDLE: Duration = Duration::from_secs(300);
 /// `client_msg_id`s remembered per seat for idempotent sends.
 const DEDUP_CAP: usize = 256;
 /// Text longer than this is cut in the compact view (full view keeps it).
@@ -70,6 +72,10 @@ struct SeatState {
     next_cursor: u64,
     last_poll: Instant,
     seen_ids: VecDeque<String>,
+    /// Per-consumer acknowledged cursor and last poll. Events are dropped only
+    /// once every consumer polled recently has acknowledged them, so two
+    /// pollers on one seat key never steal each other's events.
+    consumers: std::collections::HashMap<String, (u64, Instant)>,
 }
 
 struct Seat {
@@ -92,14 +98,20 @@ impl Seat {
         self.notify.notify_waiters();
     }
 
-    /// Drop acknowledged events and return everything after `after`.
-    async fn take_after(&self, after: u64) -> (Vec<(u64, Value)>, u64) {
+    /// Acknowledge `after` for `consumer`, drop events every recent consumer
+    /// has acknowledged, and return everything after `after`.
+    async fn take_after(&self, after: u64, consumer: &str) -> (Vec<(u64, Value)>, u64) {
         let mut st = self.state.lock().await;
-        st.last_poll = Instant::now();
-        while st.queue.front().map(|(c, _)| *c <= after).unwrap_or(false) {
+        let now = Instant::now();
+        st.last_poll = now;
+        st.consumers.insert(consumer.to_string(), (after, now));
+        st.consumers
+            .retain(|_, (_, seen)| now.duration_since(*seen) < CONSUMER_IDLE);
+        let floor = st.consumers.values().map(|(a, _)| *a).min().unwrap_or(after);
+        while st.queue.front().map(|(c, _)| *c <= floor).unwrap_or(false) {
             st.queue.pop_front();
         }
-        let events: Vec<_> = st.queue.iter().cloned().collect();
+        let events: Vec<_> = st.queue.iter().filter(|(c, _)| *c > after).cloned().collect();
         (events, st.next_cursor)
     }
 
@@ -144,6 +156,7 @@ async fn attach(app: &AppState, p: &AuthPrincipal) -> Arc<Seat> {
             next_cursor: 0,
             last_poll: Instant::now(),
             seen_ids: VecDeque::new(),
+            consumers: std::collections::HashMap::new(),
         }),
         notify: Notify::new(),
     });
@@ -320,6 +333,10 @@ pub struct InboxQuery {
     /// Only return events of these types (comma separated).
     #[serde(default)]
     types: Option<String>,
+    /// Name of this poller. Each consumer keeps its own cursor; events are
+    /// dropped only once every recently active consumer has seen them.
+    #[serde(default)]
+    consumer: Option<String>,
 }
 
 /// Long-poll the seat's queue. Returns as soon as anything newer than
@@ -340,7 +357,9 @@ pub async fn inbox(
 
     loop {
         let notified = seat.notify.notified();
-        let (events, latest) = seat.take_after(q.after).await;
+        let (events, latest) = seat
+            .take_after(q.after, q.consumer.as_deref().unwrap_or(""))
+            .await;
         let events: Vec<_> = events
             .into_iter()
             .filter(|(_, ev)| match &filter {
@@ -829,4 +848,55 @@ pub async fn capabilities(
         "context": ctx,
     }))
     .into_response()
+}
+
+#[cfg(test)]
+mod consumer_tests {
+    use super::*;
+
+    fn seat() -> Seat {
+        Seat {
+            human_id: "hum_t".into(),
+            device_id: "seat_t".into(),
+            state: Mutex::new(SeatState {
+                queue: VecDeque::new(),
+                next_cursor: 0,
+                last_poll: Instant::now(),
+                seen_ids: VecDeque::new(),
+                consumers: std::collections::HashMap::new(),
+            }),
+            notify: Notify::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn two_consumers_do_not_steal_events() {
+        let s = seat();
+        s.take_after(0, "a").await;
+        s.take_after(0, "b").await;
+        s.push(json!({"event_type": "message.received", "n": 1})).await;
+        s.push(json!({"event_type": "message.received", "n": 2})).await;
+        // a reads and acknowledges both
+        let (ev, _) = s.take_after(0, "a").await;
+        assert_eq!(ev.len(), 2);
+        let (ev, _) = s.take_after(2, "a").await;
+        assert!(ev.is_empty());
+        // b still gets both
+        let (ev, _) = s.take_after(0, "b").await;
+        assert_eq!(ev.len(), 2);
+        // once b acknowledges, the queue is empty
+        s.take_after(2, "b").await;
+        assert!(s.state.lock().await.queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn single_legacy_poller_unchanged() {
+        let s = seat();
+        s.push(json!({"event_type": "x"})).await;
+        let (ev, _) = s.take_after(0, "").await;
+        assert_eq!(ev.len(), 1);
+        let (ev, _) = s.take_after(1, "").await;
+        assert!(ev.is_empty());
+        assert!(s.state.lock().await.queue.is_empty());
+    }
 }
