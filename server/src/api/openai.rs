@@ -557,6 +557,7 @@ fn request_info(
     json!({
         "client": profile.client_type.to_string(),
         "kind": if auxiliary { "auxiliary" } else { "chat" },
+        "expected_format": if auxiliary { expected_format(req, sp) } else { None },
         "system_prompt_len": sp.chars().count(),
         "system_prompt_head": head,
         "response_format": req.response_format,
@@ -564,6 +565,45 @@ fn request_info(
         "tool_count": req.tools.as_ref().and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0),
         "message_count": req.messages.len(),
     })
+}
+
+/// One line telling a responder what shape an auxiliary call must answer
+/// in, so it need not read the caller's whole system prompt. `None` when
+/// the shape cannot be told.
+fn expected_format(req: &ChatCompletionRequest, sp: &str) -> Option<String> {
+    if let Some(rf) = &req.response_format {
+        if rf.get("type").and_then(|v| v.as_str()) == Some("json_schema") {
+            let schema = rf.pointer("/json_schema/schema").cloned().unwrap_or(Value::Null);
+            return Some(format!("JSON matching schema {}", schema));
+        }
+        if rf.get("type").and_then(|v| v.as_str()) == Some("json_object") {
+            return Some("a JSON object".to_string());
+        }
+    }
+    let last_user = req
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == crate::openai_compat::ChatRole::User)
+        .map(|m| m.content.to_text())
+        .unwrap_or_default();
+    let hay = format!("{}\n{}", sp, last_user).to_lowercase();
+    if hay.contains("no_suggestion") {
+        return Some("suggestion lines, or exactly NO_SUGGESTION".to_string());
+    }
+    if hay.contains("\"suggestions\"") {
+        return Some("JSON {\"suggestions\": [...]} (empty list when none)".to_string());
+    }
+    if hay.contains("title") {
+        if hay.contains("\"title\"") || hay.contains("json") {
+            return Some("JSON {\"title\": \"...\"}".to_string());
+        }
+        return Some("only a short title, no quotes or extra text".to_string());
+    }
+    if hay.contains("summar") {
+        return Some("only the summary".to_string());
+    }
+    None
 }
 
 /// Short, stable digest identifying the calling client.
@@ -2794,6 +2834,22 @@ mod tests {
             ]
         }));
         assert_eq!(req.messages[0].role, crate::openai_compat::ChatRole::System);
+    }
+
+    #[test]
+    fn expected_format_for_title_and_suggestion() {
+        let title: ChatCompletionRequest = serde_json::from_value(json!({
+            "messages": [{"role": "user", "content": "Generate a title for this conversation: hi"}]
+        })).unwrap();
+        assert_eq!(
+            expected_format(&title, "").as_deref(),
+            Some("only a short title, no quotes or extra text")
+        );
+        let sugg: ChatCompletionRequest = serde_json::from_value(json!({
+            "messages": [{"role": "user", "content": "x"}]
+        })).unwrap();
+        assert!(expected_format(&sugg, "Reply NO_SUGGESTION if none").unwrap().contains("NO_SUGGESTION"));
+        assert_eq!(expected_format(&sugg, "You are helpful."), None);
     }
 
     #[test]
