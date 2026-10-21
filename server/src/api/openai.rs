@@ -2360,7 +2360,14 @@ async fn handle_streaming(
     // The presence notice is for a person on the other end. When the only
     // responder online is an agent seat, it would just be written into the
     // caller's transcript as if the agent had said it.
-    let seat_only = is_online && !app.connections.has_human_device(&human_id).await;
+    // A seat that detached a moment ago is an agent between polls: it will
+    // pick the request up from the backlog, and "offline" is not news the
+    // caller needs written into its transcript either.
+    let seat_only = if is_online {
+        !app.connections.has_human_device(&human_id).await
+    } else {
+        crate::seat::seat_recently_detached(&human_id)
+    };
 
     app.reply.register(&conversation_id, tx).await;
     push_messages_to_human(&app, inbound_messages, human_id);

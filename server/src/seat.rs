@@ -164,6 +164,33 @@ struct SeatHub {
     seats: Mutex<HashMap<String, Arc<Seat>>>,
 }
 
+/// When each human's agent seat last detached. A seat that dropped off a
+/// moment ago (its agent spent a while thinking between polls) will most
+/// likely be back, and the caller is an agent too: telling it the "human
+/// expert is offline" only writes a status line into its transcript.
+fn detached_at() -> &'static std::sync::Mutex<HashMap<String, Instant>> {
+    static AT: OnceLock<std::sync::Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    AT.get_or_init(Default::default)
+}
+
+/// How long after a seat detaches its human still counts as answered by
+/// an agent (`OPENHUMAN_SEAT_GRACE_SECS`, default 30 minutes).
+fn seat_grace() -> Duration {
+    let secs = std::env::var("OPENHUMAN_SEAT_GRACE_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(1800);
+    Duration::from_secs(secs)
+}
+
+/// Whether this human's seat detached within the grace period.
+pub(crate) fn seat_recently_detached(human_id: &str) -> bool {
+    detached_at()
+        .lock()
+        .map(|m| m.get(human_id).is_some_and(|t| t.elapsed() <= seat_grace()))
+        .unwrap_or(false)
+}
+
 fn hub() -> &'static SeatHub {
     static HUB: OnceLock<SeatHub> = OnceLock::new();
     HUB.get_or_init(SeatHub::default)
@@ -229,6 +256,9 @@ async fn attach(app: &AppState, p: &AuthPrincipal) -> Arc<Seat> {
             let idle = reap_seat.state.lock().await.last_poll.elapsed();
             if idle > ttl {
                 hub().seats.lock().await.remove(&key);
+                if let Ok(mut m) = detached_at().lock() {
+                    m.insert(reap_seat.human_id.clone(), Instant::now());
+                }
                 reap_app
                     .connections
                     .unregister(&reap_seat.human_id, &reap_seat.device_id)
@@ -1080,6 +1110,16 @@ mod cursor_origin_tests {
         assert!(a > 1_600_000_000_000, "origin is a ms timestamp");
         assert!(b > a);
     }
+}
+
+#[test]
+fn a_seat_that_just_detached_still_counts() {
+    assert!(!seat_recently_detached("hum_grace_test"));
+    detached_at()
+        .lock()
+        .unwrap()
+        .insert("hum_grace_test".into(), Instant::now());
+    assert!(seat_recently_detached("hum_grace_test"));
 }
 
 #[test]
