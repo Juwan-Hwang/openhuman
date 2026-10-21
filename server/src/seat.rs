@@ -385,6 +385,26 @@ fn injected_env(tail: &[Value]) -> serde_json::Map<String, Value> {
             continue;
         }
         let text = m.get("content").and_then(|c| c.as_str()).unwrap_or("");
+        // Plain "Key: value" lines (Grok's <user_info>, Cline, ...).
+        for line in text.lines() {
+            let l = line.trim();
+            let low = l.to_ascii_lowercase();
+            for (pre, key) in [
+                ("workspace path:", "cwd"),
+                ("current working directory:", "cwd"),
+                ("working directory:", "cwd"),
+                ("os version:", "platform"),
+                ("platform:", "platform"),
+                ("shell:", "shell"),
+                ("today's date:", "date"),
+            ] {
+                if let Some(v) = low.strip_prefix(pre).map(|_| l[pre.len()..].trim()) {
+                    if !v.is_empty() && v.len() < 300 && !env.contains_key(key) {
+                        env.insert(key.to_string(), Value::String(v.to_string()));
+                    }
+                }
+            }
+        }
         // Reasonix: `Current workspace: "/path".`
         if let Some(a) = text.find("Current workspace: \"") {
             let rest = &text[a + "Current workspace: \"".len()..];
@@ -972,6 +992,11 @@ mod consumer_tests {
         assert_eq!(env["cwd"], "/srv/p");
         assert_eq!(env["shell"], "zsh");
         assert!(injected_env(&[json!({"role":"user","content":"hi"})]).is_empty());
+        let grok = injected_env(&[
+            json!({"role":"user","content":"<user_info>\nOS Version: linux\nShell: /bin/sh\nWorkspace Path: /w\n</user_info>"}),
+        ]);
+        assert_eq!(grok["cwd"], "/w");
+        assert_eq!(grok["platform"], "linux");
     }
 
     fn seat() -> Seat {

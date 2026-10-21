@@ -746,6 +746,27 @@ fn expected_format(req: &ChatCompletionRequest, sp: &str) -> Option<String> {
         }
         return Some("only a short title, no quotes or extra text".to_string());
     }
+    // A prompt that spells out its own output ("Output ONLY the fragment:
+    // 5-12 words") says it better than any generic label.
+    let sp_low = sp.to_lowercase();
+    if let Some(i) = sp_low.find("output only") {
+        let rule: String = sp[i..]
+            .split_terminator(['\n'])
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(160)
+            .collect();
+        let first: String = sp
+            .split_terminator(['.', '\n'])
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("")
+            .chars()
+            .take(160)
+            .collect();
+        return Some(format!("{first}. {}", rule.trim()));
+    }
     if hay.contains("summar") {
         return Some("only the summary".to_string());
     }
