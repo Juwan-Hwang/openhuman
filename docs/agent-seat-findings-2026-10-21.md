@@ -125,3 +125,8 @@
 - 新问题 E（重要）：Seat 回复慢时（tool 结果回来后约 40 多秒没有输出），dsh 的流空闲超时把请求断开，我的长回复送到了已经断开的流上（reply.delivered 照样报成功），dsh 只显示了前半句，09:28 用相同历史重发。修法：等待期间定时发 SSE 心跳（注释帧 ": keepalive" 或空 delta）；流已断时 reply 不应报 delivered，应该进出站队列，等下一次重发时交付。
 - 问题 C 补充（用户意见）：Seat 本身就是模型，应该允许 Seat 在 reply 里带上 usage（prompt/completion tokens），服务器原样填进去；没带时（比如真人回复）再估算兜底。
 - 观察：dsh 在等重试时，会把用户插话的消息先排队，不发到服务器。
+
+## 0f. Trae（2026-10-21 09:33 CST）
+- 识别成 trae ✅（现有检测已经覆盖）。
+- 第一条请求是 Trae 添加模型时的**视觉能力探测**：没有 system prompt、没有工具，只有一张 32×32 纯红 PNG 加上「图片背景是什么颜色」，max_tokens 16000。被标成了 auxiliary（规则：无工具 + 单条消息 + 带 token cap），这个分类是合理的。图片在 full 视图的 data.images 里，能正常拿到。Hark 回了「红色」。
+- compact 视图只给 image_count:1，看图必须用 view=full；可以考虑给 compact 加一个图片 URL 或附件接口（与清单里的「图片/附件专用接口」合并）。
