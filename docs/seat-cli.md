@@ -1,61 +1,74 @@
-# `oh-seat` — the Agent Seat CLI (design)
+# oh-seat — the Agent Seat CLI
 
-Goal: the most comfortable way for an **AI agent with only a terminal** to sit in the OpenHuman responder seat. No MCP required (many agents cannot load MCP; every agent can run a command).
+`oh-seat` lets an AI agent sit in the OpenHuman **responder** seat from any
+terminal: callers (Claude Code, Codex, opencode, pi, any OpenAI-compatible
+client) send messages, and the agent answers them and runs tools on the
+caller's machine. People use the Flutter app; this CLI is designed for AI
+agents only, and every choice below favours an agent driving a shell one
+command at a time.
 
-## Why a CLI, and what makes it comfortable for an AI
+It is a single static Rust binary (like `gh` and `codex`): no runtime, no
+dependencies, starts instantly. Source: `cli/`. Build: `cargo build --release`
+in `cli/`; release workflow ready at `deploy/ci/oh-seat-release.yml` (copy into `.github/workflows/` to enable; pushing workflows needs a token with `workflow` scope)
+on tags `oh-seat-v*`.
 
-An agent drives a terminal one command at a time and reads the output back into its context. So the tool must:
+## Setup
 
-1. **One command = one complete step.** "Wait for the next thing that needs me", "reply", "run this tool and give me the result". Never make the agent loop, sleep, or track cursors.
-2. **Short, structured output.** Default output is compact, readable text with the fields the agent acts on (conversation, client, the message, tool results). `--json` gives one JSON object per line for agents that prefer parsing.
-3. **State lives in the tool, not in the agent's head.** Cursor, the active conversation, the last capabilities snapshot are kept in a small state file (`~/.openhuman/seat-state.json`, override `OH_SEAT_STATE`).
-4. **Blocking with a hard ceiling the agent chooses.** Agents' shells kill commands after a timeout (often 2–10 min). Every blocking command takes `--timeout SECONDS` and returns cleanly (exit code 2, "nothing yet") instead of being killed mid-ack.
-5. **Never lose an event.** The cursor is advanced only after the events have been printed.
-6. **Zero dependencies, cross-platform.** Single-file Python 3.8+ using only the standard library; runs on Linux, macOS and Windows (Git Bash / PowerShell). Always sends a User-Agent (Cloudflare rejects requests without one).
-7. **Exit codes mean something.** 0 = done, 2 = timed out with nothing new, 3 = HTTP/auth error, 4 = usage error.
+```
+export OH_SEAT_URL=https://api.juwanh.com          # default
+export OH_SEAT_KEY_FILE=~/.openhuman/seat_key      # default; a responder-scope ohk_ key
+```
 
-## Configuration
+`OH_SEAT_KEY` works too but puts the key in shell history. State (cursor,
+active conversation, buffered events) lives in `~/.openhuman/seat-state.json`
+(`--state` / `OH_SEAT_STATE`). Each state file is its own consumer with its
+own server-side cursor, so several agents can read the same seat.
 
-| Env | Meaning |
+## The loop
+
+```
+oh-seat next                          # block until a caller message; prints it, makes it active
+oh-seat tool Bash command='ls -la'    # caller runs it; prints the output
+oh-seat reply 'Done.' --next          # answer, then wait for the next message
+```
+
+| command | what it does |
 |---|---|
-| `OH_SEAT_URL` | server base URL (default `https://api.juwanh.com`) |
-| `OH_SEAT_KEY` | responder key, or `OH_SEAT_KEY_FILE` pointing at a file holding it |
-| `OH_SEAT_STATE` | state file path |
-| `OH_SEAT_CONSUMER` | consumer name (for the per-consumer cursor, phase 2) |
+| `next [--timeout S] [--all]` | Wait for a message (default 100 s, exit 2 if none). First sight of a conversation also prints its tool names. |
+| `reply TEXT \| -f FILE \| -` | Reply in the active (or `-c`) conversation. `--more` keeps the turn open, `-r` adds reasoning, `--next` waits for the next message. |
+| `tool NAME key=value…` | Ask the caller to run a tool, wait for its result. Input: `key=value` (value parsed as JSON if valid), `key:=value` (force string), `key=@file`, `key=@-` (stdin), one JSON object, or `-` (whole input from stdin). |
+| `result ID` | Keep waiting for a tool result that outlived `tool --timeout`. |
+| `caps [--tool NAME [--schema]] [--full] [--diff]` | Tools as signatures (`Bash(command*: string, timeout: number)`), one tool's parameters, the whole system prompt, or what changed. |
+| `history`, `convs`, `use CONV`, `save`, `status` | Context, conversation list, switch active, persist, health. |
 
-## Commands
+`--json` on any command prints one JSON object per line.
 
-```
-oh-seat next [--timeout 600] [--all]        block until something needs a response; print it
-oh-seat reply TEXT [-c CONV] [--reasoning R] [--more]
-oh-seat tool NAME [JSON_INPUT] [-c CONV] [--text T] [--timeout 1800]
-                                            ask the caller to run a tool; block until the result
-oh-seat caps [-c CONV] [--full] [--diff]    tools + system prompt of the conversation (diff vs last view)
-oh-seat history [-c CONV] [--limit 20]
-oh-seat convs                               conversations this seat has seen (from state)
-oh-seat use CONV                            set the active conversation
-oh-seat save [-c CONV]                      persist the conversation on the server
-oh-seat status                              url, cursor, active conversation, waiting turns
-```
+## Design rules (why it looks like this)
 
-- `-c` defaults to the active conversation, which `next` sets to the conversation of the newest message.
-- `next` returns on `message.received` (and `conversation.started` printed as a header). Tool results are consumed by `tool` itself; `--all` shows every event type.
-- `next` marks auxiliary requests (title generation, suggestions, skill review) with `AUX` and, where it can tell, the expected answer format, so the agent replies in the right shape without reading the whole system prompt.
-- `reply` closes the turn by default; `--more` keeps it open for another reply.
-- `tool` has no 100 s ceiling: it posts the call, then follows the inbox until the matching `tool.result` arrives (approval prompts can take minutes). Other events seen meanwhile are kept in the state file and returned by the next `next`, never dropped.
-- `caps --diff` shows only what changed since the last `caps` for that conversation (system prompts are often 10–20k characters).
+- **One command = one complete step.** `tool` sends and waits; `reply --next`
+  answers and waits. Fewer round-trips through the agent's context.
+- **Every wait is bounded** by `--timeout` (default 100 s, below common shell
+  tool limits). Nothing is lost on timeout: events are buffered in the state
+  file with the cursor, and `result ID` / `next` pick them up.
+- **No quoting traps.** Text and tool inputs can come from files or stdin
+  (`-f -`, `key=@-`), so multi-line commands and quotes never go through the
+  shell twice.
+- **Auxiliary calls are labelled.** Title/suggestion requests print
+  `AUX: answer with …; reply with -c CONV` and never take over the active
+  conversation, so a later bare `reply` lands in the real chat. The format
+  comes from the server's `expected_format`, with a local fallback.
+- **Long tool output is capped** (`OH_SEAT_MAX_OUTPUT`, default 30000 chars):
+  head and tail are shown, the whole output is saved to
+  `~/.openhuman/results/<id>.txt` for grep.
+- **Exit codes mean something:** 0 ok, 2 nothing new before the timeout,
+  3 network/auth/server (message says which, e.g. key lacks responder scope),
+  4 usage.
+- **Tool result by id** needs no server endpoint: the per-consumer cursor plus
+  the persisted buffer already guarantee a result is never dropped.
 
-## Typical agent loop
+## Tests
 
-```
-oh-seat next --timeout 540          # → conv, client, the user's message
-oh-seat tool Bash '{"command":"ls"}'   # → the output
-oh-seat reply "Here is what I found ..."
-oh-seat next --timeout 540
-```
-
-## Phases
-
-1. **CLI (this branch):** commands above, client-side cursor/state, buffered events, aux tagging from the message text.
-2. **Server:** per-consumer cursor on `/v1/seat/inbox?consumer=` so two pollers never ack each other's events; aux events carry `kind:"auxiliary"` and `expected_format`; `tool.result` lookup by `invocation_id` (`GET /v1/seat/tool-result/:id`) so `tool` can resume after a restart.
-3. **Tests:** split caller / responder keys; `seatbot.py` rewritten on top of `oh-seat`; prod e2e with Claude Code, Codex, opencode, pi.
+- Unit: `cargo test` in `cli/`.
+- End to end with split keys (caller-scope key for a curl caller, responder
+  key for oh-seat, two consumers): `tools/seat/e2e_oh_seat.sh`.
+- Verified live 2026-10-21 against Claude Code, Codex and opencode callers.

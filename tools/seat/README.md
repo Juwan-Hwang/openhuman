@@ -6,12 +6,12 @@
 
 ## oh-seat (recommended)
 
-`oh-seat` is a zero-dependency Python CLI for agents that only have a terminal. Design: `docs/seat-cli.md`.
+`oh-seat` is a single static Rust binary (source `cli/`) for agents that only have a terminal. Design and full reference: `docs/seat-cli.md`. End-to-end test: `e2e_oh_seat.sh`.
 
 ```
 export OH_SEAT_KEY_FILE=~/.openhuman/seat_key   # responder key
-oh-seat next --timeout 540                      # wait for the next message
-oh-seat tool bash '{"command":"uname -a"}'      # caller runs it; prints the result
+oh-seat next                                    # wait for the next message (≤100 s)
+oh-seat tool bash command='uname -a'           # caller runs it; prints the result
 oh-seat reply "Done." --reasoning "checked uname"
 ```
 
