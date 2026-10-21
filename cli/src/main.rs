@@ -1501,6 +1501,8 @@ fn env_hints(sp: &str) -> Vec<(&'static str, String)> {
         let low = l.to_ascii_lowercase();
         for (pre, k) in [
             ("current working directory:", "cwd"),
+            ("workspace path:", "cwd"),
+            ("os version:", "platform"),
             ("working directory:", "cwd"),
             ("primary working directory:", "cwd"),
             ("cwd:", "cwd"),
