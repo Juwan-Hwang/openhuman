@@ -163,6 +163,7 @@ impl IdentityRepository for MemoryStore {
                 key_hash: Some(key_hash),
                 agent_id: api_key.agent_id.clone(),
                 human_id: api_key.human_id.clone(),
+                scope: api_key.scope,
             },
         })
     }
@@ -496,6 +497,9 @@ impl ReplyRegistry for MemoryStore {
             // Deliver to the LAST registered channel (the active turn).
             // Earlier channels are stale concurrent requests that should
             // have been superseded — we leave them to time out naturally.
+            // Drop channels whose request already went away (client
+            // disconnected mid-stream), then deliver to the newest live one.
+            channels.retain(|tx| !tx.is_closed());
             if let Some(tx) = channels.last() {
                 let _ = tx.send(text.to_string());
                 return true;
@@ -508,7 +512,7 @@ impl ReplyRegistry for MemoryStore {
         let data = self.data.lock().await;
         data.pending
             .iter()
-            .filter(|(_, channels)| !channels.is_empty())
+            .filter(|(_, channels)| channels.iter().any(|tx| !tx.is_closed()))
             .map(|(id, _)| id.clone())
             .collect()
     }

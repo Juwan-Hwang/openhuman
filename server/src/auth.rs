@@ -54,6 +54,30 @@ pub async fn require_api_key(
         }
     };
 
+    // Which side this route belongs to. The OpenAI-compatible ingress is
+    // the caller's; everything else under the protected router (history,
+    // trash, renames, the agent seat) is the responder's.
+    let path = request.uri().path();
+    let caller_route = path == "/v1/chat/completions"
+        || path == "/v1/models"
+        || path.starts_with("/v1/replies");
+    let allowed = if caller_route {
+        principal.api_key.scope.may_call()
+    } else {
+        principal.api_key.scope.may_respond()
+    };
+    if !allowed {
+        return auth_error(
+            StatusCode::FORBIDDEN,
+            "wrong_key_scope",
+            &format!(
+                "This key's scope is '{}' and cannot be used on {}.",
+                principal.api_key.scope.as_str(),
+                path
+            ),
+        );
+    }
+
     request.extensions_mut().insert(principal);
     next.run(request).await
 }

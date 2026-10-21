@@ -13,6 +13,7 @@ pub mod notification;
 pub mod observation;
 pub mod openai_compat;
 pub mod profile;
+pub mod seat;
 pub mod state;
 pub mod storage;
 pub mod ws;
@@ -104,8 +105,17 @@ pub fn build_router(state: AppState) -> Router {
         )
         // The seeded agent name is rarely what the human calls it.
         .route("/v1/agents/:agent_id", patch(api::history::rename_agent))
-        .layer(from_fn_with_state(state.clone(), auth::require_api_key))
-        .layer(axum::middleware::from_fn(observation::observe_request));
+        // Agent Seat: the human seat over plain HTTP, for agents that
+        // cannot hold a WebSocket (see `seat.rs`).
+        .route("/v1/seat/inbox", get(seat::inbox))
+        .route("/v1/seat/send", post(seat::send))
+        .route("/v1/seat/reply", post(seat::reply))
+        .route("/v1/seat/tool-call", post(seat::tool_call))
+        .route("/v1/seat/capabilities", get(seat::capabilities))
+        // Observation runs *inside* auth: only authenticated requests are
+        // captured, so an anonymous caller cannot fill the disk.
+        .layer(axum::middleware::from_fn(observation::observe_request))
+        .layer(from_fn_with_state(state.clone(), auth::require_api_key));
 
     let public = Router::new()
         .route("/health", get(health))

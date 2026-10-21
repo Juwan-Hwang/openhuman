@@ -143,6 +143,50 @@ pub struct ApiKey {
     pub agent_id: String,
     /// The human endpoint this key is bound to.
     pub human_id: String,
+    /// Which side of a conversation this key may act on — see [`KeyScope`].
+    pub scope: KeyScope,
+}
+
+/// Which side of a conversation a key may act on.
+///
+/// - `Caller`: the OpenAI-compatible ingress (`/v1/chat/completions`,
+///   `/v1/replies`, `/v1/models`). This is the key handed to agent software.
+/// - `Responder`: the seat that answers — the human's WebSocket (`/ws`),
+///   history routes, and the HTTP agent seat (`/v1/seat/*`).
+/// - `Both`: legacy behaviour, one key for both sides. Existing keys keep it
+///   so nothing breaks on upgrade; new keys should pick a side.
+/// - `Revoked`: authenticates nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyScope {
+    Caller,
+    Responder,
+    Both,
+    Revoked,
+}
+
+impl KeyScope {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "caller" => Self::Caller,
+            "responder" => Self::Responder,
+            "revoked" => Self::Revoked,
+            _ => Self::Both,
+        }
+    }
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Caller => "caller",
+            Self::Responder => "responder",
+            Self::Both => "both",
+            Self::Revoked => "revoked",
+        }
+    }
+    pub fn may_call(&self) -> bool {
+        matches!(self, Self::Caller | Self::Both)
+    }
+    pub fn may_respond(&self) -> bool {
+        matches!(self, Self::Responder | Self::Both)
+    }
 }
 
 impl ApiKey {
@@ -159,7 +203,14 @@ impl ApiKey {
             key_hash: Some(crate::crypto::sha256_hex(raw_key)),
             agent_id: agent_id.into(),
             human_id: human_id.into(),
+            scope: KeyScope::Both,
         }
+    }
+
+    /// Same key, restricted to one side.
+    pub fn with_scope(mut self, scope: KeyScope) -> Self {
+        self.scope = scope;
+        self
     }
 
     /// A persisted key record — plaintext stripped, digest retained.
@@ -176,6 +227,7 @@ impl ApiKey {
                 .or_else(|| Some(crate::crypto::sha256_hex(&self.key))),
             agent_id: self.agent_id.clone(),
             human_id: self.human_id.clone(),
+            scope: self.scope,
         }
     }
 

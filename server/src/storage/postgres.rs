@@ -105,6 +105,17 @@ impl PostgresStore {
         self.pool.execute(sql4).await?;
         let sql5 = include_str!("../../migrations/005_tool_call_lookup.sql");
         self.pool.execute(sql5).await?;
+        let sql6 = include_str!("../../migrations/006_key_scope.sql");
+        self.pool.execute(sql6).await?;
+        // 001 re-seeds the public demo key on every boot. Outside an
+        // explicit demo it must not authenticate anything.
+        if std::env::var("OPENHUMAN_DEMO").ok().as_deref() != Some("1") {
+            self.pool
+                .execute("UPDATE api_keys SET scope = 'revoked' WHERE id = 'key_demo_001'")
+                .await?;
+        } else {
+            tracing::warn!("OPENHUMAN_DEMO=1 — the public demo key is live");
+        }
         Ok(())
     }
 
@@ -131,7 +142,7 @@ impl IdentityRepository for PostgresStore {
         let key_hash = api_key_hash(raw_key);
 
         let key_row =
-            sqlx::query("SELECT id, agent_id, human_id FROM api_keys WHERE key_hash = $1")
+            sqlx::query("SELECT id, agent_id, human_id, scope FROM api_keys WHERE key_hash = $1")
                 .bind(&key_hash)
                 .fetch_optional(&*self.pool)
                 .await
@@ -140,6 +151,9 @@ impl IdentityRepository for PostgresStore {
         let key_id: String = key_row.try_get("id").ok()?;
         let agent_id: String = key_row.try_get("agent_id").ok()?;
         let human_id: String = key_row.try_get("human_id").ok()?;
+        let scope: String = key_row
+            .try_get("scope")
+            .unwrap_or_else(|_| "both".to_string());
 
         let agent = self.get_agent_inner(&agent_id).await?;
         let human = self.get_human_inner(&human_id).await?;
@@ -153,6 +167,7 @@ impl IdentityRepository for PostgresStore {
                 key_hash: Some(key_hash),
                 agent_id,
                 human_id,
+                scope: crate::model::identity::KeyScope::parse(&scope),
             },
         })
     }
@@ -275,18 +290,20 @@ impl IdentityRepository for PostgresStore {
 
         let _ = sqlx::query(
             r#"
-            INSERT INTO api_keys (id, key_hash, agent_id, human_id, created_at)
-            VALUES ($1, $2, $3, $4, NOW())
+            INSERT INTO api_keys (id, key_hash, agent_id, human_id, scope, created_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
             ON CONFLICT (id) DO UPDATE SET
                 key_hash = EXCLUDED.key_hash,
                 agent_id = EXCLUDED.agent_id,
-                human_id = EXCLUDED.human_id
+                human_id = EXCLUDED.human_id,
+                scope = EXCLUDED.scope
             "#,
         )
         .bind(&key.id)
         .bind(&key_hash)
         .bind(&key.agent_id)
         .bind(&key.human_id)
+        .bind(key.scope.as_str())
         .execute(&*self.pool)
         .await;
     }
@@ -1287,6 +1304,9 @@ impl ReplyRegistry for InMemoryReplyRegistry {
     async fn deliver(&self, conversation_id: &str, text: &str) -> bool {
         let mut data = self.data.lock().await;
         if let Some(channels) = data.pending.get_mut(conversation_id) {
+            // Drop channels whose request already went away (client
+            // disconnected mid-stream), then deliver to the newest live one.
+            channels.retain(|tx| !tx.is_closed());
             if let Some(tx) = channels.last() {
                 let _ = tx.send(text.to_string());
                 return true;
@@ -1299,7 +1319,7 @@ impl ReplyRegistry for InMemoryReplyRegistry {
         let data = self.data.lock().await;
         data.pending
             .iter()
-            .filter(|(_, channels)| !channels.is_empty())
+            .filter(|(_, channels)| channels.iter().any(|tx| !tx.is_closed()))
             .map(|(id, _)| id.clone())
             .collect()
     }
