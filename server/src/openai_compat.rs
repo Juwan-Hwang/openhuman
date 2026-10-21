@@ -599,6 +599,20 @@ impl ChatCompletionChunk {
     /// Sent as a single chunk in streaming mode so the agent receives
     /// the complete tool call without fragmentation.
     pub fn tool_call_delta(id: &str, call_id: &str, tool_name: &str, arguments: &str) -> Self {
+        Self::tool_call_delta_at(id, 0, call_id, tool_name, arguments)
+    }
+
+    /// One tool call of several in a streamed message. `index` is the
+    /// call's position: clients accumulate deltas by index, so giving every
+    /// call index 0 makes them fold all calls into the first one (seen with
+    /// pi: three parallel calls arrived as one).
+    pub fn tool_call_delta_at(
+        id: &str,
+        index: u32,
+        call_id: &str,
+        tool_name: &str,
+        arguments: &str,
+    ) -> Self {
         Self {
             id: id.to_string(),
             object: "chat.completion.chunk",
@@ -611,7 +625,7 @@ impl ChatCompletionChunk {
                     role: None,
                     content: None,
                     tool_calls: Some(vec![ToolCallDelta {
-                        index: 0,
+                        index,
                         id: Some(call_id.to_string()),
                         type_: Some("function"),
                         function: Some(FunctionCallDelta {

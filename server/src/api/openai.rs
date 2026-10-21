@@ -1624,14 +1624,15 @@ async fn handle_backlog(
                 sent_text.push_str(&prose);
 
                 let mut recorded = Vec::new();
-                for call in &calls {
+                for (ci, call) in calls.iter().enumerate() {
                     let call_id = call
                         .invocation_id
                         .clone()
                         .filter(|id| !id.trim().is_empty())
                         .unwrap_or_else(|| format!("call_{}", Uuid::now_v7().simple()));
-                    let chunk = ChatCompletionChunk::tool_call_delta(
+                    let chunk = ChatCompletionChunk::tool_call_delta_at(
                         &completion_id,
+                        ci as u32,
                         &call_id,
                         &call.tool_name,
                         &call.arguments.to_string(),
@@ -2352,7 +2353,7 @@ async fn handle_streaming(
 
                 let mut recorded = Vec::new();
                 let mut call_text = String::new();
-                for call in calls {
+                for (ci, call) in calls.iter().enumerate() {
                     let stored_content = format!(
                         "{{\"tool_call\":\"{}\",\"arguments\":{}}}",
                         call.tool_name, call.arguments
@@ -2394,8 +2395,9 @@ async fn handle_streaming(
                     }).await;
 
                     let args = call.arguments.to_string();
-                    let chunk = ChatCompletionChunk::tool_call_delta(
+                    let chunk = ChatCompletionChunk::tool_call_delta_at(
                         &completion_id,
+                        ci as u32,
                         &call_id,
                         &call.tool_name,
                         &args,
