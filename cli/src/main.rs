@@ -222,6 +222,9 @@ struct ConvInfo {
     last: String,
     #[serde(default)]
     t: u64,
+    /// The latest message was an auxiliary call (title, summary...).
+    #[serde(default)]
+    aux: bool,
 }
 
 fn home() -> PathBuf {
@@ -473,6 +476,7 @@ impl Ctx {
         if s(e, "type") == Some("message.received") {
             info.last = s(e, "text").unwrap_or("").chars().take(100).collect();
             info.t = now_secs();
+            info.aux = aux_hint(e).is_some();
         }
         if self.st.convs.len() > 50 {
             let mut v: Vec<_> = self
@@ -1265,6 +1269,19 @@ fn cmd_tool(
     }
     if n == 1 {
         let inv = invs.pop().unwrap()?;
+        // An auxiliary call answered by a tool call (Grok's session_title)
+        // takes the call itself as its answer: nothing comes back.
+        if cx.st.convs.get(&c).map(|i| i.aux).unwrap_or(false) {
+            if cx.json {
+                cx.out(&json!({"invocation_id": inv, "auxiliary": true}));
+            } else {
+                println!(
+                    "called {} in {c}: the auxiliary call takes it as its answer",
+                    bodies[0]["tool"].as_str().unwrap_or("?")
+                );
+            }
+            return Ok(OK);
+        }
         return wait_result(cx, &inv, timeout);
     }
     let deadline = Instant::now() + Duration::from_secs(timeout);
