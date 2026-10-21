@@ -42,6 +42,52 @@ fn read_stdin() -> Result<String, String> {
     Ok(b)
 }
 
+/// A line on its own that separates the texts of several `key=@-`.
+pub const STDIN_SPLIT: &str = "@@@";
+
+/// stdin, read once and cut at `@@@` lines, handed out one section per
+/// `key=@-` in the order they appear (across every call of a batch).
+static SECTIONS: std::sync::Mutex<Option<std::collections::VecDeque<String>>> =
+    std::sync::Mutex::new(None);
+
+fn split_sections(b: &str) -> std::collections::VecDeque<String> {
+    let mut out = std::collections::VecDeque::new();
+    let mut cur = String::new();
+    for line in b.split_inclusive('\n') {
+        if line.trim_end_matches(['\n', '\r']) == STDIN_SPLIT {
+            out.push_back(std::mem::take(&mut cur));
+        } else {
+            cur.push_str(line);
+        }
+    }
+    out.push_back(cur);
+    out
+}
+
+fn next_section() -> Result<String, String> {
+    let mut g = SECTIONS
+        .lock()
+        .map_err(|_| "stdin: lock poisoned".to_string())?;
+    if g.is_none() {
+        *g = Some(split_sections(&read_stdin()?));
+    }
+    g.as_mut().and_then(|q| q.pop_front()).ok_or_else(|| {
+        format!(
+            "more key=@- than texts on stdin: put a line `{STDIN_SPLIT}` between the texts, one per key=@- in order"
+        )
+    })
+}
+
+/// Sections of stdin no `key=@-` took (a missing `key=@-`, or a stray
+/// `@@@` line inside a text).
+pub fn stdin_leftover() -> usize {
+    SECTIONS
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|q| q.len()))
+        .unwrap_or(0)
+}
+
 /// Parse the words after the tool name.
 pub fn parse(args: &[String]) -> Result<Input, String> {
     if args.is_empty() {
@@ -76,7 +122,7 @@ pub fn parse(args: &[String]) -> Result<Input, String> {
             let j = serde_json::from_str(v).map_err(|e| format!("{k}:json=…: not JSON: {e}"))?;
             (k, Raw::Json(j))
         } else if v == "@-" {
-            (left, Raw::Str(read_stdin()?))
+            (left, Raw::Str(next_section()?))
         } else if let Some(p) = v
             .strip_prefix('@')
             .filter(|p| !p.is_empty() && !p.contains(' '))
@@ -409,6 +455,13 @@ pub fn closest<'a>(k: &str, names: &[&'a str]) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdin_sections_split_on_marker_lines() {
+        let q = split_sections("a\nb\n@@@\nc\n");
+        assert_eq!(q, ["a\nb\n", "c\n"]);
+        assert_eq!(split_sections("one text\n"), ["one text\n"]);
+    }
 
     #[test]
     fn required_description_is_filled() {
