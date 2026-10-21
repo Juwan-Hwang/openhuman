@@ -979,6 +979,16 @@ fn exit_code(e: &Value) -> Option<i64> {
                 }
             }
         }
+        // Copilot: "<shellId: 0 completed with exit code 2>"
+        if found.is_none() {
+            if let Some(i) = l.find("completed with exit code ") {
+                let n: String = l[i + 25..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit() || *c == '-')
+                    .collect();
+                found = n.parse().ok();
+            }
+        }
         if found.is_some() {
             break;
         }
@@ -1886,6 +1896,10 @@ mod tests {
             Some(127)
         );
         assert_eq!(exit_code(&r("hello")), None);
+        assert_eq!(
+            exit_code(&r("x\n<shellId: 0 completed with exit code 2>")),
+            Some(2)
+        );
     }
 
     #[test]

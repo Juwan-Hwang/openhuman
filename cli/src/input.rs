@@ -260,6 +260,32 @@ fn looks_structured(v: &str, ts: &[String]) -> bool {
 }
 
 /// Typed input, or every problem found (all at once, not one per try).
+/// Some callers demand a `description` (Copilot's bash and sql) that only
+/// labels the call for their UI. Left out, it is filled from the call's
+/// main argument instead of failing the call.
+fn autofill_description(m: &mut Map<String, Value>, schema: &Value) {
+    if m.contains_key("description") || !required(schema).iter().any(|r| r == "description") {
+        return;
+    }
+    let is_str = props(schema)
+        .and_then(|p| p.get("description"))
+        .map(|p| types(p).iter().any(|t| t == "string") || types(p).is_empty())
+        .unwrap_or(true);
+    if !is_str {
+        return;
+    }
+    let main = [
+        "command", "query", "cmd", "path", "prompt", "pattern", "url",
+    ]
+    .iter()
+    .find_map(|k| m.get(*k).and_then(|v| v.as_str()))
+    .or_else(|| m.values().find_map(|v| v.as_str()))
+    .unwrap_or("run");
+    let line = main.lines().next().unwrap_or("run");
+    let short: String = line.chars().take(60).collect();
+    m.insert("description".into(), Value::String(short));
+}
+
 pub fn build(input: Input, schema: &Value) -> Result<Map<String, Value>, Vec<String>> {
     let pr = props(schema);
     let mut errs = Vec::new();
@@ -312,6 +338,8 @@ pub fn build(input: Input, schema: &Value) -> Result<Map<String, Value>, Vec<Str
             }
         }
     }
+    let mut m = m;
+    autofill_description(&mut m, schema);
     let missing: Vec<String> = required(schema)
         .into_iter()
         .filter(|r| !m.contains_key(r))
@@ -381,6 +409,24 @@ pub fn closest<'a>(k: &str, names: &[&'a str]) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn required_description_is_filled() {
+        let sch = json!({"type":"object","properties":{"command":{"type":"string"},"description":{"type":"string"}},"required":["command","description"]});
+        let m = build(
+            Input::Object(serde_json::from_value(json!({"command":"pwd"})).unwrap()),
+            &sch,
+        )
+        .unwrap();
+        assert_eq!(m["description"], "pwd");
+        let sch2 = json!({"type":"object","properties":{"command":{"type":"string"},"description":{"type":"string"}},"required":["command"]});
+        let m = build(
+            Input::Object(serde_json::from_value(json!({"command":"pwd"})).unwrap()),
+            &sch2,
+        )
+        .unwrap();
+        assert!(!m.contains_key("description"));
+    }
     use serde_json::json;
 
     fn pairs(a: &[&str]) -> Input {
