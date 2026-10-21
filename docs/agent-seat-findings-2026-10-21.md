@@ -114,3 +114,4 @@
 - 新问题 A：Qoder 标题请求同一句话发了 4 次（每次都在约 3 秒内正常 stop）。可能是 Qoder 自己的重试或每轮都会触发，也可能是流式结尾多出的 "\n" chunk（多轮流式在回复后追加了换行）导致解析失败。待查。
 - 新问题 B：标题、建议请求的 system prompt 里没有 Qoder 字样，所以 client 显示为 unknown。可以按同 key 下最近一次主请求的 client 继承。
 - 观察：Qoder 的 model 字段发的是 "OpenHuman"（显示名），不是 id。
+- 同一把 key 在 WorkBuddy/Qoder 之间切换时，capability 按 agent 存储会互相覆盖并触发 capability.updated（09:12 实测），改成按会话快照后可以解决。
