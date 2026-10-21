@@ -133,3 +133,4 @@
 - 新问题 F（重要）：Trae 会**改写 tool_call_id**。Seat 发出的是 call_01a15c…，Trae 回传 assistant.tool_calls / tool 消息时用的是自己生成的 call_NJeu…。服务器匹配不上：seattool 一直等不到结果，Trae 端看起来卡住；tool_id 显示成 unknown；同一份 tool 结果在之后每次请求里都会被重新推送（共 4 次）。修法：ID 对不上时，按「本轮最后发出的 tool_calls 的名字和参数」兜底匹配，并按 (会话, 内容哈希) 去重。
 - 新问题 G（重要）：Trae 把会变化的 system-reminder（终端数量、模式等）放进第一条 user 消息，导致首条消息哈希每轮都变，会话被拆开（cnv_…5032 → cnv_…d046）。修法：会话锚点改成快照前缀比对，计算锚点前剥离 <system-reminder> 和 <uploaded_files> 这类注入（与 §0c 无记录方案一起做）。
 - 观察：Trae 的用户附件只传本地路径（<uploaded_files>），不内联图片，Seat 需要用 Read 工具去读；请求里带 thinking:{type:enabled}，model 字段为 openhuman-human；UA 是 hertz（字节 Hertz 框架）。
+- 新问题 H：所有客户端都不显示思考。服务器 SSE 从不发送 reasoning_content；Seat 的 reply/tool-call 也没有 reasoning 字段。修法：加可选 reasoning，在 content 之前以 reasoning_content delta 流出（非流式放 message.reasoning_content），请求 thinking 关闭时不发。
