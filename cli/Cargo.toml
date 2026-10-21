@@ -1,0 +1,22 @@
+[package]
+name = "oh-seat"
+version = "0.2.0"
+edition = "2021"
+description = "OpenHuman Agent Seat CLI: sit in the responder seat from any terminal (built for AI agents)"
+license = "MIT"
+
+[[bin]]
+name = "oh-seat"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+ureq = { version = "2", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
