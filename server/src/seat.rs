@@ -268,7 +268,7 @@ fn render(cursor: u64, ev: &Value, full: bool) -> Value {
                 out["client"] = req.get("client").cloned().unwrap_or(Value::Null);
                 let kind = req.get("kind").cloned().unwrap_or(Value::Null);
                 if kind.as_str() == Some("auxiliary") {
-                    for k in ["system_prompt_head", "response_format", "max_tokens"] {
+                    for k in ["expected_format", "system_prompt_head", "response_format", "max_tokens"] {
                         if let Some(v) = req.get(k).filter(|v| !v.is_null()) {
                             out[k] = v.clone();
                         }

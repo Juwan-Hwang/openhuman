@@ -160,6 +160,8 @@ AUX_HINTS = [
 
 
 def aux_hint(e):
+    if e.get("expected_format"):
+        return "answer with " + e["expected_format"]
     kind = e.get("kind")
     text = (e.get("text") or "").lower()
     for needle, hint in AUX_HINTS:
