@@ -67,6 +67,21 @@ fn seat_ttl() -> Duration {
     Duration::from_secs(secs)
 }
 
+/// Where a freshly attached seat starts counting.
+///
+/// A seat is re-created after an idle reclaim or a server restart. If it
+/// started from 0 again, a consumer still holding the old (larger) cursor
+/// would ask for `after=<old>` and never see a new event. Starting from the
+/// current Unix time in milliseconds keeps cursors increasing across
+/// re-creations (a seat would need more than 1000 events a second for its
+/// whole life to catch up with the clock).
+fn cursor_origin() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 struct SeatState {
     queue: VecDeque<(u64, Value)>,
     next_cursor: u64,
@@ -107,11 +122,21 @@ impl Seat {
         st.consumers.insert(consumer.to_string(), (after, now));
         st.consumers
             .retain(|_, (_, seen)| now.duration_since(*seen) < CONSUMER_IDLE);
-        let floor = st.consumers.values().map(|(a, _)| *a).min().unwrap_or(after);
+        let floor = st
+            .consumers
+            .values()
+            .map(|(a, _)| *a)
+            .min()
+            .unwrap_or(after);
         while st.queue.front().map(|(c, _)| *c <= floor).unwrap_or(false) {
             st.queue.pop_front();
         }
-        let events: Vec<_> = st.queue.iter().filter(|(c, _)| *c > after).cloned().collect();
+        let events: Vec<_> = st
+            .queue
+            .iter()
+            .filter(|(c, _)| *c > after)
+            .cloned()
+            .collect();
         (events, st.next_cursor)
     }
 
@@ -153,7 +178,7 @@ async fn attach(app: &AppState, p: &AuthPrincipal) -> Arc<Seat> {
         device_id: format!("seat_{}", Uuid::now_v7().simple()),
         state: Mutex::new(SeatState {
             queue: VecDeque::new(),
-            next_cursor: 0,
+            next_cursor: cursor_origin(),
             last_poll: Instant::now(),
             seen_ids: VecDeque::new(),
             consumers: std::collections::HashMap::new(),
@@ -268,7 +293,12 @@ fn render(cursor: u64, ev: &Value, full: bool) -> Value {
                 out["client"] = req.get("client").cloned().unwrap_or(Value::Null);
                 let kind = req.get("kind").cloned().unwrap_or(Value::Null);
                 if kind.as_str() == Some("auxiliary") {
-                    for k in ["expected_format", "system_prompt_head", "response_format", "max_tokens"] {
+                    for k in [
+                        "expected_format",
+                        "system_prompt_head",
+                        "response_format",
+                        "max_tokens",
+                    ] {
                         if let Some(v) = req.get(k).filter(|v| !v.is_null()) {
                             out[k] = v.clone();
                         }
@@ -425,7 +455,11 @@ pub async fn history(
         .and_then(|c| c.human_id().map(|h| h == principal.human.id))
         .unwrap_or(false);
     if !owned {
-        return err(StatusCode::NOT_FOUND, "not_found", "No such conversation for this seat.");
+        return err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "No such conversation for this seat.",
+        );
     }
     let limit = q.limit.unwrap_or(30).clamp(1, 200);
     let all = app.message.list(&q.conversation_id).await;
@@ -499,13 +533,18 @@ pub async fn save(
         .and_then(|c| c.human_id().map(|h| h == principal.human.id))
         .unwrap_or(false);
     if !owned {
-        return err(StatusCode::NOT_FOUND, "not_found", "No such conversation for this seat.");
+        return err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "No such conversation for this seat.",
+        );
     }
     let saved = match &app.ephemeral {
         Some(eph) => eph.save(&b.conversation_id).await,
         None => 0,
     };
-    Json(json!({ "ok": true, "saved": saved, "persistent": app.ephemeral.is_none() })).into_response()
+    Json(json!({ "ok": true, "saved": saved, "persistent": app.ephemeral.is_none() }))
+        .into_response()
 }
 
 // ── POST /v1/seat/send ──
@@ -552,13 +591,8 @@ pub async fn send(
     if let Err(e) = crate::ws::protocol::ClientMessage::from_json(&raw) {
         return err(StatusCode::BAD_REQUEST, "invalid_event", &e.to_string());
     }
-    crate::ws::handler::handle_client_message(
-        &raw,
-        &app,
-        &principal.human.id,
-        &principal.agent.id,
-    )
-    .await;
+    crate::ws::handler::handle_client_message(&raw, &app, &principal.human.id, &principal.agent.id)
+        .await;
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -708,7 +742,11 @@ pub async fn tool_call(
     }
 
     let invocation_id = format!("call_{}", Uuid::now_v7().simple());
-    let input = if b.input.is_null() { json!({}) } else { b.input };
+    let input = if b.input.is_null() {
+        json!({})
+    } else {
+        b.input
+    };
     if let Some(r) = &b.reasoning {
         crate::session::set_reasoning(&b.conversation_id, r);
     }
@@ -790,9 +828,17 @@ pub async fn capabilities(
             .await
             .and_then(|c| c.human_id().map(|h| h == principal.human.id))
             .unwrap_or(false);
-        let snap = if owned { crate::session::get_context(conv) } else { None };
+        let snap = if owned {
+            crate::session::get_context(conv)
+        } else {
+            None
+        };
         let Some(snap) = snap else {
-            return err(StatusCode::NOT_FOUND, "not_found", "No context for this conversation.");
+            return err(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "No context for this conversation.",
+            );
         };
         let full = q.view.as_deref() == Some("full");
         let tools: Vec<Value> = snap
@@ -817,7 +863,10 @@ pub async fn capabilities(
                     .collect()
             })
             .unwrap_or_default();
-        let sp = snap.get("system_prompt").and_then(|v| v.as_str()).unwrap_or("");
+        let sp = snap
+            .get("system_prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         return Json(json!({
             "conversation_id": conv,
             "client": snap.get("client"),
@@ -874,8 +923,10 @@ mod consumer_tests {
         let s = seat();
         s.take_after(0, "a").await;
         s.take_after(0, "b").await;
-        s.push(json!({"event_type": "message.received", "n": 1})).await;
-        s.push(json!({"event_type": "message.received", "n": 2})).await;
+        s.push(json!({"event_type": "message.received", "n": 1}))
+            .await;
+        s.push(json!({"event_type": "message.received", "n": 2}))
+            .await;
         // a reads and acknowledges both
         let (ev, _) = s.take_after(0, "a").await;
         assert_eq!(ev.len(), 2);
@@ -898,5 +949,19 @@ mod consumer_tests {
         let (ev, _) = s.take_after(1, "").await;
         assert!(ev.is_empty());
         assert!(s.state.lock().await.queue.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod cursor_origin_tests {
+    #[test]
+    fn a_new_seat_starts_above_any_old_small_cursor() {
+        // Cursors handed out by a seat created at time T stay below the
+        // origin of any seat created later (in practice: ms clock).
+        let a = super::cursor_origin();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let b = super::cursor_origin();
+        assert!(a > 1_600_000_000_000, "origin is a ms timestamp");
+        assert!(b > a);
     }
 }
