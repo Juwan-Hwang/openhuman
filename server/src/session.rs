@@ -293,7 +293,7 @@ pub fn strip_injections(text: &str) -> String {
 /// made (a `-` or `_` in the name, or a known one) so typed HTML survives,
 /// and never when nothing would be left.
 fn strip_tag_blocks(text: &str) -> String {
-    const KNOWN: [&str; 4] = ["workspace", "env", "instructions", "context"];
+    const KNOWN: [&str; 5] = ["workspace", "env", "instructions", "context", "rules"];
     let lines: Vec<&str> = text.lines().collect();
     let mut keep = vec![true; lines.len()];
     let mut i = 0;

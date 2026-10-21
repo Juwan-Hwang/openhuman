@@ -638,9 +638,19 @@ fn is_auxiliary_request(req: &ChatCompletionRequest) -> bool {
         .collect::<Vec<_>>()
         .join("\n");
     let head: String = prompt.chars().take(400).collect::<String>().to_lowercase();
-    ["title", "summar", "suggest", "标题", "摘要", "建议"]
-        .iter()
-        .any(|k| head.contains(k))
+    [
+        "title",
+        "summar",
+        "suggest",
+        "dashboard line",
+        "status row",
+        "commit message",
+        "标题",
+        "摘要",
+        "建议",
+    ]
+    .iter()
+    .any(|k| head.contains(k))
 }
 
 /// Whether this capability snapshot differs from the last one sent to this
@@ -736,7 +746,17 @@ fn expected_format(req: &ChatCompletionRequest, sp: &str) -> Option<String> {
     if hay.contains("summar") {
         return Some("only the summary".to_string());
     }
-    None
+    // Otherwise the prompt's own first sentence says what it wants.
+    let first: String = sp
+        .split_terminator(['.', '\n'])
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .chars()
+        .take(160)
+        .collect();
+    (!first.is_empty() && hay.contains("only"))
+        .then(|| format!("what the caller's prompt asks: {first}"))
 }
 
 /// Short, stable digest identifying the calling client.
@@ -3035,6 +3055,10 @@ mod tests {
             .unwrap()
             .contains("NO_SUGGESTION"));
         assert_eq!(expected_format(&sugg, "You are helpful."), None);
+        let dash = "Write an ultra-short dashboard line that captures the reply.\nOutput ONLY the fragment: 5-12 words.";
+        assert!(expected_format(&sugg, dash)
+            .unwrap()
+            .contains("ultra-short dashboard line"));
         let oc = "You are a title generator. You output ONLY a thread title. Keep exact: technical terms, JSON keys";
         assert_eq!(
             expected_format(&title, oc).as_deref(),
