@@ -47,6 +47,9 @@ struct Inner {
     pending: HashMap<String, VecDeque<PendingCall>>,
     /// conversation_id → digests of tool results already delivered
     seen_results: HashMap<String, HashSet<String>>,
+    /// conversation_id → fingerprints of user turns delivered since the
+    /// last final reply
+    seen_users: HashMap<String, HashSet<String>>,
     /// conversation_id → context snapshot
     context: HashMap<String, Value>,
     /// agent_id → client type of its last main request
@@ -217,6 +220,27 @@ pub fn first_result(conversation_id: &str, call_id: Option<&str>, content: &str)
         }
     }
     fresh
+}
+
+/// `true` the first time a user turn is seen since the conversation's last
+/// final reply. A retried request repeats its user turn and is dropped; the
+/// same words after the turn was answered are a new session saying them
+/// again (two runs of one prompt in one directory resolve to one
+/// conversation) and must reach the responder.
+pub fn first_user_turn(conversation_id: &str, fingerprint: &str) -> bool {
+    inner()
+        .lock()
+        .unwrap()
+        .seen_users
+        .entry(conversation_id.to_string())
+        .or_default()
+        .insert(sha(fingerprint))
+}
+
+/// A turn ended with a final reply: later repeats of earlier user turns are
+/// new turns.
+pub fn turn_answered(conversation_id: &str) {
+    inner().lock().unwrap().seen_users.remove(conversation_id);
 }
 
 pub fn set_context(conversation_id: &str, ctx: Value) {
@@ -522,6 +546,15 @@ pub fn count_request_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_user_turn_repeats_after_an_answer() {
+        let c = "cnv_user_turn_test";
+        assert!(first_user_turn(c, "user:2:hi:"));
+        assert!(!first_user_turn(c, "user:2:hi:"));
+        turn_answered(c);
+        assert!(first_user_turn(c, "user:2:hi:"));
+    }
 
     #[test]
     fn harness_tag_blocks_are_stripped() {
