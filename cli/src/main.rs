@@ -94,6 +94,7 @@ enum Cmd {
         /// Read the reply from a file (no shell quoting problems)
         #[arg(long, short = 'f')]
         file: Option<PathBuf>,
+        /// Conversation (any unique piece of its id; default the active one)
         #[arg(long, short = 'c')]
         conv: Option<String>,
         /// Thinking shown before the reply (reasoning_content)
@@ -108,7 +109,7 @@ enum Cmd {
         /// Timeout for --next
         #[arg(long, default_value_t = 100)]
         timeout: u64,
-        /// Reply even though a tool call in this conversation has no result yet
+        /// Reply even though a tool call in this conversation has a result you have not seen
         #[arg(long)]
         force: bool,
     },
@@ -118,25 +119,32 @@ enum Cmd {
     /// key=@path reads a file, key=@- reads stdin (several key=@-: texts split by a `@@@` line), key:=v forces a string, key:json=v forces JSON;
     /// or one JSON object; or `-` for the whole input on stdin. Checked before sending.
     Tool {
+        /// Tool name as the caller declared it (case-insensitive)
         name: String,
+        /// key=value pairs (see above), `+` between calls of a batch
         input: Vec<String>,
         /// Send even if the input does not match the tool's schema
         #[arg(long)]
         force: bool,
+        /// Conversation (any unique piece of its id; default the active one)
         #[arg(long, short = 'c')]
         conv: Option<String>,
         /// Words shown alongside the call
         #[arg(long)]
         text: Option<String>,
+        /// Thinking shown before the call (reasoning_content)
         #[arg(long, short = 'r')]
         reasoning: Option<String>,
         /// Wait at most this long for the result; if it is not back, fetch it later with `oh-seat result ID`
         #[arg(long, default_value_t = 100)]
         timeout: u64,
     },
-    /// Wait for the result of an earlier tool call
+    /// Wait for the result of an earlier tool call (default: the latest one still pending)
     Result {
-        invocation_id: String,
+        /// Invocation id, or any unique piece of it; omitted: the latest pending call
+        /// (in the active conversation if it has one)
+        invocation_id: Option<String>,
+        /// Give up after this many seconds (exit 2)
         #[arg(long, default_value_t = 100)]
         timeout: u64,
     },
@@ -532,12 +540,11 @@ impl Ctx {
         self.call("GET", &path, None, wait + 30)
     }
 
+    /// Bookkeeping for an event as it arrives. A tool result stays in
+    /// `pending` until it is shown (`result`, `tool`, `next --all`): an
+    /// arrived but unread result must survive buffer pruning and still
+    /// block a final reply.
     fn note(&mut self, e: &Value) {
-        if s(e, "type") == Some("tool.result") {
-            if let Some(i) = s(e, "invocation_id") {
-                self.st.pending.retain(|p| p[0] != i);
-            }
-        }
         let Some(c) = conv_id(e) else { return };
         let info = self.st.convs.entry(c.to_string()).or_default();
         if let Some(cl) = s(e, "client") {
@@ -874,6 +881,7 @@ fn prune_buffer(cx: &mut Ctx) {
 
 fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
     let deadline = Instant::now() + Duration::from_secs(timeout);
+    let mut polled = false;
     if !all {
         prune_buffer(cx);
     }
@@ -894,6 +902,11 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
             // tool results nobody asked for yet stay buffered for `result`
             let (show, keep): (Vec<Value>, Vec<Value>) = buf.into_iter().partition(|e| wanted(e));
             cx.st.buffer = keep;
+            for e in show.iter().filter(|e| s(e, "type") == Some("tool.result")) {
+                if let Some(i) = s(e, "invocation_id") {
+                    cx.st.pending.retain(|p| p[0] != i);
+                }
+            }
             prune_buffer(cx);
             let mut new_convs = Vec::new();
             for e in &show {
@@ -1021,13 +1034,30 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
             return Ok(OK);
         }
         let left = deadline.saturating_duration_since(Instant::now()).as_secs();
-        if left == 0 {
+        // Poll at least once: `--timeout 0`/`1` must still see what is there.
+        if left == 0 && polled {
             if !cx.json {
-                println!("nothing new in {timeout}s (run `oh-seat next` again)");
+                let back: Vec<&str> = cx
+                    .st
+                    .buffer
+                    .iter()
+                    .filter(|e| s(e, "type") == Some("tool.result"))
+                    .filter_map(|e| s(e, "invocation_id"))
+                    .collect();
+                if back.is_empty() {
+                    println!("nothing new in {timeout}s (run `oh-seat next` again)");
+                } else {
+                    println!(
+                        "no new message in {timeout}s; {} tool result(s) back, unread: oh-seat result {}",
+                        back.len(),
+                        back.join(" / ")
+                    );
+                }
             }
             return Ok(NOTHING);
         }
         cx.poll(left)?;
+        polled = true;
     }
 }
 
@@ -1049,9 +1079,24 @@ fn cmd_reply(
     if !more && !force {
         let out: Vec<&[String; 3]> = cx.st.pending.iter().filter(|p| p[1] == c).collect();
         if !out.is_empty() {
-            let list: Vec<String> = out.iter().map(|p| format!("{} ({})", p[0], p[2])).collect();
+            let arrived = |i: &str| {
+                cx.st.buffer.iter().any(|e| {
+                    s(e, "type") == Some("tool.result") && s(e, "invocation_id") == Some(i)
+                })
+            };
+            let list: Vec<String> = out
+                .iter()
+                .map(|p| {
+                    let st = if arrived(&p[0]) {
+                        "back, unread"
+                    } else {
+                        "not back yet"
+                    };
+                    format!("{} ({}, {st})", p[0], p[2])
+                })
+                .collect();
             return usage(format!(
-                "a tool call in {c} has no result yet: {}\nwait for it with `oh-seat result {}`, then reply (--force replies anyway)",
+                "a tool call in {c} has a result you have not seen: {}\nread it with `oh-seat result {}`, then reply (--force replies anyway)",
                 list.join(", "),
                 out[0][0]
             ));
@@ -1096,6 +1141,7 @@ fn cmd_reply(
 
 /// Wait for one tool result (from the buffer or new polls) until `deadline`.
 fn await_result(cx: &mut Ctx, inv: &str, deadline: Instant) -> R<Option<Value>> {
+    let mut polled = false;
     loop {
         if let Some(i) =
             cx.st.buffer.iter().position(|e| {
@@ -1126,10 +1172,11 @@ fn await_result(cx: &mut Ctx, inv: &str, deadline: Instant) -> R<Option<Value>> 
             return Ok(None);
         }
         let left = deadline.saturating_duration_since(Instant::now()).as_secs();
-        if left == 0 {
+        if left == 0 && polled {
             return Ok(None);
         }
         cx.poll(left)?;
+        polled = true;
     }
 }
 
@@ -1310,6 +1357,52 @@ fn result_exit(e: &Value) -> u8 {
         Some("error") | Some("failed") | Some("failure") => TOOL_ERR,
         _ if e.get("error").map(|v| !v.is_null()).unwrap_or(false) => TOOL_ERR,
         _ => OK,
+    }
+}
+
+/// Which pending call `oh-seat result [ID]` means: a full id passes as is
+/// (it may be one this state never saw), a piece must match exactly one
+/// pending id, and none means the latest pending call, preferring the
+/// active conversation.
+fn pick_pending(
+    pending: &[[String; 3]],
+    active: Option<&str>,
+    want: Option<&str>,
+) -> Result<String, String> {
+    let list = || {
+        pending
+            .iter()
+            .map(|p| format!("  {} {} in {}", p[0], p[2], p[1]))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    match want {
+        Some(w) => {
+            if pending.iter().any(|p| p[0] == w) || w.starts_with("call_") && w.len() > 20 {
+                return Ok(w.to_string());
+            }
+            let hits: Vec<&[String; 3]> = pending.iter().filter(|p| p[0].contains(w)).collect();
+            match hits.len() {
+                1 => Ok(hits[0][0].clone()),
+                0 if pending.is_empty() => {
+                    Err(format!("no pending call matches `{w}` (none pending)"))
+                }
+                0 => Err(format!(
+                    "no pending call matches `{w}`; pending:\n{}",
+                    list()
+                )),
+                _ => Err(format!("`{w}` matches several pending calls:\n{}", list())),
+            }
+        }
+        None => pending
+            .iter()
+            .rev()
+            .find(|p| Some(p[1].as_str()) == active)
+            .or_else(|| pending.last())
+            .map(|p| p[0].clone())
+            .ok_or_else(|| {
+                "no tool call is pending (give an id to wait for one anyway)".to_string()
+            }),
     }
 }
 
@@ -2108,6 +2201,7 @@ fn cmd_status(cx: &mut Ctx) -> R<u8> {
     let st = json!({
         "url": cx.url, "server": ok, "consumer": cx.st.consumer, "cursor": cx.st.cursor,
         "active": cx.st.active, "buffered_events": cx.st.buffer.len(), "open_turns": waiting,
+        "pending_calls": cx.st.pending.iter().map(|p| format!("{} {} in {}", p[0], p[2], p[1])).collect::<Vec<_>>(),
         "state_file": cx.state_path.display().to_string(),
     });
     if cx.json {
@@ -2165,7 +2259,15 @@ fn run(cli: Cli) -> R<u8> {
         Cmd::Result {
             invocation_id,
             timeout,
-        } => wait_result(&mut cx, &invocation_id, timeout),
+        } => {
+            let inv = pick_pending(
+                &cx.st.pending,
+                cx.st.active.as_deref(),
+                invocation_id.as_deref(),
+            )
+            .map_err(|m| Fail(USAGE, m))?;
+            wait_result(&mut cx, &inv, timeout)
+        }
         Cmd::Caps {
             conv,
             full,
@@ -2282,6 +2384,37 @@ mod tests {
         let sp = "x\nThe following deferred tools are now available via ToolSearch. Their schemas are NOT loaded:\nCronCreate\nWebFetch\n\nmore";
         assert_eq!(deferred_names(sp), vec!["CronCreate", "WebFetch"]);
         assert!(deferred_names("nothing").is_empty());
+    }
+
+    #[test]
+    fn result_picks_pending_call() {
+        let p = |i: &str, c: &str| [i.to_string(), c.to_string(), "bash".to_string()];
+        let pend = vec![
+            p("call_aaa111", "cnv_x"),
+            p("call_bbb222", "cnv_y"),
+            p("call_ccc333", "cnv_x"),
+        ];
+        assert_eq!(
+            pick_pending(&pend, Some("cnv_x"), None).unwrap(),
+            "call_ccc333"
+        );
+        assert_eq!(
+            pick_pending(&pend, Some("cnv_y"), None).unwrap(),
+            "call_bbb222"
+        );
+        assert_eq!(
+            pick_pending(&pend, Some("cnv_z"), None).unwrap(),
+            "call_ccc333"
+        );
+        assert_eq!(
+            pick_pending(&pend, None, Some("bbb")).unwrap(),
+            "call_bbb222"
+        );
+        assert!(pick_pending(&pend, None, Some("call_")).is_err());
+        assert!(pick_pending(&pend, None, Some("zzz")).is_err());
+        assert!(pick_pending(&[], None, None).is_err());
+        let full = "call_01a15f590a277192abcd22f7503380eb";
+        assert_eq!(pick_pending(&[], None, Some(full)).unwrap(), full);
     }
 
     #[test]

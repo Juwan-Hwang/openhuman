@@ -21,7 +21,7 @@ THE LOOP
   made absolute against that cwd, so you never retype it.
   A message in the same conversation arriving while a tool runs stops the
   wait and is shown (the tool may be waiting on it, e.g. Claude Code's
-  WebFetch): answer it, then `oh-seat result ID`. Other conversations'
+  WebFetch): answer it, then `oh-seat result`. Other conversations'
   messages never interrupt: they are counted after the result, for `next`.
 
 TOOL INPUT (checked against the tool's schema before anything is sent)
@@ -43,7 +43,10 @@ REPLY TEXT   'text' | -f FILE | - (stdin)   -r 'reasoning'   --more keeps the tu
 CONVERSATIONS   the latest message is active; -c takes any unique piece of an id
   convs  list          use ID  switch          history  what was said
   caps   tools as signatures   caps --tool X  one tool's parameters   --full  system prompt
-  status  server, cursor, open turns          result ID  a tool result that came late
+  status  server, cursor, open turns, pending calls
+  result [ID]  wait for a call's result (no ID: the latest pending one)
+  tool ... --timeout 0  fire and move on (another caller, another call);
+                        collect it later with `result`
 
 IMAGES the caller attached are saved as files and their paths printed
 (`image: ...`): open them with your own image/file tool.
