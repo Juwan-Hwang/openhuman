@@ -19,9 +19,10 @@ THE LOOP
   date) and any deferred tools (load with ToolSearch before calling).
   Relative path parameters (file_path=src/a.py, path=., filePath=...) are
   made absolute against that cwd, so you never retype it.
-  A message arriving while a tool runs stops the wait and is shown (the
-  tool may be waiting on it, e.g. Claude Code's WebFetch): answer it, then
-  `oh-seat result ID`.
+  A message in the same conversation arriving while a tool runs stops the
+  wait and is shown (the tool may be waiting on it, e.g. Claude Code's
+  WebFetch): answer it, then `oh-seat result ID`. Other conversations'
+  messages never interrupt: they are counted after the result, for `next`.
 
 TOOL INPUT (checked against the tool's schema before anything is sent)
   key=value       typed by the schema: string params keep the text exactly
