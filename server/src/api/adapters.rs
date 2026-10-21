@@ -107,6 +107,50 @@ fn anthropic_error(status: StatusCode, kind: &str, message: &str) -> Response {
         .into_response()
 }
 
+/// Claude Code's ToolSearch answers with `tool_reference` blocks (the tool
+/// schema is then added to `tools`) and a bare "Tool loaded." text beside
+/// the result. The translator drops the references, so the responder saw an
+/// empty result and "Tool loaded." as if the person had typed it. Turn each
+/// reference into text naming the tool and drop that filler line.
+fn fold_tool_references(body: &mut Value) {
+    let Some(msgs) = body.get_mut("messages").and_then(|m| m.as_array_mut()) else {
+        return;
+    };
+    for m in msgs {
+        let Some(parts) = m.get_mut("content").and_then(|c| c.as_array_mut()) else {
+            continue;
+        };
+        let mut referenced = false;
+        for p in parts.iter_mut() {
+            if p.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+                continue;
+            }
+            let Some(inner) = p.get_mut("content").and_then(|c| c.as_array_mut()) else {
+                continue;
+            };
+            for b in inner.iter_mut() {
+                if b.get("type").and_then(|t| t.as_str()) == Some("tool_reference") {
+                    let name = b
+                        .get("tool_name")
+                        .or_else(|| b.get("name"))
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    *b = json!({"type": "text", "text": format!("loaded tool {name}: callable now")});
+                    referenced = true;
+                }
+            }
+        }
+        if referenced {
+            parts.retain(|p| {
+                !(p.get("type").and_then(|t| t.as_str()) == Some("text")
+                    && p.get("text").and_then(|t| t.as_str()).map(str::trim)
+                        == Some("Tool loaded."))
+            });
+        }
+    }
+}
+
 pub async fn messages(
     State(app): State<AppState>,
     principal: AuthPrincipal,
@@ -115,6 +159,8 @@ pub async fn messages(
 ) -> Response {
     use anyllm_translate::anthropic::MessageCreateRequest;
 
+    let mut body = body;
+    fold_tool_references(&mut body);
     let req: MessageCreateRequest = match serde_json::from_value(body) {
         Ok(r) => r,
         Err(e) => {
@@ -920,6 +966,22 @@ pub async fn responses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_search_references_become_text() {
+        let mut b = json!({"messages": [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": [
+                {"type": "tool_reference", "tool_name": "WebFetch"}]},
+            {"type": "text", "text": "Tool loaded."}
+        ]}]});
+        fold_tool_references(&mut b);
+        let parts = b["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            parts[0]["content"][0]["text"],
+            "loaded tool WebFetch: callable now"
+        );
+    }
 
     #[test]
     fn responses_input_becomes_chat_messages() {
