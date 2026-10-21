@@ -414,3 +414,15 @@ mod integration {
         );
     }
 }
+
+#[test]
+fn test_parallel_tool_call_deltas_carry_their_index() {
+    // Clients accumulate streamed tool calls by index: every call at index 0
+    // folds three parallel calls into one.
+    for i in 0..3u32 {
+        let chunk =
+            ChatCompletionChunk::tool_call_delta_at("c", i, &format!("call_{i}"), "read", "{}");
+        let j = serde_json::to_value(&chunk).unwrap();
+        assert_eq!(j["choices"][0]["delta"]["tool_calls"][0]["index"], i);
+    }
+}
