@@ -666,8 +666,11 @@ fn print_event(e: &Value) {
         }
         "conversation.started" => println!("NEW CONVERSATION conv={c}"),
         "tool.result" => {
+            let code = exit_code(e)
+                .map(|c| format!(" exit_code={c}"))
+                .unwrap_or_default();
             println!(
-                "TOOL RESULT {} status={} id={}",
+                "TOOL RESULT {} status={}{code} id={}",
                 s(e, "tool_id").unwrap_or("?"),
                 s(e, "status").unwrap_or("?"),
                 s(e, "invocation_id").unwrap_or("?")
@@ -744,6 +747,17 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
                 }
             }
             let mut tools_lines = Vec::new();
+            let ev_env = |c: &str| -> Option<String> {
+                show.iter()
+                    .filter(|e| conv_id(e) == Some(c))
+                    .find_map(|e| e.get("env").and_then(|v| v.as_object()).cloned())
+                    .map(|m| {
+                        m.iter()
+                            .map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or("")))
+                            .collect::<Vec<_>>()
+                            .join("  ")
+                    })
+            };
             for c in &new_convs {
                 if let Ok(r) = fetch_caps(cx, c) {
                     let (_, sp_len, client) = caps_summary(&r);
@@ -763,6 +777,9 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
                         for t in &list {
                             tools_lines.push(format!("  {}", tool_sig(t)));
                         }
+                    }
+                    if let Some(env) = env_line(&r).or_else(|| ev_env(c)) {
+                        tools_lines.push(format!("  caller env: {env}"));
                     }
                     cx.st.tools.insert(c.clone(), list);
                     cx.st.caps.insert(c.clone(), caps_text(&r, true));
@@ -900,7 +917,47 @@ fn await_result(cx: &mut Ctx, inv: &str, deadline: Instant) -> R<Option<Value>> 
     }
 }
 
+/// The shell exit code a caller wrote into a result's text. pi and Codex
+/// report a failed command as a successful tool call whose output ends
+/// with "Command exited with code 2" / "Process exited with code 2".
+fn exit_code(e: &Value) -> Option<i64> {
+    let out = s(e, "output")?;
+    let tail: String = {
+        let t = out.trim_end();
+        let start = t.char_indices().rev().nth(400).map(|(i, _)| i).unwrap_or(0);
+        t[start..].to_string()
+    };
+    let mut found = None;
+    for line in tail.lines().chain(out.lines().take(4)) {
+        let l = line.trim().to_ascii_lowercase();
+        for pre in [
+            "command exited with code ",
+            "process exited with code ",
+            "exit code: ",
+            "exit code ",
+            "exited with code ",
+        ] {
+            if let Some(rest) = l.strip_prefix(pre) {
+                let n: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit() || *c == '-')
+                    .collect();
+                if let Ok(n) = n.parse::<i64>() {
+                    found = Some(n);
+                }
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    found
+}
+
 fn result_exit(e: &Value) -> u8 {
+    if matches!(exit_code(e), Some(c) if c != 0) {
+        return TOOL_ERR;
+    }
     match s(e, "status") {
         Some("error") | Some("failed") | Some("failure") => TOOL_ERR,
         _ if e.get("error").map(|v| !v.is_null()).unwrap_or(false) => TOOL_ERR,
@@ -911,7 +968,10 @@ fn result_exit(e: &Value) -> u8 {
 fn wait_result(cx: &mut Ctx, inv: &str, timeout: u64) -> R<u8> {
     let deadline = Instant::now() + Duration::from_secs(timeout);
     match await_result(cx, inv, deadline)? {
-        Some(e) => {
+        Some(mut e) => {
+            if let Some(c) = exit_code(&e) {
+                e["exit_code"] = json!(c);
+            }
             if cx.json {
                 cx.out(&e);
             } else {
@@ -1124,6 +1184,9 @@ fn cmd_tool(
                 if cx.json {
                     let mut e = e;
                     e["batch_index"] = json!(i + 1);
+                    if let Some(c) = exit_code(&e) {
+                        e["exit_code"] = json!(c);
+                    }
                     cx.out(&e);
                 } else {
                     println!("[{}/{n}]", i + 1);
@@ -1256,6 +1319,73 @@ fn tool_sig(t: &Value) -> String {
     )
 }
 
+/// The caller's machine as its system prompt describes it: working
+/// directory, platform, shell, date. Saves reading 10k chars of prompt to
+/// learn where relative paths land.
+fn env_hints(sp: &str) -> Vec<(&'static str, String)> {
+    let mut out: Vec<(&'static str, String)> = Vec::new();
+    let mut put = |k: &'static str, v: &str| {
+        let v = v.trim().trim_matches('`').trim();
+        if !v.is_empty() && v.len() < 300 && !out.iter().any(|(x, _)| *x == k) {
+            out.push((k, v.to_string()));
+        }
+    };
+    for line in sp.lines() {
+        let l = line.trim().trim_start_matches(['-', '*', ' ']);
+        let low = l.to_ascii_lowercase();
+        for (pre, k) in [
+            ("current working directory:", "cwd"),
+            ("working directory:", "cwd"),
+            ("primary working directory:", "cwd"),
+            ("cwd:", "cwd"),
+            ("platform:", "platform"),
+            ("os:", "platform"),
+            ("shell:", "shell"),
+            ("current date:", "date"),
+            ("today's date:", "date"),
+        ] {
+            if low.starts_with(pre) {
+                put(k, &l[pre.len()..]);
+            }
+        }
+        for (tag, k) in [("cwd", "cwd"), ("shell", "shell"), ("current_date", "date")] {
+            let open = format!("<{tag}>");
+            let close = format!("</{tag}>");
+            if let Some(a) = l.find(&open) {
+                if let Some(b) = l[a..].find(&close) {
+                    put(k, &l[a + open.len()..a + b]);
+                }
+            }
+        }
+        if let Some(rest) = low.strip_prefix("today's date is ") {
+            put("date", rest.trim_end_matches('.'));
+        }
+    }
+    let rank = |k: &str| {
+        ["cwd", "platform", "shell", "date"]
+            .iter()
+            .position(|x| *x == k)
+    };
+    out.sort_by_key(|(k, _)| rank(k));
+    out.retain(|(_, v)| v != "unknown");
+    out
+}
+
+fn env_line(r: &Value) -> Option<String> {
+    let sp = r
+        .pointer("/context/system_prompt")
+        .or_else(|| r.get("system_prompt"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let h = env_hints(sp);
+    (!h.is_empty()).then(|| {
+        h.iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("  ")
+    })
+}
+
 fn caps_summary(r: &Value) -> (Vec<String>, usize, Option<String>) {
     let tools = tool_list(r).iter().map(tool_name).collect();
     let sp = r
@@ -1277,6 +1407,9 @@ fn caps_text(r: &Value, full: bool) -> String {
         format!("client: {}", client.unwrap_or_else(|| "?".into())),
         format!("tools ({}): {}", tools.len(), tools.join(", ")),
     ];
+    if let Some(env) = env_line(r) {
+        out.push(format!("caller env: {env}"));
+    }
     if full {
         let sp = r
             .pointer("/context/system_prompt")
@@ -1572,6 +1705,45 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exit_codes_in_output() {
+        let r = |o: &str| json!({"type": "tool.result", "status": "success", "output": o});
+        assert_eq!(
+            exit_code(&r("ls: nope\n\n\nCommand exited with code 2")),
+            Some(2)
+        );
+        assert_eq!(result_exit(&r("x\nCommand exited with code 2")), TOOL_ERR);
+        let codex =
+            "Chunk ID: 1\nWall time: 0.0 seconds\nProcess exited with code 0\nOutput:\n/w\n";
+        assert_eq!(exit_code(&r(codex)), Some(0));
+        assert_eq!(result_exit(&r(codex)), OK);
+        assert_eq!(
+            exit_code(&r("Exit code 127\nbash: foo: not found")),
+            Some(127)
+        );
+        assert_eq!(exit_code(&r("hello")), None);
+    }
+
+    #[test]
+    fn env_from_prompts() {
+        let claude = "<env>\nWorking directory: /home/a/p\nIs directory a git repo: no\nPlatform: linux\nOS Version: Linux 6\n</env>\nToday's date is 2026-10-21.";
+        let h = env_hints(claude);
+        assert_eq!(h[0], ("cwd", "/home/a/p".to_string()));
+        assert!(h.contains(&("platform", "linux".to_string())));
+        assert!(h.contains(&("date", "2026-10-21".to_string())));
+        let codex = "<environment_context>\n  <cwd>/srv/x</cwd>\n  <shell>bash</shell>\n</environment_context>";
+        let h = env_hints(codex);
+        assert_eq!(
+            h,
+            vec![("cwd", "/srv/x".to_string()), ("shell", "bash".to_string())]
+        );
+        assert_eq!(
+            env_hints("Current working directory: /w\nCurrent date: 2026-10-21")[0].1,
+            "/w"
+        );
+        assert!(env_hints("you are helpful").is_empty());
+    }
 
     #[test]
     fn aux_hints() {
