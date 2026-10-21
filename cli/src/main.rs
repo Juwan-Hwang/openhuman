@@ -1080,13 +1080,15 @@ fn await_result(cx: &mut Ctx, inv: &str, deadline: Instant) -> R<Option<Value>> 
         }
         // A message while a tool runs may be the tool itself asking (Claude
         // Code's WebFetch hands the page to the model): waiting on would
-        // deadlock, so stop and show it.
-        if cx
+        // deadlock, so stop and show it. Another conversation's message
+        // cannot be that, so it waits its turn.
+        let conv = cx
             .st
-            .buffer
+            .pending
             .iter()
-            .any(|e| s(e, "type") == Some("message.received"))
-        {
+            .find(|p| p[0] == inv)
+            .map(|p| p[1].clone());
+        if message_waiting(cx, conv.as_deref()) {
             return Ok(None);
         }
         let left = deadline.saturating_duration_since(Instant::now()).as_secs();
@@ -1097,22 +1099,46 @@ fn await_result(cx: &mut Ctx, inv: &str, deadline: Instant) -> R<Option<Value>> 
     }
 }
 
-fn message_waiting(cx: &Ctx) -> bool {
-    cx.st
-        .buffer
-        .iter()
-        .any(|e| s(e, "type") == Some("message.received"))
+/// A message is buffered: in `conv` when given (any conversation when the
+/// conversation is unknown).
+fn message_waiting(cx: &Ctx, conv: Option<&str>) -> bool {
+    cx.st.buffer.iter().any(|e| {
+        s(e, "type") == Some("message.received") && conv.is_none_or(|c| conv_id(e) == Some(c))
+    })
 }
 
-/// Show messages that arrived while waiting on a tool, the way `next` would.
-fn show_interrupting(cx: &mut Ctx) -> R<()> {
-    if !message_waiting(cx) {
-        return Ok(());
+/// After a tool wait in `conv`: show a message from that conversation (the
+/// tool may be waiting on it), the way `next` would; messages from other
+/// conversations stay queued for `next` and are only counted.
+fn show_interrupting(cx: &mut Ctx, conv: Option<&str>) -> R<()> {
+    if message_waiting(cx, conv) {
+        if !cx.json {
+            println!(
+                "-- a message came in while waiting (answer it; the tool may be waiting on it):"
+            );
+        }
+        return cmd_next(cx, 0, false).map(|_| ());
     }
-    if !cx.json {
-        println!("-- a message came in while waiting (answer it; the tool may be waiting on it):");
+    let mut others: Vec<&str> = cx
+        .st
+        .buffer
+        .iter()
+        .filter(|e| s(e, "type") == Some("message.received"))
+        .filter_map(conv_id)
+        .collect();
+    others.sort();
+    others.dedup();
+    if !others.is_empty() {
+        if cx.json {
+            cx.out(&json!({"waiting_in": others}));
+        } else {
+            println!(
+                "({} other conversation(s) have a message waiting: `oh-seat next` after this one)",
+                others.len()
+            );
+        }
     }
-    cmd_next(cx, 0, false).map(|_| ())
+    Ok(())
 }
 
 /// The shell exit code a caller wrote into a result's text. pi and Codex
@@ -1242,6 +1268,12 @@ fn result_exit(e: &Value) -> u8 {
 
 fn wait_result(cx: &mut Ctx, inv: &str, timeout: u64) -> R<u8> {
     let deadline = Instant::now() + Duration::from_secs(timeout);
+    let conv = cx
+        .st
+        .pending
+        .iter()
+        .find(|p| p[0] == inv)
+        .map(|p| p[1].clone());
     match await_result(cx, inv, deadline)? {
         Some(mut e) => {
             if let Some(c) = exit_code(&e) {
@@ -1252,6 +1284,7 @@ fn wait_result(cx: &mut Ctx, inv: &str, timeout: u64) -> R<u8> {
             } else {
                 print_event(&e);
             }
+            show_interrupting(cx, conv.as_deref())?;
             Ok(result_exit(&e))
         }
         None => {
@@ -1260,7 +1293,7 @@ fn wait_result(cx: &mut Ctx, inv: &str, timeout: u64) -> R<u8> {
             } else {
                 println!("result not back yet: run `oh-seat result {inv}` to keep waiting");
             }
-            show_interrupting(cx)?;
+            show_interrupting(cx, conv.as_deref())?;
             Ok(NOTHING)
         }
     }
@@ -1596,7 +1629,7 @@ fn cmd_tool(
             }
         }
     }
-    show_interrupting(cx)?;
+    show_interrupting(cx, Some(&c))?;
     Ok(worst)
 }
 
