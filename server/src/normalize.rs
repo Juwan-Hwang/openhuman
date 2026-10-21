@@ -67,6 +67,8 @@ fn normalize_whole(client: &ClientType, text: &str) -> String {
         | ClientType::Cursor
         | ClientType::Qoder
         | ClientType::DeepSeekHarness
+        | ClientType::OpenCode
+        | ClientType::Pi
         | ClientType::Unknown => strip_generic_envelope(text),
     }
 }

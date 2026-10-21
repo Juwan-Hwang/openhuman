@@ -62,6 +62,11 @@ pub enum ClientType {
     Qoder,
     /// DeepSeek Harness (`dsh`). Identified by `deepseek-harness` in User-Agent.
     DeepSeekHarness,
+    /// opencode (sst). Identified by `opencode/` in User-Agent.
+    OpenCode,
+    /// pi coding agent. Sends the plain OpenAI JS SDK User-Agent; identified
+    /// by its system prompt ("operating inside pi").
+    Pi,
     /// Any other OpenAI-compatible client.
     Unknown,
 }
@@ -76,6 +81,8 @@ impl std::fmt::Display for ClientType {
             Self::Cursor => write!(f, "cursor"),
             Self::Qoder => write!(f, "qoder"),
             Self::DeepSeekHarness => write!(f, "deepseek_harness"),
+            Self::OpenCode => write!(f, "opencode"),
+            Self::Pi => write!(f, "pi"),
             Self::Unknown => write!(f, "unknown"),
         }
     }
@@ -210,6 +217,9 @@ fn detect_client_type(headers: &HeaderMap, system_prompt: &Option<String>) -> Cl
         if lower.contains("deepseek-harness") {
             return ClientType::DeepSeekHarness;
         }
+        if lower.starts_with("opencode/") {
+            return ClientType::OpenCode;
+        }
     }
 
     // Claude Code: system prompt contains billing header
@@ -222,6 +232,12 @@ fn detect_client_type(headers: &HeaderMap, system_prompt: &Option<String>) -> Cl
         }
         if prompt.contains("powered by DeepSeek Harness") {
             return ClientType::DeepSeekHarness;
+        }
+        if prompt.contains("operating inside pi, a coding agent harness") {
+            return ClientType::Pi;
+        }
+        if prompt.starts_with("You are opencode") {
+            return ClientType::OpenCode;
         }
     }
 
@@ -247,6 +263,8 @@ fn extract_runtime(headers: &HeaderMap, client_type: &ClientType) -> AgentRuntim
         .or_else(|| match client_type {
             ClientType::Qoder => Some("Qoder".to_string()),
             ClientType::DeepSeekHarness => Some("DeepSeek Harness".to_string()),
+            ClientType::OpenCode => Some("opencode".to_string()),
+            ClientType::Pi => Some("pi".to_string()),
             _ => None,
         });
 
@@ -261,6 +279,8 @@ fn extract_runtime(headers: &HeaderMap, client_type: &ClientType) -> AgentRuntim
         ClientType::Cursor => Some("Cursor".to_string()),
         ClientType::Qoder => Some("Qoder".to_string()),
         ClientType::DeepSeekHarness => Some("DeepSeek Harness".to_string()),
+        ClientType::OpenCode => Some("opencode".to_string()),
+        ClientType::Pi => Some("pi".to_string()),
         ClientType::Unknown => stainless_version
             .as_ref()
             .map(|v| format!("Stainless JS SDK v{}", v)),

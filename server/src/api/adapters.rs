@@ -138,6 +138,16 @@ pub async fn messages(
         Ok(c) => c,
         Err(r) => return r,
     };
+    // Anthropic reports input tokens up front (message_start) and again in
+    // message_delta; count them here with the same tokenizer the chat
+    // pipeline uses.
+    let tokenizer = headers
+        .get("x-openhuman-tokenizer")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| crate::session::tokenizer_available(v))
+        .unwrap_or_else(crate::session::default_tokenizer);
+    let input_tokens = crate::session::count_request_tokens(&tokenizer, &chat);
 
     let resp = chat_completions(State(app), principal, headers, Json(chat)).await;
     let status = resp.status();
@@ -173,8 +183,21 @@ pub async fn messages(
             events
                 .into_iter()
                 .map(|e| {
-                    let v = serde_json::to_value(&e).unwrap_or(Value::Null);
+                    let mut v = serde_json::to_value(&e).unwrap_or(Value::Null);
                     let name = v.get("type").and_then(|t| t.as_str()).unwrap_or("message").to_string();
+                    match name.as_str() {
+                        "message_start" => {
+                            if let Some(u) = v.pointer_mut("/message/usage") {
+                                u["input_tokens"] = json!(input_tokens);
+                            }
+                        }
+                        "message_delta" => {
+                            if let Some(u) = v.get_mut("usage").filter(|u| u.is_object()) {
+                                u["input_tokens"] = json!(input_tokens);
+                            }
+                        }
+                        _ => {}
+                    }
                     sse_frame(&name, &v)
                 })
                 .collect()

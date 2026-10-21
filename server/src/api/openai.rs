@@ -364,6 +364,18 @@ fn resolve_session_key(
         }
     }
 
+    // Side calls (titles, suggestions) never share the main chat's
+    // conversation, even when they carry its session id (opencode sends one
+    // `x-session-id` for both): they would race it for the reply.
+    if auxiliary {
+        let client = client_fingerprint(headers);
+        let base = match system_prompt.filter(|p| !p.trim().is_empty()) {
+            Some(p) => format!("prm:{}:{}", prompt_fingerprint(p), client),
+            None => format!("cli:{}", client),
+        };
+        return format!("aux:{}", base);
+    }
+
     // 1. Explicit conversation id header — the most reliable signal.
     for name in ["x-openhuman-conversation-id", "x-conversation-id"] {
         if let Some(v) = header_value(headers, name) {
@@ -429,13 +441,6 @@ fn resolve_session_key(
     //    `history_digests`); this key only decides where a brand-new session
     //    lands.
     let client = client_fingerprint(headers);
-    if auxiliary {
-        let base = match system_prompt.filter(|p| !p.trim().is_empty()) {
-            Some(p) => format!("prm:{}:{}", prompt_fingerprint(p), client),
-            None => format!("cli:{}", client),
-        };
-        return format!("aux:{}", base);
-    }
     match first_user_anchor(req) {
         Some(anchor) => format!("cli:{}:{}", client, anchor),
         None => format!("cli:{}", client),
@@ -480,9 +485,14 @@ fn first_user_anchor(req: &ChatCompletionRequest) -> Option<String> {
 }
 
 /// A side call the client makes around the real chat: a session title, an
-/// input-box suggestion. Recognized by shape: no tools, a single
-/// non-system message, and a capped or structured output.
+/// input-box suggestion, a summary. Recognized by shape and purpose: no
+/// tools, no earlier turns of a conversation (only user messages), and a
+/// system prompt that says what it is for, or a structured output.
+///
+/// A token cap alone is not enough: plenty of plain chat clients send
+/// `max_tokens` on every request (opencode sends 32000 on its main chat).
 fn is_auxiliary_request(req: &ChatCompletionRequest) -> bool {
+    use crate::openai_compat::ChatRole;
     let has_tools = req
         .tools
         .as_ref()
@@ -492,14 +502,29 @@ fn is_auxiliary_request(req: &ChatCompletionRequest) -> bool {
     if has_tools {
         return false;
     }
-    let turns = req
+    let only_user = req
         .messages
         .iter()
-        .filter(|m| m.role != crate::openai_compat::ChatRole::System)
-        .count();
-    let capped = req.max_tokens.or(req.max_completion_tokens).is_some()
-        || req.response_format.is_some();
-    turns == 1 && capped
+        .filter(|m| m.role != ChatRole::System)
+        .all(|m| m.role == ChatRole::User);
+    let has_user = req.messages.iter().any(|m| m.role == ChatRole::User);
+    if !only_user || !has_user {
+        return false;
+    }
+    if req.response_format.is_some() {
+        return true;
+    }
+    let prompt: String = req
+        .messages
+        .iter()
+        .filter(|m| m.role == ChatRole::System)
+        .map(|m| m.content.to_text())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let head: String = prompt.chars().take(400).collect::<String>().to_lowercase();
+    ["title", "summar", "suggest", "标题", "摘要", "建议"]
+        .iter()
+        .any(|k| head.contains(k))
 }
 
 /// Whether this capability snapshot differs from the last one sent to this
@@ -710,8 +735,12 @@ fn process_inbound_messages(
                 raw_tail.push(json!({ "role": "user", "content": msg.content.to_text() }));
                 // Peel the agent wrapper off before anything reaches the
                 // timeline (see `normalize.rs`).
-                let clean_text =
-                    crate::normalize::normalize_user_message(client_type, &msg.content);
+                // Then drop the blocks clients inject into user turns
+                // (`<environment_context>`, `<system-reminder>` …): the
+                // responder still has them in `raw_tail`.
+                let clean_text = crate::session::strip_injections(
+                    &crate::normalize::normalize_user_message(client_type, &msg.content),
+                );
                 if !clean_text.trim().is_empty() && !is_image_placeholder(&clean_text) {
                     user_texts.push(clean_text);
                 }
@@ -2786,6 +2815,31 @@ mod tests {
             "max_tokens": 64
         }));
         assert!(!is_auxiliary_request(&chat));
+
+        // opencode: two user parts, a big cap, a title prompt, and the same
+        // x-session-id as the main chat.
+        let oc_title = request(json!({
+            "messages": [
+                {"role": "system", "content": "You are a title generator. You output ONLY a thread title."},
+                {"role": "user", "content": "Generate a title for this conversation:\n"},
+                {"role": "user", "content": "\"hi\""}
+            ],
+            "max_tokens": 32000
+        }));
+        assert!(is_auxiliary_request(&oc_title));
+        let mut h = HeaderMap::new();
+        h.insert("x-session-id", "ses_1".parse().unwrap());
+        assert!(resolve_session_key(&h, &oc_title, Some("You are a title generator."), true).starts_with("aux:"));
+
+        // A tool-less chat client capping its output is still a chat.
+        let plain = request(json!({
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "hi"}
+            ],
+            "max_tokens": 4096
+        }));
+        assert!(!is_auxiliary_request(&plain));
     }
 
     #[test]
