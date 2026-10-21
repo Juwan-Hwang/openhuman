@@ -538,6 +538,57 @@ fn client_from_user_agent(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+/// A request offering exactly one tool and forcing the model to call it
+/// (`tool_choice` "required" or naming it): a structured side call, such as
+/// Grok's `session_title`. Returns the tool's name and required parameters.
+fn forced_tool(req: &ChatCompletionRequest) -> Option<(String, Vec<String>)> {
+    let tools = req.tools.as_ref()?.as_array()?;
+    if tools.len() != 1 {
+        return None;
+    }
+    let f = tools[0].get("function").unwrap_or(&tools[0]);
+    let name = f.get("name")?.as_str()?.to_string();
+    let forced = match req.tool_choice.as_ref().unwrap_or(&Value::Null) {
+        Value::String(s) => s == "required" || s == "any",
+        Value::Object(o) => {
+            o.get("type").and_then(|t| t.as_str()) == Some("function")
+                || o.get("type").and_then(|t| t.as_str()) == Some("tool")
+                || o.get("name").is_some()
+        }
+        _ => false,
+    };
+    // Not every client sets tool_choice (Grok's title call does not): one
+    // tool and a system prompt about a title or summary is the same thing.
+    let head: String = req
+        .messages
+        .iter()
+        .filter(|m| m.role == crate::openai_compat::ChatRole::System)
+        .map(|m| m.content.to_text())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .chars()
+        .take(400)
+        .collect::<String>()
+        .to_lowercase();
+    let side = ["title", "summar", "标题", "摘要"]
+        .iter()
+        .any(|k| head.contains(k));
+    if !forced && !side {
+        return None;
+    }
+    let required = f
+        .pointer("/parameters/required")
+        .or_else(|| f.pointer("/input_schema/required"))
+        .and_then(|r| r.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((name, required))
+}
+
 /// A side call the client makes around the real chat: a session title, an
 /// input-box suggestion, a summary. Recognized by shape and purpose: no
 /// tools, no earlier turns of a conversation (only user messages), and a
@@ -553,7 +604,7 @@ fn is_auxiliary_request(req: &ChatCompletionRequest) -> bool {
         .and_then(|t| t.as_array())
         .map(|a| !a.is_empty())
         .unwrap_or(false);
-    if has_tools {
+    if has_tools && forced_tool(req).is_none() {
         return false;
     }
     let only_user = req
@@ -565,7 +616,7 @@ fn is_auxiliary_request(req: &ChatCompletionRequest) -> bool {
     if !only_user || !has_user {
         return false;
     }
-    if req.response_format.is_some() {
+    if req.response_format.is_some() || has_tools {
         return true;
     }
     // Claude Code's WebFetch hands the fetched page to the model with a
@@ -636,6 +687,13 @@ fn request_info(
 /// in, so it need not read the caller's whole system prompt. `None` when
 /// the shape cannot be told.
 fn expected_format(req: &ChatCompletionRequest, sp: &str) -> Option<String> {
+    if let Some((name, required)) = forced_tool(req) {
+        let args: Vec<String> = required.iter().map(|p| format!("{p}='...'")).collect();
+        return Some(format!(
+            "a call to its only tool: `oh-seat tool {name} {}` (the call is the answer; no result comes back)",
+            args.join(" ")
+        ));
+    }
     if let Some(rf) = &req.response_format {
         if rf.get("type").and_then(|v| v.as_str()) == Some("json_schema") {
             let schema = rf
@@ -1399,7 +1457,11 @@ pub async fn chat_completions(
     // 4. Context and capabilities of this conversation. Auxiliary calls
     //    carry their own small prompt and no tools; recording them would
     //    overwrite the real chat's context with a title-generator prompt.
-    if !auxiliary {
+    //    An auxiliary call answered through its one tool (Grok's
+    //    session_title) in a conversation of its own records that tool, so
+    //    the seat can call it.
+    let aux_tool = auxiliary && forced_tool(&req).is_some() && session_key.starts_with("aux:");
+    if !auxiliary || aux_tool {
         let capabilities = profile.capabilities.clone();
         let has_tools = !capabilities.is_empty();
         let context = profile.to_context();
@@ -2980,6 +3042,27 @@ mod tests {
         );
         let cc = "Return JSON with a single \"title\" field";
         assert!(expected_format(&title, cc).unwrap().contains("{\"title\""));
+    }
+
+    #[test]
+    fn forced_single_tool_is_a_side_call() {
+        let req: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "run pwd"}],
+            "tools": [{"type": "function", "function": {"name": "session_title",
+                "parameters": {"type": "object", "properties": {"session_title": {"type": "string"}}, "required": ["session_title"]}}}],
+            "tool_choice": {"type": "function", "function": {"name": "session_title"}}
+        })).unwrap();
+        assert!(is_auxiliary_request(&req));
+        assert!(expected_format(&req, "")
+            .unwrap()
+            .contains("oh-seat tool session_title session_title="));
+        let mut chat = req.clone();
+        chat.tool_choice = Some(json!("auto"));
+        assert!(!is_auxiliary_request(&chat));
+        let mut titled = chat.clone();
+        titled.messages.insert(0, serde_json::from_value(json!({"role": "system", "content": "You are tasked with generating the session title."})).unwrap());
+        assert!(is_auxiliary_request(&titled));
     }
 
     #[test]
