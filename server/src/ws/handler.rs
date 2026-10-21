@@ -271,7 +271,8 @@ pub(crate) async fn drain_pending_messages(
             if let Some(call_id) = msg.metadata.get("tool_call_id").and_then(|v| v.as_str()) {
                 let tool_id = crate::session::tool_name_for(&msg.conversation_id, call_id)
                     .unwrap_or_else(|| "unknown".to_string());
-                let output = serde_json::Value::String(msg.content.as_text().unwrap_or("").to_string());
+                let output =
+                    serde_json::Value::String(msg.content.as_text().unwrap_or("").to_string());
                 let event = protocol::tool_result_event(
                     &msg.conversation_id,
                     call_id,
@@ -347,7 +348,12 @@ pub(crate) async fn drain_pending_messages(
 }
 
 /// Process a single client → server message.
-pub(crate) async fn handle_client_message(raw: &str, app: &AppState, human_id: &str, agent_id: &str) {
+pub(crate) async fn handle_client_message(
+    raw: &str,
+    app: &AppState,
+    human_id: &str,
+    agent_id: &str,
+) {
     let event = match protocol::ClientMessage::from_json(raw) {
         Ok(e) => e,
         Err(e) => {
@@ -679,7 +685,11 @@ async fn handle_tool_invoke(
                 .any(|t| t.get("id").and_then(|v| v.as_str()) == Some(tool_id))
         });
     let known = conv_has_tool == Some(true)
-        || app.capability.get_capability(agent_id, tool_id).await.is_some();
+        || app
+            .capability
+            .get_capability(agent_id, tool_id)
+            .await
+            .is_some();
     if !known {
         let event = protocol::error_event(
             human_id,

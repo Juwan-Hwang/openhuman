@@ -573,7 +573,10 @@ fn request_info(
 fn expected_format(req: &ChatCompletionRequest, sp: &str) -> Option<String> {
     if let Some(rf) = &req.response_format {
         if rf.get("type").and_then(|v| v.as_str()) == Some("json_schema") {
-            let schema = rf.pointer("/json_schema/schema").cloned().unwrap_or(Value::Null);
+            let schema = rf
+                .pointer("/json_schema/schema")
+                .cloned()
+                .unwrap_or(Value::Null);
             return Some(format!("JSON matching schema {}", schema));
         }
         if rf.get("type").and_then(|v| v.as_str()) == Some("json_object") {
@@ -819,7 +822,10 @@ fn process_inbound_messages(
                             (c.get("id").and_then(|v| v.as_str()) == Some(id)).then(|| {
                                 let f = c.get("function").cloned().unwrap_or(Value::Null);
                                 (
-                                    f.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                    f.get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
                                     f.get("arguments").cloned().unwrap_or(Value::Null),
                                 )
                             })
@@ -862,7 +868,12 @@ fn process_inbound_messages(
         if let Some(last_tool) = messages.last_mut() {
             last_tool.metadata.insert(
                 "images".to_string(),
-                Value::Array(user_images.iter().map(|u| Value::String(u.clone())).collect()),
+                Value::Array(
+                    user_images
+                        .iter()
+                        .map(|u| Value::String(u.clone()))
+                        .collect(),
+                ),
             );
             user_images.clear();
         }
@@ -1197,8 +1208,7 @@ pub async fn chat_completions(
     //    replies we sent earlier identify the conversation: the caller
     //    replays them in its history. Only a request carrying none of our
     //    replies (a fresh session) falls back to the fingerprint key.
-    let session_key =
-        resolve_session_key(&headers, &req, system_prompt.as_deref(), auxiliary);
+    let session_key = resolve_session_key(&headers, &req, system_prompt.as_deref(), auxiliary);
     let fallback_key = session_key.starts_with("prm:") || session_key.starts_with("cli:");
     let continued = if fallback_key && !auxiliary {
         let digests = history_digests(&req);
@@ -1222,42 +1232,46 @@ pub async fn chat_completions(
     );
 
     let request_started = Utc::now();
-    let conversation_id = {
-        let cnv = match continued {
-            Some(c) => c,
-            None => {
-                app.conversation
-                    .find_or_create(
-                        &principal.agent.id,
+    let conversation_id =
+        {
+            let cnv = match continued {
+                Some(c) => c,
+                None => {
+                    app.conversation
+                        .find_or_create(
+                            &principal.agent.id,
+                            &principal.human.id,
+                            &session_key,
+                            system_prompt.clone(),
+                        )
+                        .await
+                }
+            };
+            // A conversation minted by this very request is a new session on
+            // the caller's side: say so, so both a human console and an agent
+            // seat can open it as its own thread.
+            if !auxiliary && cnv.created_at >= request_started - chrono::Duration::seconds(1) {
+                let event = crate::ws::protocol::conversation_started(
+                    &cnv.id,
+                    &principal.agent.id,
+                    &principal.agent.name,
+                    &client_name,
+                );
+                let _ = app
+                    .connections
+                    .send_to_human(
                         &principal.human.id,
-                        &session_key,
-                        system_prompt.clone(),
+                        &crate::ws::protocol::event_to_json(&event),
                     )
-                    .await
+                    .await;
             }
-        };
-        // A conversation minted by this very request is a new session on
-        // the caller's side: say so, so both a human console and an agent
-        // seat can open it as its own thread.
-        if !auxiliary && cnv.created_at >= request_started - chrono::Duration::seconds(1) {
-            let event = crate::ws::protocol::conversation_started(
-                &cnv.id,
-                &principal.agent.id,
-                &principal.agent.name,
-                &client_name,
-            );
-            let _ = app
-                .connections
-                .send_to_human(&principal.human.id, &crate::ws::protocol::event_to_json(&event))
-                .await;
-        }
 
-        // Route tool results to the calls we emitted (clients may rewrite
-        // the ids), and deliver each result and each user turn once: a
-        // client that retries a request, or replays it after a 409, must
-        // not hand the responder the same thing twice.
-        let message_count = req.messages.len();
-        inbound_messages.retain_mut(|msg| {
+            // Route tool results to the calls we emitted (clients may rewrite
+            // the ids), and deliver each result and each user turn once: a
+            // client that retries a request, or replays it after a 409, must
+            // not hand the responder the same thing twice.
+            let message_count = req.messages.len();
+            inbound_messages.retain_mut(|msg| {
             msg.conversation_id = cnv.id.clone();
             let is_tool = msg.metadata.get("openai_role").and_then(|v| v.as_str()) == Some("tool");
             let content = msg.content.as_text().unwrap_or("").to_string();
@@ -1301,11 +1315,11 @@ pub async fn chat_completions(
                 crate::session::first_result(&cnv.id, None, &fingerprint)
             }
         });
-        for msg in &inbound_messages {
-            app.message.insert(msg.clone()).await;
-        }
-        cnv.id
-    };
+            for msg in &inbound_messages {
+                app.message.insert(msg.clone()).await;
+            }
+            cnv.id
+        };
 
     // 4. Context and capabilities of this conversation. Auxiliary calls
     //    carry their own small prompt and no tools; recording them would
@@ -1390,7 +1404,11 @@ pub async fn chat_completions(
             req.stream,
             is_async_mode(&headers),
             include_usage,
-            TurnCtx { agent_id: principal.agent.id.clone(), prompt_tokens, tokenizer: tokenizer.clone() },
+            TurnCtx {
+                agent_id: principal.agent.id.clone(),
+                prompt_tokens,
+                tokenizer: tokenizer.clone(),
+            },
         )
         .await;
     }
@@ -1427,7 +1445,11 @@ pub async fn chat_completions(
             inbound_messages,
             human_id,
             include_usage,
-            TurnCtx { agent_id: principal.agent.id.clone(), prompt_tokens, tokenizer: tokenizer.clone() },
+            TurnCtx {
+                agent_id: principal.agent.id.clone(),
+                prompt_tokens,
+                tokenizer: tokenizer.clone(),
+            },
         )
         .await
     } else if is_async_mode(&headers) {
@@ -1438,7 +1460,11 @@ pub async fn chat_completions(
             conversation_id,
             inbound_messages,
             human_id,
-            TurnCtx { agent_id: principal.agent.id.clone(), prompt_tokens, tokenizer: tokenizer.clone() },
+            TurnCtx {
+                agent_id: principal.agent.id.clone(),
+                prompt_tokens,
+                tokenizer: tokenizer.clone(),
+            },
         )
         .await
     }
@@ -1513,7 +1539,10 @@ fn sse_heartbeat_secs() -> u64 {
 /// Heartbeat frame: an SSE comment by default (ignored by every SSE
 /// parser), or an empty-delta chunk with `OPENHUMAN_SSE_HEARTBEAT=chunk`.
 fn heartbeat_event(completion_id: &str) -> SseEvent {
-    if matches!(std::env::var("OPENHUMAN_SSE_HEARTBEAT").as_deref(), Ok("chunk")) {
+    if matches!(
+        std::env::var("OPENHUMAN_SSE_HEARTBEAT").as_deref(),
+        Ok("chunk")
+    ) {
         let chunk = ChatCompletionChunk::heartbeat(completion_id);
         SseEvent::default().data(serde_json::to_string(&chunk).unwrap())
     } else {
@@ -2785,8 +2814,16 @@ mod tests {
         let h = HeaderMap::new();
         let req = request(body());
         let first = resolve_session_key(&h, &req, Some("You are a release engineer."), false);
-        let second = resolve_session_key(&h, &req, Some("You are a release engineer. (turn 2)"), false);
-        assert_eq!(first, second, "a rewritten prompt must not start a new session");
+        let second = resolve_session_key(
+            &h,
+            &req,
+            Some("You are a release engineer. (turn 2)"),
+            false,
+        );
+        assert_eq!(
+            first, second,
+            "a rewritten prompt must not start a new session"
+        );
 
         let aux_a = resolve_session_key(&h, &req, Some("Make a title."), true);
         let aux_b = resolve_session_key(&h, &req, Some("Suggest a reply."), true);
@@ -2820,7 +2857,10 @@ mod tests {
             {"role": "tool", "tool_call_id": "call_theirs", "content": "a.txt"},
         ]}));
         let d = history_digests(&req);
-        assert!(d.contains(&crate::session::call_digest("Bash", &json!({"command": "ls"}))));
+        assert!(d.contains(&crate::session::call_digest(
+            "Bash",
+            &json!({"command": "ls"})
+        )));
         assert!(d.contains(&crate::session::text_digest("hello there").unwrap()));
     }
 
@@ -2842,18 +2882,25 @@ mod tests {
     fn expected_format_for_title_and_suggestion() {
         let title: ChatCompletionRequest = serde_json::from_value(json!({
             "messages": [{"role": "user", "content": "Generate a title for this conversation: hi"}]
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(
             expected_format(&title, "").as_deref(),
             Some("only a short title, no quotes or extra text")
         );
         let sugg: ChatCompletionRequest = serde_json::from_value(json!({
             "messages": [{"role": "user", "content": "x"}]
-        })).unwrap();
-        assert!(expected_format(&sugg, "Reply NO_SUGGESTION if none").unwrap().contains("NO_SUGGESTION"));
+        }))
+        .unwrap();
+        assert!(expected_format(&sugg, "Reply NO_SUGGESTION if none")
+            .unwrap()
+            .contains("NO_SUGGESTION"));
         assert_eq!(expected_format(&sugg, "You are helpful."), None);
         let oc = "You are a title generator. You output ONLY a thread title. Keep exact: technical terms, JSON keys";
-        assert_eq!(expected_format(&title, oc).as_deref(), Some("only a short title, no quotes or extra text"));
+        assert_eq!(
+            expected_format(&title, oc).as_deref(),
+            Some("only a short title, no quotes or extra text")
+        );
         let cc = "Return JSON with a single \"title\" field";
         assert!(expected_format(&title, cc).unwrap().contains("{\"title\""));
     }
@@ -2891,7 +2938,10 @@ mod tests {
         assert!(is_auxiliary_request(&oc_title));
         let mut h = HeaderMap::new();
         h.insert("x-session-id", "ses_1".parse().unwrap());
-        assert!(resolve_session_key(&h, &oc_title, Some("You are a title generator."), true).starts_with("aux:"));
+        assert!(
+            resolve_session_key(&h, &oc_title, Some("You are a title generator."), true)
+                .starts_with("aux:")
+        );
 
         // A tool-less chat client capping its output is still a chat.
         let plain = request(json!({
@@ -2930,5 +2980,4 @@ mod tests {
             resolve_session_key(&h, &s2, Some("P"), true)
         );
     }
-
 }

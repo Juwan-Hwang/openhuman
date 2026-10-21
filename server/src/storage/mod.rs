@@ -110,16 +110,15 @@ impl AppState {
         // Messages stay in memory unless asked otherwise: the caller's
         // transcript is the record, and a conversation worth keeping is
         // saved explicitly (see `ephemeral`).
-        let (message, ephemeral): (Arc<dyn MessageRepository>, _) =
-            if ephemeral::persist_all() {
-                (persistent, None)
-            } else {
-                let eph = Arc::new(ephemeral::EphemeralMessages::new(
-                    conversation.clone(),
-                    persistent,
-                ));
-                (eph.clone() as Arc<dyn MessageRepository>, Some(eph))
-            };
+        let (message, ephemeral): (Arc<dyn MessageRepository>, _) = if ephemeral::persist_all() {
+            (persistent, None)
+        } else {
+            let eph = Arc::new(ephemeral::EphemeralMessages::new(
+                conversation.clone(),
+                persistent,
+            ));
+            (eph.clone() as Arc<dyn MessageRepository>, Some(eph))
+        };
         let capability: Arc<dyn CapabilityRepository> = Arc::new(store.clone());
         let context: Arc<dyn ContextRepository> = Arc::new(store);
         let reply: Arc<dyn ReplyRegistry> = Arc::new(reply);

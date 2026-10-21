@@ -135,7 +135,10 @@ async fn test_non_streaming_completion() {
     let prompt = body["usage"]["prompt_tokens"].as_u64().unwrap();
     let completion = body["usage"]["completion_tokens"].as_u64().unwrap();
     assert!(prompt > 0 && completion > 0);
-    assert_eq!(body["usage"]["total_tokens"].as_u64().unwrap(), prompt + completion);
+    assert_eq!(
+        body["usage"]["total_tokens"].as_u64().unwrap(),
+        prompt + completion
+    );
 }
 
 // ── 3. Streaming chat completion (SSE) ──

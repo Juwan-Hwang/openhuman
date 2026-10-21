@@ -419,16 +419,20 @@ mod tests {
         let runtime = ChatContent::Text(
             "Current runtime context. This snapshot supersedes earlier ones.".to_string(),
         );
-        assert_eq!(normalize_user_message(&ClientType::DeepSeekHarness, &runtime), "");
-        let skills = ChatContent::Text(
-            "<system-reminder>\nskills...\n</system-reminder>".to_string(),
+        assert_eq!(
+            normalize_user_message(&ClientType::DeepSeekHarness, &runtime),
+            ""
         );
-        assert_eq!(normalize_user_message(&ClientType::DeepSeekHarness, &skills), "");
+        let skills =
+            ChatContent::Text("<system-reminder>\nskills...\n</system-reminder>".to_string());
+        assert_eq!(
+            normalize_user_message(&ClientType::DeepSeekHarness, &skills),
+            ""
+        );
         let real = ChatContent::Text("这里是创造模式".to_string());
         assert_eq!(
             normalize_user_message(&ClientType::DeepSeekHarness, &real),
             "这里是创造模式"
         );
     }
-
 }

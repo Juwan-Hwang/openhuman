@@ -114,7 +114,10 @@ pub fn call_digest(tool: &str, args: &Value) -> String {
 pub fn remember_reply(agent_id: &str, digest: String, conversation_id: &str) {
     let mut g = inner().lock().unwrap();
     let key = (agent_id.to_string(), digest);
-    if g.index.insert(key.clone(), conversation_id.to_string()).is_none() {
+    if g.index
+        .insert(key.clone(), conversation_id.to_string())
+        .is_none()
+    {
         g.index_order.push_back(key);
         while g.index_order.len() > INDEX_CAP {
             if let Some(old) = g.index_order.pop_front() {
@@ -177,7 +180,10 @@ pub fn resolve_call_id(
             return Some(c.call_id.clone());
         }
     }
-    q.iter().rev().find(|c| !c.answered).map(|c| c.call_id.clone())
+    q.iter()
+        .rev()
+        .find(|c| !c.answered)
+        .map(|c| c.call_id.clone())
 }
 
 pub fn tool_name_for(conversation_id: &str, call_id: &str) -> Option<String> {
@@ -222,7 +228,12 @@ pub fn set_context(conversation_id: &str, ctx: Value) {
 }
 
 pub fn get_context(conversation_id: &str) -> Option<Value> {
-    inner().lock().unwrap().context.get(conversation_id).cloned()
+    inner()
+        .lock()
+        .unwrap()
+        .context
+        .get(conversation_id)
+        .cloned()
 }
 
 pub fn set_last_client(agent_id: &str, client: &str) {
@@ -387,7 +398,10 @@ pub fn count_tokens_with(tokenizer: &str, text: &str) -> u32 {
     if text.is_empty() {
         return 0;
     }
-    registry().get(tokenizer).map(|c| c.count(text)).unwrap_or(0)
+    registry()
+        .get(tokenizer)
+        .map(|c| c.count(text))
+        .unwrap_or(0)
 }
 
 /// Tokens in `text` with the server's default tokenizer.
@@ -443,12 +457,16 @@ mod tests {
         );
         assert_eq!(got.as_deref(), Some("call_ours"));
         assert!(first_result(conv, got.as_deref(), "out"));
-        assert!(!first_result(conv, got.as_deref(), "out"), "replay is delivered once");
+        assert!(
+            !first_result(conv, got.as_deref(), "out"),
+            "replay is delivered once"
+        );
     }
 
     #[test]
     fn injections_are_stripped_from_the_anchor() {
-        let t = "<system-reminder>terminals: 0</system-reminder>\n<user_input>\n你好\n</user_input>";
+        let t =
+            "<system-reminder>terminals: 0</system-reminder>\n<user_input>\n你好\n</user_input>";
         assert_eq!(strip_injections(t), "你好");
         assert_eq!(strip_injections("plain"), "plain");
     }
@@ -459,14 +477,20 @@ mod tests {
         assert_eq!(count_tokens(""), 0);
         assert!(count_tokens_with("cl100k_base", "你好，世界") >= 2);
         assert!(tokenizer_available("o200k_base"));
-        assert!(!tokenizer_available("claude"), "only real tokenizers are offered");
+        assert!(
+            !tokenizer_available("claude"),
+            "only real tokenizers are offered"
+        );
     }
 
     #[test]
     fn continuity_finds_the_conversation() {
         let d = text_digest("unique reply 123").unwrap();
         remember_reply("agt_x", d.clone(), "cnv_x");
-        assert_eq!(lookup_continuity("agt_x", &[d.clone()]).as_deref(), Some("cnv_x"));
+        assert_eq!(
+            lookup_continuity("agt_x", &[d.clone()]).as_deref(),
+            Some("cnv_x")
+        );
         assert_eq!(lookup_continuity("agt_other", &[d]), None);
     }
 }

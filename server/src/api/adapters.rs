@@ -10,6 +10,7 @@
 //! `anyllm_translate` crate; no maintained library translates *inbound*
 //! Responses traffic, so that one is written here.
 
+use axum::body::Bytes;
 use axum::{
     body::Body,
     extract::State,
@@ -17,14 +18,13 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use axum::body::Bytes;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::api::openai::chat_completions;
-use crate::state::AuthPrincipal;
 use crate::openai_compat::ChatCompletionRequest;
+use crate::state::AuthPrincipal;
 use crate::AppState;
 
 /// Split an SSE byte stream into `data:` payloads (comments → `None`).
@@ -76,7 +76,9 @@ fn is_sse(resp: &Response) -> bool {
 }
 
 async fn body_json(resp: Response) -> Option<Value> {
-    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024 * 1024).await.ok()?;
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024 * 1024)
+        .await
+        .ok()?;
     // The non-streaming path pads with newlines while it waits.
     let text = String::from_utf8_lossy(&bytes);
     serde_json::from_str(text.trim()).ok()
@@ -115,7 +117,11 @@ pub async fn messages(
     let req: MessageCreateRequest = match serde_json::from_value(body) {
         Ok(r) => r,
         Err(e) => {
-            return anthropic_error(StatusCode::BAD_REQUEST, "invalid_request_error", &e.to_string())
+            return anthropic_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                &e.to_string(),
+            )
         }
     };
     let model = req.model.clone();
@@ -126,7 +132,11 @@ pub async fn messages(
     let openai_req = match anyllm_translate::translate_request(&req, &config) {
         Ok(r) => r,
         Err(e) => {
-            return anthropic_error(StatusCode::BAD_REQUEST, "invalid_request_error", &e.to_string())
+            return anthropic_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                &e.to_string(),
+            )
         }
     };
     let mut v = serde_json::to_value(&openai_req).unwrap_or(Value::Null);
@@ -154,15 +164,27 @@ pub async fn messages(
     if !status.is_success() {
         let msg = body_json(resp)
             .await
-            .and_then(|v| v.pointer("/error/message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+            .and_then(|v| {
+                v.pointer("/error/message")
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string())
+            })
             .unwrap_or_else(|| "request failed".to_string());
-        let kind = if status == StatusCode::CONFLICT { "overloaded_error" } else { "api_error" };
+        let kind = if status == StatusCode::CONFLICT {
+            "overloaded_error"
+        } else {
+            "api_error"
+        };
         return anthropic_error(status, kind, &msg);
     }
 
     if !stream || !is_sse(&resp) {
         let Some(v) = body_json(resp).await else {
-            return anthropic_error(StatusCode::BAD_GATEWAY, "api_error", "unreadable completion");
+            return anthropic_error(
+                StatusCode::BAD_GATEWAY,
+                "api_error",
+                "unreadable completion",
+            );
         };
         return match serde_json::from_value::<anyllm_translate::openai::ChatCompletionResponse>(v) {
             Ok(c) => Json(anyllm_translate::translate_response(&c, &model)).into_response(),
@@ -263,7 +285,10 @@ pub async fn count_tokens(
     }
     if let Some(msgs) = body.get("messages").and_then(|m| m.as_array()) {
         for m in msgs {
-            n += 4 + crate::session::count_tokens_with(&tokenizer, &value_text(m.get("content").unwrap_or(&Value::Null)));
+            n += 4 + crate::session::count_tokens_with(
+                &tokenizer,
+                &value_text(m.get("content").unwrap_or(&Value::Null)),
+            );
         }
     }
     if let Some(t) = body.get("tools") {
@@ -319,7 +344,11 @@ fn responses_content(content: &Value) -> Value {
                         only_text = false;
                         let url = p
                             .get("image_url")
-                            .and_then(|u| u.as_str().map(|s| s.to_string()).or_else(|| u.get("url").and_then(|x| x.as_str()).map(|s| s.to_string())))
+                            .and_then(|u| {
+                                u.as_str().map(|s| s.to_string()).or_else(|| {
+                                    u.get("url").and_then(|x| x.as_str()).map(|s| s.to_string())
+                                })
+                            })
                             .unwrap_or_default();
                         out.push(json!({"type": "image_url", "image_url": {"url": url}}));
                     }
@@ -351,7 +380,11 @@ fn custom_tool_names(tools: &[Value]) -> Vec<String> {
     tools
         .iter()
         .filter(|t| t.get("type").and_then(|v| v.as_str()) == Some("custom"))
-        .filter_map(|t| t.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .filter_map(|t| {
+            t.get("name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
         .collect()
 }
 
@@ -389,23 +422,37 @@ pub(crate) fn responses_to_chat(body: &Value) -> Value {
                             .to_string();
                         let (name, args) = match kind {
                             "custom_tool_call" => (
-                                it.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                json!({"input": it.get("input").cloned().unwrap_or(json!(""))}).to_string(),
+                                it.get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                json!({"input": it.get("input").cloned().unwrap_or(json!(""))})
+                                    .to_string(),
                             ),
                             "local_shell_call" => (
                                 "local_shell".to_string(),
                                 it.get("action").cloned().unwrap_or(json!({})).to_string(),
                             ),
                             _ => (
-                                it.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                it.get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
                                 it.get("arguments")
-                                    .map(|a| a.as_str().map(|s| s.to_string()).unwrap_or_else(|| a.to_string()))
+                                    .map(|a| {
+                                        a.as_str()
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_else(|| a.to_string())
+                                    })
                                     .unwrap_or_else(|| "{}".to_string()),
                             ),
                         };
                         let call = json!({"id": call_id, "type": "function", "function": {"name": name, "arguments": args}});
                         let merged = match messages.last_mut() {
-                            Some(last) if last.get("role").and_then(|r| r.as_str()) == Some("assistant") => {
+                            Some(last)
+                                if last.get("role").and_then(|r| r.as_str())
+                                    == Some("assistant") =>
+                            {
                                 let calls = last
                                     .as_object_mut()
                                     .unwrap()
@@ -419,7 +466,9 @@ pub(crate) fn responses_to_chat(body: &Value) -> Value {
                             messages.push(json!({"role": "assistant", "content": Value::Null, "tool_calls": [call]}));
                         }
                     }
-                    "function_call_output" | "custom_tool_call_output" | "local_shell_call_output" => {
+                    "function_call_output"
+                    | "custom_tool_call_output"
+                    | "local_shell_call_output" => {
                         let output = match it.get("output") {
                             Some(Value::String(s)) => s.clone(),
                             Some(Value::Array(parts)) => parts
@@ -577,11 +626,19 @@ impl ResponsesBuilder {
     }
 
     fn close_reasoning(&mut self) -> Vec<Bytes> {
-        let Some((idx, id, text)) = self.reasoning_item.take() else { return vec![] };
+        let Some((idx, id, text)) = self.reasoning_item.take() else {
+            return vec![];
+        };
         let item = json!({"type": "reasoning", "id": id, "summary": [{"type": "summary_text", "text": text}]});
         let mut v = vec![
-            self.ev("response.reasoning_summary_text.done", json!({"item_id": id, "output_index": idx, "summary_index": 0, "text": text})),
-            self.ev("response.output_item.done", json!({"output_index": idx, "item": item})),
+            self.ev(
+                "response.reasoning_summary_text.done",
+                json!({"item_id": id, "output_index": idx, "summary_index": 0, "text": text}),
+            ),
+            self.ev(
+                "response.output_item.done",
+                json!({"output_index": idx, "item": item}),
+            ),
         ];
         self.output.push(item);
         v.shrink_to_fit();
@@ -589,13 +646,24 @@ impl ResponsesBuilder {
     }
 
     fn close_text(&mut self) -> Vec<Bytes> {
-        let Some((idx, id, text)) = self.text_item.take() else { return vec![] };
+        let Some((idx, id, text)) = self.text_item.take() else {
+            return vec![];
+        };
         let part = json!({"type": "output_text", "text": text, "annotations": []});
         let item = json!({"type": "message", "id": id, "role": "assistant", "status": "completed", "content": [part]});
         let v = vec![
-            self.ev("response.output_text.done", json!({"item_id": id, "output_index": idx, "content_index": 0, "text": text})),
-            self.ev("response.content_part.done", json!({"item_id": id, "output_index": idx, "content_index": 0, "part": part})),
-            self.ev("response.output_item.done", json!({"output_index": idx, "item": item})),
+            self.ev(
+                "response.output_text.done",
+                json!({"item_id": id, "output_index": idx, "content_index": 0, "text": text}),
+            ),
+            self.ev(
+                "response.content_part.done",
+                json!({"item_id": id, "output_index": idx, "content_index": 0, "part": part}),
+            ),
+            self.ev(
+                "response.output_item.done",
+                json!({"output_index": idx, "item": item}),
+            ),
         ];
         self.output.push(item);
         v
@@ -615,7 +683,10 @@ impl ResponsesBuilder {
             r.2.push_str(delta);
             (r.0, r.1.clone())
         };
-        v.push(self.ev("response.reasoning_summary_text.delta", json!({"item_id": id, "output_index": idx, "summary_index": 0, "delta": delta})));
+        v.push(self.ev(
+            "response.reasoning_summary_text.delta",
+            json!({"item_id": id, "output_index": idx, "summary_index": 0, "delta": delta}),
+        ));
         v
     }
 
@@ -633,7 +704,10 @@ impl ResponsesBuilder {
             t.2.push_str(delta);
             (t.0, t.1.clone())
         };
-        v.push(self.ev("response.output_text.delta", json!({"item_id": id, "output_index": idx, "content_index": 0, "delta": delta})));
+        v.push(self.ev(
+            "response.output_text.delta",
+            json!({"item_id": id, "output_index": idx, "content_index": 0, "delta": delta}),
+        ));
         v
     }
 
@@ -644,22 +718,44 @@ impl ResponsesBuilder {
         if self.custom.iter().any(|c| c == name) {
             let input = serde_json::from_str::<Value>(args)
                 .ok()
-                .and_then(|a| a.get("input").and_then(|i| i.as_str()).map(|s| s.to_string()))
+                .and_then(|a| {
+                    a.get("input")
+                        .and_then(|i| i.as_str())
+                        .map(|s| s.to_string())
+                })
                 .unwrap_or_else(|| args.to_string());
             let id = format!("ctc_{}", Uuid::now_v7().simple());
             let item = json!({"type": "custom_tool_call", "id": id, "call_id": call_id, "name": name, "input": input, "status": "completed"});
             v.push(self.ev("response.output_item.added", json!({"output_index": idx, "item": {"type": "custom_tool_call", "id": id, "call_id": call_id, "name": name, "input": ""}})));
-            v.push(self.ev("response.custom_tool_call_input.delta", json!({"item_id": id, "output_index": idx, "delta": input})));
-            v.push(self.ev("response.custom_tool_call_input.done", json!({"item_id": id, "output_index": idx, "input": input})));
-            v.push(self.ev("response.output_item.done", json!({"output_index": idx, "item": item})));
+            v.push(self.ev(
+                "response.custom_tool_call_input.delta",
+                json!({"item_id": id, "output_index": idx, "delta": input}),
+            ));
+            v.push(self.ev(
+                "response.custom_tool_call_input.done",
+                json!({"item_id": id, "output_index": idx, "input": input}),
+            ));
+            v.push(self.ev(
+                "response.output_item.done",
+                json!({"output_index": idx, "item": item}),
+            ));
             self.output.push(item);
         } else {
             let id = format!("fc_{}", Uuid::now_v7().simple());
             let item = json!({"type": "function_call", "id": id, "call_id": call_id, "name": name, "arguments": args, "status": "completed"});
             v.push(self.ev("response.output_item.added", json!({"output_index": idx, "item": {"type": "function_call", "id": id, "call_id": call_id, "name": name, "arguments": ""}})));
-            v.push(self.ev("response.function_call_arguments.delta", json!({"item_id": id, "output_index": idx, "delta": args})));
-            v.push(self.ev("response.function_call_arguments.done", json!({"item_id": id, "output_index": idx, "arguments": args})));
-            v.push(self.ev("response.output_item.done", json!({"output_index": idx, "item": item})));
+            v.push(self.ev(
+                "response.function_call_arguments.delta",
+                json!({"item_id": id, "output_index": idx, "delta": args}),
+            ));
+            v.push(self.ev(
+                "response.function_call_arguments.done",
+                json!({"item_id": id, "output_index": idx, "arguments": args}),
+            ));
+            v.push(self.ev(
+                "response.output_item.done",
+                json!({"output_index": idx, "item": item}),
+            ));
             self.output.push(item);
         }
         v
@@ -667,7 +763,10 @@ impl ResponsesBuilder {
 
     fn set_usage(&mut self, u: &Value) {
         let input = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let output = u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let output = u
+            .get("completion_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         self.usage = json!({
             "input_tokens": input,
             "input_tokens_details": {"cached_tokens": 0},
@@ -697,8 +796,16 @@ pub async fn responses(
         .and_then(|v| v.as_str())
         .unwrap_or("openhuman-human")
         .to_string();
-    let stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
-    let custom = custom_tool_names(body.get("tools").and_then(|t| t.as_array()).map(|a| a.as_slice()).unwrap_or(&[]));
+    let stream = body
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let custom = custom_tool_names(
+        body.get("tools")
+            .and_then(|t| t.as_array())
+            .map(|a| a.as_slice())
+            .unwrap_or(&[]),
+    );
     let chat = match chat_request(responses_to_chat(&body)) {
         Ok(c) => c,
         Err(r) => return r,
@@ -709,7 +816,11 @@ pub async fn responses(
     if !status.is_success() {
         let msg = body_json(resp)
             .await
-            .and_then(|v| v.pointer("/error/message").and_then(|m| m.as_str()).map(|s| s.to_string()))
+            .and_then(|v| {
+                v.pointer("/error/message")
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string())
+            })
             .unwrap_or_else(|| "request failed".to_string());
         return responses_error(status, &msg);
     }
@@ -719,7 +830,10 @@ pub async fn responses(
             return responses_error(StatusCode::BAD_GATEWAY, "unreadable completion");
         };
         let mut b = ResponsesBuilder::new(model, custom);
-        let msg = v.pointer("/choices/0/message").cloned().unwrap_or(Value::Null);
+        let msg = v
+            .pointer("/choices/0/message")
+            .cloned()
+            .unwrap_or(Value::Null);
         if let Some(r) = msg.get("reasoning_content").and_then(|v| v.as_str()) {
             b.reasoning(r);
         }
@@ -731,8 +845,14 @@ pub async fn responses(
         if let Some(calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
             for c in calls {
                 let id = c.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let name = c.pointer("/function/name").and_then(|v| v.as_str()).unwrap_or("");
-                let args = c.pointer("/function/arguments").and_then(|v| v.as_str()).unwrap_or("{}");
+                let name = c
+                    .pointer("/function/name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let args = c
+                    .pointer("/function/arguments")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("{}");
                 b.call(id, name, args);
             }
         }
