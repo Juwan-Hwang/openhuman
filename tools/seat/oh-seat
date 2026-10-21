@@ -1,0 +1,435 @@
+#!/usr/bin/env python3
+"""oh-seat: sit in the OpenHuman responder seat from any terminal.
+
+Zero dependencies (Python 3.8+ stdlib). See docs/seat-cli.md.
+
+  oh-seat next [--timeout 600] [--all]
+  oh-seat reply TEXT [-c CONV] [--reasoning R] [--more]
+  oh-seat tool NAME [JSON_INPUT] [-c CONV] [--text T] [--timeout 1800]
+  oh-seat caps [-c CONV] [--full] [--diff]
+  oh-seat history [-c CONV] [--limit 20]
+  oh-seat convs | use CONV | save [-c CONV] | status
+
+Env: OH_SEAT_URL, OH_SEAT_KEY or OH_SEAT_KEY_FILE, OH_SEAT_STATE.
+Exit codes: 0 ok, 2 timed out with nothing new, 3 HTTP/auth error, 4 usage.
+"""
+import argparse
+import difflib
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+VERSION = "0.1.0"
+POLL_MAX = 85  # server long-poll cap is 90s
+
+try:  # Windows consoles default to a legacy code page
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+
+class HttpError(Exception):
+    pass
+
+
+# ── config / state ──
+
+def base_url():
+    return os.environ.get("OH_SEAT_URL", "https://api.juwanh.com").rstrip("/")
+
+
+def api_key():
+    k = os.environ.get("OH_SEAT_KEY")
+    if not k:
+        f = os.environ.get("OH_SEAT_KEY_FILE") or os.path.expanduser("~/.openhuman/seat_key")
+        try:
+            with open(f, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line.startswith("api_key="):
+                        line = line.split("=", 1)[1]
+                    if line.startswith("ohk_"):
+                        k = line
+                        break
+        except OSError:
+            pass
+    if not k:
+        die(4, "no key: set OH_SEAT_KEY or OH_SEAT_KEY_FILE (default ~/.openhuman/seat_key)")
+    return k
+
+
+def state_path():
+    return os.environ.get("OH_SEAT_STATE") or os.path.expanduser("~/.openhuman/seat-state.json")
+
+
+def load_state():
+    try:
+        with open(state_path(), encoding="utf-8") as f:
+            s = json.load(f)
+    except (OSError, ValueError):
+        s = {}
+    s.setdefault("cursor", 0)
+    s.setdefault("active", None)
+    s.setdefault("buffer", [])      # events read but not yet shown by `next`
+    s.setdefault("convs", {})       # conv -> {client, last_text, t}
+    s.setdefault("caps", {})        # conv -> last caps snapshot (for --diff)
+    return s
+
+
+def save_state(s):
+    p = state_path()
+    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(s, f, ensure_ascii=False)
+    os.replace(tmp, p)
+
+
+def die(code, msg):
+    print("error: " + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+# ── http ──
+
+def call(method, path, body=None, timeout=100):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(base_url() + path, data=data, method=method, headers={
+        "Authorization": "Bearer " + api_key(),
+        "Content-Type": "application/json",
+        "User-Agent": "oh-seat/" + VERSION,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+            return json.loads(raw) if raw.strip() else {}
+    except urllib.error.HTTPError as e:
+        txt = e.read().decode(errors="replace")[:800]
+        raise HttpError("HTTP %d %s: %s" % (e.code, path.split("?")[0], txt))
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise HttpError("network %s: %s" % (path.split("?")[0], e))
+
+
+def poll(state, wait, full=False):
+    """One long-poll. Returns new events and advances the cursor."""
+    q = {"after": state["cursor"], "wait": max(0, min(int(wait), POLL_MAX))}
+    if full:
+        q["view"] = "full"
+    r = call("GET", "/v1/seat/inbox?" + urllib.parse.urlencode(q), timeout=q["wait"] + 30)
+    evs = r.get("events", []) or []
+    if "cursor" in r:
+        state["cursor"] = r["cursor"]
+    for e in evs:
+        note_conv(state, e)
+    return evs
+
+
+def note_conv(state, e):
+    c = e.get("conversation_id")
+    if not c or not str(c).startswith("cnv_"):
+        return
+    info = state["convs"].setdefault(c, {})
+    if e.get("client"):
+        info["client"] = e["client"]
+    if e.get("type") == "message.received":
+        info["last_text"] = (e.get("text") or "")[:120]
+        info["t"] = int(time.time())
+    # keep the state file small
+    if len(state["convs"]) > 50:
+        for k in sorted(state["convs"], key=lambda k: state["convs"][k].get("t", 0))[:-50]:
+            state["convs"].pop(k, None)
+            state["caps"].pop(k, None)
+
+
+# ── aux detection ──
+
+AUX_HINTS = [
+    ("generate a title", 'title: reply with only the title, or JSON {"title": "..."} if the prompt asks for JSON'),
+    ("title for this conversation", "title: reply with only a short title"),
+    ("no_suggestion", "suggestion: reply with suggestion lines, or exactly NO_SUGGESTION"),
+    ('"suggestions"', 'skill review: reply with JSON {"suggestions": [...]} (empty list if none)'),
+    ("summarize", "summary: reply with only the summary"),
+]
+
+
+def aux_hint(e):
+    if e.get("kind") not in (None, "chat") and e.get("kind") != "chat":
+        kind = e.get("kind")
+    else:
+        kind = None
+    text = (e.get("text") or "").lower()
+    for needle, hint in AUX_HINTS:
+        if needle in text:
+            return hint
+    if kind and kind not in ("chat", "message"):
+        return "auxiliary (%s)" % kind
+    return None
+
+
+# ── output ──
+
+def out_event(e, as_json):
+    if as_json:
+        print(json.dumps(e, ensure_ascii=False))
+        return
+    t = e.get("type")
+    c = e.get("conversation_id")
+    if t == "message.received":
+        hdr = "MESSAGE conv=%s client=%s" % (c, e.get("client") or "?")
+        hint = aux_hint(e)
+        if hint:
+            hdr += "  AUX → " + hint
+        print(hdr)
+        print(e.get("text") or "")
+        for img in e.get("images", []) or []:
+            print("[image %s]" % (img.get("media_type") if isinstance(img, dict) else "attached"))
+    elif t == "conversation.started":
+        print("NEW CONVERSATION conv=%s client=%s" % (c, e.get("client") or "?"))
+    elif t == "tool.result":
+        print("TOOL RESULT conv=%s tool=%s status=%s id=%s" % (
+            c, e.get("tool_id"), e.get("status"), e.get("invocation_id")))
+        print(e.get("output") if e.get("output") is not None else (e.get("error") or ""))
+    else:
+        rest = {k: v for k, v in e.items() if k not in ("type", "conversation_id", "cursor")}
+        print("%s conv=%s %s" % ((t or "event").upper(), c, json.dumps(rest, ensure_ascii=False)[:400]))
+
+
+# ── commands ──
+
+SHOWN_BY_NEXT = ("message.received", "conversation.started")
+
+
+def cmd_next(a, s):
+    deadline = time.time() + a.timeout
+    while True:
+        wanted = [e for e in s["buffer"] if a.all or e.get("type") in SHOWN_BY_NEXT]
+        if any(e.get("type") == "message.received" or a.all for e in wanted):
+            s["buffer"] = []  # everything buffered is either shown now or not wanted by `next`
+            for e in wanted:
+                out_event(e, a.json)
+            msgs = [e for e in wanted if e.get("type") == "message.received"]
+            if msgs:
+                s["active"] = msgs[-1].get("conversation_id")
+            save_state(s)
+            return 0
+        left = deadline - time.time()
+        if left <= 0:
+            save_state(s)
+            if not a.json:
+                print("nothing new (timed out after %ds)" % a.timeout)
+            return 2
+        evs = poll(s, min(left, POLL_MAX), full=True)
+        s["buffer"].extend(evs)
+        save_state(s)  # cursor advanced: persist buffer first so nothing is lost
+
+
+def conv_of(a, s):
+    c = getattr(a, "conv", None) or s.get("active")
+    if not c:
+        die(4, "no conversation: pass -c CONV or run `oh-seat next` first")
+    return c
+
+
+def cmd_reply(a, s):
+    c = conv_of(a, s)
+    text = a.text if a.text != "-" else sys.stdin.read()
+    body = {"conversation_id": c, "text": text, "end_turn": not a.more,
+            "client_msg_id": "ohs_" + uuid.uuid4().hex}
+    if a.reasoning:
+        body["reasoning"] = a.reasoning
+    r = call("POST", "/v1/seat/reply", body)
+    if a.json:
+        print(json.dumps(r, ensure_ascii=False))
+    else:
+        live = r.get("live")
+        print("replied conv=%s%s" % (c, "" if live is None else (" (delivered live)" if live else " (caller not connected; queued for its next request)")))
+    return 0
+
+
+def cmd_tool(a, s):
+    c = conv_of(a, s)
+    try:
+        inp = json.loads(a.input) if a.input else {}
+    except ValueError as e:
+        die(4, "JSON_INPUT is not valid JSON: %s" % e)
+    body = {"conversation_id": c, "tool": a.name, "input": inp, "wait": 0,
+            "client_msg_id": "ohs_" + uuid.uuid4().hex}
+    if a.text:
+        body["text"] = a.text
+    if a.reasoning:
+        body["reasoning"] = a.reasoning
+    r = call("POST", "/v1/seat/tool-call", body)
+    inv = r.get("invocation_id")
+    if r.get("result"):
+        out_event(r["result"], a.json)
+        return 0
+    deadline = time.time() + a.timeout
+    while True:
+        for i, e in enumerate(s["buffer"]):
+            if e.get("type") == "tool.result" and e.get("invocation_id") == inv:
+                s["buffer"].pop(i)
+                save_state(s)
+                out_event(e, a.json)
+                return 0
+        left = deadline - time.time()
+        if left <= 0:
+            save_state(s)
+            print("tool result not back yet (invocation %s); it will show up in `oh-seat next --all`" % inv)
+            return 2
+        s["buffer"].extend(poll(s, min(left, POLL_MAX), full=True))
+        save_state(s)
+
+
+def caps_text(r, full):
+    ctx = r.get("context") or {}
+    tools = r.get("tools") or r.get("capabilities") or ctx.get("tools") or []
+    names = []
+    for t in tools:
+        if isinstance(t, dict):
+            names.append(t.get("id") or t.get("name") or "?")
+    lines = ["client: %s" % (r.get("client") or ctx.get("client") or "?"),
+             "tools (%d): %s" % (len(names), ", ".join(names))]
+    sp = ctx.get("system_prompt") or r.get("system_prompt") or ""
+    if full:
+        lines.append("system prompt (%d chars):" % len(sp))
+        lines.append(sp)
+        for t in tools:
+            if isinstance(t, dict):
+                lines.append("--- tool %s" % (t.get("id") or t.get("name")))
+                lines.append(json.dumps(t, ensure_ascii=False))
+    else:
+        lines.append("system prompt: %d chars (use --full to read it)" % len(sp))
+    return "\n".join(lines)
+
+
+def cmd_caps(a, s):
+    c = conv_of(a, s)
+    r = call("GET", "/v1/seat/capabilities?" + urllib.parse.urlencode({"conversation_id": c, "view": "full"}))
+    if a.json:
+        print(json.dumps(r, ensure_ascii=False))
+        return 0
+    txt = caps_text(r, True)
+    if a.diff:
+        old = s["caps"].get(c)
+        if old is None:
+            print("(no earlier view of %s; showing everything)" % c)
+            print(txt if a.full else caps_text(r, False))
+        elif old == txt:
+            print("no change since last view")
+        else:
+            print("\n".join(difflib.unified_diff(old.splitlines(), txt.splitlines(), "before", "now", lineterm="", n=1)))
+    else:
+        print(txt if a.full else caps_text(r, False))
+    s["caps"][c] = txt
+    save_state(s)
+    return 0
+
+
+def cmd_history(a, s):
+    c = conv_of(a, s)
+    r = call("GET", "/v1/seat/history?" + urllib.parse.urlencode({"conversation_id": c, "limit": a.limit}))
+    if a.json:
+        print(json.dumps(r, ensure_ascii=False))
+        return 0
+    for m in r.get("messages", r if isinstance(r, list) else []):
+        role = m.get("role") or m.get("side") or "?"
+        when = m.get("time") or m.get("timestamp") or ""
+        text = m.get("text") or m.get("content") or ""
+        if not isinstance(text, str):
+            text = json.dumps(text, ensure_ascii=False)
+        print("[%s] %s: %s" % (when, role, text))
+    return 0
+
+
+def cmd_convs(a, s):
+    if not s["convs"]:
+        print("no conversations seen yet")
+    for c, i in sorted(s["convs"].items(), key=lambda kv: -kv[1].get("t", 0)):
+        mark = "*" if c == s.get("active") else " "
+        print("%s %s client=%s last=%r" % (mark, c, i.get("client") or "?", i.get("last_text", "")))
+    return 0
+
+
+def cmd_use(a, s):
+    s["active"] = a.conv_id
+    save_state(s)
+    print("active conversation: " + a.conv_id)
+    return 0
+
+
+def cmd_save(a, s):
+    c = conv_of(a, s)
+    r = call("POST", "/v1/seat/save", {"conversation_id": c})
+    print(json.dumps(r, ensure_ascii=False) if a.json else "saved conv=%s %s" % (c, json.dumps(r, ensure_ascii=False)[:200]))
+    return 0
+
+
+def cmd_status(a, s):
+    print("url: %s\ncursor: %s\nactive: %s\nbuffered events: %d\nstate: %s" % (
+        base_url(), s["cursor"], s.get("active"), len(s["buffer"]), state_path()))
+    return 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="oh-seat", description="OpenHuman Agent Seat CLI")
+    p.add_argument("--json", action="store_true", help="machine-readable output (one JSON object per line)")
+    p.add_argument("--version", action="version", version="oh-seat " + VERSION)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    n = sub.add_parser("next", help="block until something needs a response")
+    n.add_argument("--timeout", type=int, default=600)
+    n.add_argument("--all", action="store_true", help="return on any event type")
+
+    r = sub.add_parser("reply", help="reply in a conversation (TEXT or - for stdin)")
+    r.add_argument("text")
+    r.add_argument("-c", "--conv")
+    r.add_argument("--reasoning")
+    r.add_argument("--more", action="store_true", help="keep the turn open")
+
+    t = sub.add_parser("tool", help="ask the caller to run a tool and wait for the result")
+    t.add_argument("name")
+    t.add_argument("input", nargs="?", help="tool input as JSON")
+    t.add_argument("-c", "--conv")
+    t.add_argument("--text")
+    t.add_argument("--reasoning")
+    t.add_argument("--timeout", type=int, default=1800)
+
+    c = sub.add_parser("caps", help="tools and system prompt of a conversation")
+    c.add_argument("-c", "--conv")
+    c.add_argument("--full", action="store_true")
+    c.add_argument("--diff", action="store_true")
+
+    h = sub.add_parser("history", help="recent messages of a conversation")
+    h.add_argument("-c", "--conv")
+    h.add_argument("--limit", type=int, default=20)
+
+    sub.add_parser("convs", help="conversations seen by this seat")
+    u = sub.add_parser("use", help="set the active conversation")
+    u.add_argument("conv_id")
+    sv = sub.add_parser("save", help="persist a conversation on the server")
+    sv.add_argument("-c", "--conv")
+    sub.add_parser("status")
+
+    a = p.parse_args(argv)
+    for sp in (n, r, t, c, h, sv):
+        pass
+    s = load_state()
+    fn = {"next": cmd_next, "reply": cmd_reply, "tool": cmd_tool, "caps": cmd_caps,
+          "history": cmd_history, "convs": cmd_convs, "use": cmd_use, "save": cmd_save,
+          "status": cmd_status}[a.cmd]
+    try:
+        return fn(a, s)
+    except HttpError as e:
+        die(3, str(e))
+    except KeyboardInterrupt:
+        save_state(s)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
