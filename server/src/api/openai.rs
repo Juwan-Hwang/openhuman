@@ -492,6 +492,14 @@ fn first_user_anchor(req: &ChatCompletionRequest) -> Option<String> {
 /// product token so the responder knows what it is talking to. Generic SDK
 /// and runtime agents tell nothing and are skipped.
 fn client_from_user_agent(headers: &HeaderMap) -> Option<String> {
+    // GitHub Copilot CLI's BYOK requests carry the stock OpenAI SDK agent,
+    // but mark who started each turn.
+    if headers.contains_key("x-interaction-type")
+        || headers.contains_key("x-initiator")
+        || headers.contains_key("copilot-integration-id")
+    {
+        return Some("copilot".to_string());
+    }
     let ua = headers.get("user-agent")?.to_str().ok()?;
     let generic = [
         "openai",
@@ -3176,6 +3184,10 @@ mod tests {
         );
         assert_eq!(h("OpenAI/JS 4.0.0").as_deref(), None);
         assert_eq!(h("node-fetch/1.0 Cline/3.2").as_deref(), Some("cline"));
+        let mut m = HeaderMap::new();
+        m.insert("user-agent", "OpenAI/JS 5.20.1".parse().unwrap());
+        m.insert("x-initiator", "agent".parse().unwrap());
+        assert_eq!(client_from_user_agent(&m).as_deref(), Some("copilot"));
         assert_eq!(
             h("ai-sdk/openai-compatible/1.0 ai-sdk/provider-utils/3").as_deref(),
             None
