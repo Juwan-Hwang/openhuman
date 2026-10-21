@@ -207,6 +207,12 @@ struct State {
     /// Tool list (with schemas) per conversation, to type and check input.
     #[serde(default)]
     tools: BTreeMap<String, Vec<Value>>,
+    /// Tool results already printed: a replay never shows them again.
+    #[serde(default)]
+    done: Vec<String>,
+    /// Late results already mentioned once by `next`.
+    #[serde(default)]
+    hinted: Vec<String>,
 }
 
 #[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -402,6 +408,18 @@ impl Ctx {
             // Delivery receipts tell the seat nothing it can act on.
             if matches!(s(&e, "type"), Some("reply.delivered")) {
                 continue;
+            }
+            if s(&e, "type") == Some("tool.result") {
+                let inv = s(&e, "invocation_id").unwrap_or("");
+                let dup = self.st.done.iter().any(|d| d == inv)
+                    || self
+                        .st
+                        .buffer
+                        .iter()
+                        .any(|b| s(b, "invocation_id") == Some(inv));
+                if dup {
+                    continue;
+                }
             }
             self.note(&e);
             self.st.buffer.push(e);
@@ -753,13 +771,21 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
                 for l in tools_lines {
                     println!("{l}");
                 }
-                let late: Vec<&str> = cx
+                let late: Vec<String> = cx
                     .st
                     .buffer
                     .iter()
                     .filter(|e| s(e, "type") == Some("tool.result"))
                     .filter_map(|e| s(e, "invocation_id"))
+                    .filter(|i| !cx.st.hinted.iter().any(|h| h == i))
+                    .map(String::from)
                     .collect();
+                cx.st.hinted.extend(late.iter().cloned());
+                let n = cx.st.hinted.len();
+                if n > 200 {
+                    cx.st.hinted.drain(..n - 200);
+                }
+                cx.save();
                 if !late.is_empty() {
                     println!(
                         "({} earlier tool result(s) waiting: oh-seat result {})",
@@ -836,6 +862,11 @@ fn await_result(cx: &mut Ctx, inv: &str, deadline: Instant) -> R<Option<Value>> 
             })
         {
             let e = cx.st.buffer.remove(i);
+            cx.st.done.push(inv.to_string());
+            let n = cx.st.done.len();
+            if n > 200 {
+                cx.st.done.drain(..n - 200);
+            }
             cx.save();
             return Ok(Some(e));
         }
