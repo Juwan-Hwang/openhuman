@@ -10,7 +10,9 @@ THE LOOP
                                       the first time, the caller's tool signatures
   oh-seat tool bash command='ls -la'  the caller runs it; you get the output
   oh-seat tool read path=a + read path=b + bash command=pwd
-                                      several calls in one step, results in order
+                                      several calls in one step, results in order;
+                                      they run IN PARALLEL: never batch a step
+                                      that needs an earlier one (write + read)
   oh-seat reply 'Done.' --next        answer (ends the turn), then wait again
   Exit 2 from next = nothing yet: just run `oh-seat next` again.
 
