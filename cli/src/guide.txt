@@ -41,11 +41,14 @@ take over the active conversation: answer them with `reply -c ID '...'`.
 
 RULES  a tool call needs an open turn (the caller waiting): after your final
 reply, wait for the next message before calling tools again (else exit 5).
-Long output is cut at 30000 chars; the full text path is printed. --json on any
+Long output is cut at 30000 chars (head and tail kept); the full text path is
+printed. --json on any
 command prints one JSON object per line.
 
 Results show exit_code=N when the caller's text reports a shell exit code;
-non-zero makes the command exit 1.
+non-zero makes the command exit 1, and so does a result marked success whose
+output is an error (`error: ...`, JSON "success": false): its header then says
+"(output reports a failure)".
 
 EXIT 0 ok | 1 tool ran but reported an error | 2 nothing new before --timeout
      3 network/auth/server | 4 usage (nothing sent) | 5 no open turn
