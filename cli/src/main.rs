@@ -676,7 +676,7 @@ fn print_event(e: &Value) {
                 s(e, "invocation_id").unwrap_or("?")
             );
             let body = s(e, "output")
-                .map(String::from)
+                .map(trim_codex_header)
                 .or_else(|| {
                     e.get("error").filter(|v| !v.is_null()).map(|v| {
                         v.as_str()
@@ -984,6 +984,29 @@ fn exit_code(e: &Value) -> Option<i64> {
         }
     }
     found
+}
+
+/// Codex wraps every exec_command result in a header (Chunk ID, Wall time,
+/// Process exited with code N, Original token count, Output:). The exit
+/// code is already on the TOOL RESULT line; drop the rest. A still-running
+/// session keeps its "Process running with session ID" line.
+fn trim_codex_header(out: &str) -> String {
+    if !out.starts_with("Chunk ID:") {
+        return out.to_string();
+    }
+    let mut keep = Vec::new();
+    let mut lines = out.lines();
+    for l in lines.by_ref() {
+        if l == "Output:" {
+            break;
+        }
+        if l.starts_with("Process running") {
+            keep.push(l.to_string());
+        }
+    }
+    let rest: Vec<&str> = lines.collect();
+    keep.extend(rest.iter().map(|l| l.to_string()));
+    keep.join("\n")
 }
 
 fn result_exit(e: &Value) -> u8 {
@@ -1790,6 +1813,15 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_header_trimmed() {
+        let o = "Chunk ID: 1\nWall time: 0.0 seconds\nProcess exited with code 0\nOriginal token count: 9\nOutput:\n/w\n";
+        assert_eq!(trim_codex_header(o), "/w");
+        let o = "Chunk ID: 1\nWall time: 10 seconds\nProcess running with session ID 7\nOriginal token count: 1\nOutput:\nx";
+        assert_eq!(trim_codex_header(o), "Process running with session ID 7\nx");
+        assert_eq!(trim_codex_header("plain"), "plain");
+    }
 
     #[test]
     fn deferred_tool_names() {
