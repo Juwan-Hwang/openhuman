@@ -667,9 +667,22 @@ async fn handle_tool_invoke(
     human_id: &str,
     agent_id: &str,
 ) {
-    // 1. Validate the tool exists.
-    let cap = app.capability.get_capability(agent_id, tool_id).await;
-    if cap.is_none() {
+    // 1. Validate the tool exists. The tools that count are the ones the
+    //    caller declared in this conversation's own last request: the
+    //    responder's key belongs to a different agent than the caller's, so
+    //    looking up the responder's agent alone rejects every real tool.
+    let conv_has_tool = crate::session::get_context(conversation_id)
+        .and_then(|c| c.get("tools").cloned())
+        .and_then(|t| t.as_array().cloned())
+        .map(|a| {
+            a.iter()
+                .any(|t| t.get("id").and_then(|v| v.as_str()) == Some(tool_id))
+        });
+    let known = match conv_has_tool {
+        Some(found) => found,
+        None => app.capability.get_capability(agent_id, tool_id).await.is_some(),
+    };
+    if !known {
         let event = protocol::error_event(
             human_id,
             "tool_not_found",
