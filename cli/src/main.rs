@@ -218,6 +218,10 @@ struct State {
     /// Tool calls sent whose result has not been seen: [invocation, conv, tool].
     #[serde(default)]
     pending: Vec<[String; 3]>,
+    /// Messages and new conversations already taken in: a seat that is
+    /// reaped before it acknowledges its last poll gets those events again.
+    #[serde(default)]
+    seen: Vec<String>,
 }
 
 #[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -492,8 +496,23 @@ impl Ctx {
                     continue;
                 }
             }
+            let key = match s(&e, "type") {
+                Some("message.received") => s(&e, "message_id").map(|m| format!("m:{m}")),
+                Some("conversation.started") => conv_id(&e).map(|c| format!("c:{c}")),
+                _ => None,
+            };
+            if let Some(k) = key {
+                if self.st.seen.contains(&k) {
+                    continue;
+                }
+                self.st.seen.push(k);
+            }
             self.note(&e);
             self.st.buffer.push(e);
+        }
+        if self.st.seen.len() > 1000 {
+            let cut = self.st.seen.len() - 1000;
+            self.st.seen.drain(..cut);
         }
         if self.st.buffer.len() > 500 {
             let cut = self.st.buffer.len() - 500;
