@@ -1000,7 +1000,15 @@ fn exit_code(e: &Value) -> Option<i64> {
     let mut found = None;
     for line in tail.lines().chain(out.lines().take(4)) {
         let l = line.trim().to_ascii_lowercase();
+        // Claude Code "Error: Exit code 1", Reasonix "error: command exited:
+        // exit status 2", Cline "[Command exited with code 2]".
+        let l = l
+            .trim_start_matches('[')
+            .trim_start_matches("error: ")
+            .trim_start_matches("command exited: ")
+            .to_string();
         for pre in [
+            "exit status ",
             "command exited with code ",
             "process exited with code ",
             "exit code: ",
@@ -1932,6 +1940,23 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exit_code_wordings() {
+        let r = |o: &str| json!({"type": "tool.result", "status": "success", "output": o});
+        assert_eq!(
+            exit_code(&r("Error: Exit code 1\nNo module named pytest")),
+            Some(1)
+        );
+        assert_eq!(
+            exit_code(&r("error: command exited: exit status 2\nls: x")),
+            Some(2)
+        );
+        assert_eq!(
+            exit_code(&r("[Command exited with code 2]  [stderr] ls")),
+            Some(2)
+        );
+    }
 
     #[test]
     fn error_output_is_an_error() {
