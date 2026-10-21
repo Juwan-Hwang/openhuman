@@ -741,6 +741,20 @@ pub async fn tool_call(
             .into_response();
     }
 
+    // A tool call can only ride an open turn: the caller must be waiting
+    // on this conversation (a live request, or an async invocation). Without
+    // one the call used to be parked and spliced into the caller's *next*
+    // request, which then answered a question nobody asked.
+    if !app.reply.has_waiter(&b.conversation_id).await
+        && !app.async_reply.has_pending_for(&b.conversation_id).await
+    {
+        return err(
+            StatusCode::CONFLICT,
+            "no_open_turn",
+            "The caller is not waiting on this conversation (its turn is closed), so nothing can run the tool now. Wait for the caller's next message, then call the tool in that turn.",
+        );
+    }
+
     let invocation_id = format!("call_{}", Uuid::now_v7().simple());
     let input = if b.input.is_null() {
         json!({})

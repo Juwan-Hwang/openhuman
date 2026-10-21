@@ -241,7 +241,7 @@ impl AsyncReplyRegistry {
         self.commit_staged(conversation_id).await;
     }
 
-    async fn has_pending_for(&self, conversation_id: &str) -> bool {
+    pub async fn has_pending_for(&self, conversation_id: &str) -> bool {
         let map = self.inner.read().await;
         for inv in map.values() {
             let guard = match inv.try_lock() {
