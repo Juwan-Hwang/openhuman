@@ -516,6 +516,20 @@ pub(crate) fn responses_to_chat(body: &Value) -> Value {
                     "function_call_output"
                     | "custom_tool_call_output"
                     | "local_shell_call_output" => {
+                        // Codex's view_image answers with an input_image
+                        // part: keep it as an image, not as nothing.
+                        if let Some(Value::Array(parts)) = it.get("output") {
+                            if parts.iter().any(|p| {
+                                p.get("type").and_then(|t| t.as_str()) == Some("input_image")
+                            }) {
+                                messages.push(json!({
+                                    "role": "tool",
+                                    "tool_call_id": it.get("call_id").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "content": responses_content(&Value::Array(parts.clone())),
+                                }));
+                                continue;
+                            }
+                        }
                         let output = match it.get("output") {
                             Some(Value::String(s)) => s.clone(),
                             Some(Value::Array(parts)) => parts
@@ -996,6 +1010,31 @@ mod tests {
         assert_eq!(
             parts[0]["content"][0]["text"],
             "loaded tool WebFetch: callable now"
+        );
+    }
+
+    #[test]
+    fn view_image_output_keeps_the_image() {
+        let body = json!({
+            "model": "m",
+            "input": [
+                {"type": "function_call", "call_id": "c1", "name": "view_image", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": [
+                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}
+                ]}
+            ]
+        });
+        let chat = responses_to_chat(&body);
+        let tool = chat["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "tool")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            tool["content"][0]["image_url"]["url"],
+            "data:image/png;base64,AAAA"
         );
     }
 
