@@ -56,6 +56,10 @@ const CONSUMER_IDLE: Duration = Duration::from_secs(300);
 const DEDUP_CAP: usize = 256;
 /// Text longer than this is cut in the compact view (full view keeps it).
 const COMPACT_TEXT_CHARS: usize = 8000;
+/// Tool output is what the responder works from, and its end (the failing
+/// test, the exit status) matters as much as its start: keep far more, and
+/// keep both ends.
+const COMPACT_OUTPUT_CHARS: usize = 60000;
 
 /// Detach a seat after this long without a poll (`OPENHUMAN_SEAT_TTL_SECS`).
 fn seat_ttl() -> Duration {
@@ -251,6 +255,22 @@ fn err(status: StatusCode, code: &str, message: &str) -> Response {
         .into_response()
 }
 
+/// Keep the first two thirds and the last third of `max`, with a marker
+/// saying how much was cut between them.
+fn truncate_middle(s: &str, max: usize) -> (String, bool) {
+    let n = s.chars().count();
+    if n <= max {
+        return (s.to_string(), false);
+    }
+    let head: String = s.chars().take(max * 2 / 3).collect();
+    let tail: String = s.chars().skip(n - max / 3).collect();
+    let cut = n - head.chars().count() - tail.chars().count();
+    (
+        format!("{head}\n[... {cut} of {n} chars cut by the server ...]\n{tail}"),
+        true,
+    )
+}
+
 fn truncate(s: &str, max: usize) -> (String, bool) {
     if s.chars().count() <= max {
         (s.to_string(), false)
@@ -275,7 +295,7 @@ fn render(cursor: u64, ev: &Value, full: bool) -> Value {
     match ty {
         "message.received" => {
             let text = data.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            let (t, cut) = truncate(text, COMPACT_TEXT_CHARS);
+            let (t, cut) = truncate_middle(text, COMPACT_TEXT_CHARS);
             out["text"] = Value::String(t);
             if cut {
                 out["truncated"] = Value::Bool(true);
@@ -345,7 +365,7 @@ fn render(cursor: u64, ev: &Value, full: bool) -> Value {
                 Value::Null => String::new(),
                 other => other.to_string(),
             };
-            let (t, cut) = truncate(&s, COMPACT_TEXT_CHARS);
+            let (t, cut) = truncate_middle(&s, COMPACT_OUTPUT_CHARS);
             out["output"] = Value::String(t);
             if cut {
                 out["truncated"] = Value::Bool(true);
@@ -534,7 +554,7 @@ pub async fn history(
         .skip(skip)
         .map(|m| {
             let text = m.content.as_text().unwrap_or("");
-            let (t, cut) = truncate(text, 4000);
+            let (t, cut) = truncate_middle(text, 4000);
             // Sides, not species: the caller is whoever sent the request,
             // the responder whoever answered it (this seat or a person).
             let caller = matches!(
@@ -1060,4 +1080,11 @@ mod cursor_origin_tests {
         assert!(a > 1_600_000_000_000, "origin is a ms timestamp");
         assert!(b > a);
     }
+}
+
+#[test]
+fn long_output_keeps_both_ends() {
+    let body: String = (1..=20000).map(|i| format!("{i}\n")).collect();
+    let (t, cut) = truncate_middle(&body, 6000);
+    assert!(cut && t.starts_with("1\n") && t.ends_with("20000\n") && t.contains("chars cut"));
 }
