@@ -1239,6 +1239,16 @@ fn show_interrupting(cx: &mut Ctx, conv: Option<&str>) -> R<()> {
 /// with "Command exited with code 2" / "Process exited with code 2".
 fn exit_code(e: &Value) -> Option<i64> {
     let out = s(e, "output")?;
+    // Trae RunCommand: `<command_exit_code>3</command_exit_code>` near the top.
+    if let Some(i) = out.find("<command_exit_code>") {
+        let n: String = out[i + 19..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '-')
+            .collect();
+        if let Ok(n) = n.parse::<i64>() {
+            return Some(n);
+        }
+    }
     // `; echo exit=$?` (what the guide suggests for callers whose shell
     // results carry no status, like opencode): its last line is the code.
     if let Some(last) = out.lines().rev().find(|l| !l.trim().is_empty()) {
@@ -2522,6 +2532,14 @@ mod tests {
             Some(127)
         );
         assert_eq!(exit_code(&r("hello")), None);
+        let trae = "<toolcall_status>done</toolcall_status>\n<terminal_cwd>e:\\a</terminal_cwd>\n<command_status>Exited</command_status>\n<command_exit_code>3</command_exit_code>\n<command_run_logs>\nx\n</command_run_logs>";
+        assert_eq!(exit_code(&r(trae)), Some(3));
+        assert_eq!(
+            exit_code(&r(
+                "Stdout: ok\nStderr: (empty)\nExit Code: 1\nSignal: (none)"
+            )),
+            Some(1)
+        );
         assert_eq!(exit_code(&r("exit: 1\nboom")), Some(1));
         assert_eq!(exit_code(&r("boom\nexit=1\n")), Some(1));
         assert_eq!(result_exit(&r("boom\nexit=1")), TOOL_ERR);
