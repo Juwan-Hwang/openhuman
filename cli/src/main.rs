@@ -1469,21 +1469,24 @@ struct Prepared {
     input: Value,
 }
 
-/// Other conversations this seat knows tools for, as a `-c` hint.
+/// The most recently active other conversations with tools, as a `-c` hint.
 fn other_tool_convs<'a>(
     tools: impl Iterator<Item = (&'a String, &'a Vec<Value>)>,
+    seen: &BTreeMap<String, ConvInfo>,
     c: &str,
 ) -> Option<String> {
-    let v: Vec<&str> = tools
+    let mut v: Vec<(u64, &str)> = tools
         .filter(|(k, t)| k.as_str() != c && !t.is_empty())
-        .map(|(k, _)| k.as_str())
+        .map(|(k, _)| (seen.get(k).map(|i| i.t).unwrap_or(0), k.as_str()))
         .collect();
+    v.sort_by(|a, b| b.cmp(a));
+    v.truncate(3);
     if v.is_empty() {
         return None;
     }
     Some(format!(
-        "Conversations with tools: {} (pass -c CONV, any piece of the id).",
-        v.join(", ")
+        "Latest conversations with tools: {} (pass -c CONV, any piece of the id).",
+        v.iter().map(|x| x.1).collect::<Vec<_>>().join(", ")
     ))
 }
 
@@ -1509,7 +1512,7 @@ fn prepare(
             // A reply-only conversation (a title or summary request) can
             // be the active one: point at the conversations that do have
             // tools instead of letting the server answer 404.
-            if let Some(h) = other_tool_convs(cx.st.tools.iter(), c) {
+            if let Some(h) = other_tool_convs(cx.st.tools.iter(), &cx.st.convs, c) {
                 return usage(format!(
                     "{c} declared no tools (reply only), so `{name}` cannot run there. {h}"
                 ));
@@ -2561,9 +2564,10 @@ mod tests {
         let full = vec![json!({"name": "bash"})];
         let none: Vec<Value> = vec![];
         let m = [(&a, &none), (&b, &full)];
-        let h = other_tool_convs(m.iter().copied(), "cnv_a").unwrap();
+        let seen = BTreeMap::new();
+        let h = other_tool_convs(m.iter().copied(), &seen, "cnv_a").unwrap();
         assert!(h.contains("cnv_b") && h.contains("-c"));
-        assert!(other_tool_convs(m.iter().copied(), "cnv_b").is_none());
+        assert!(other_tool_convs(m.iter().copied(), &seen, "cnv_b").is_none());
     }
 
     #[test]
