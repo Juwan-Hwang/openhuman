@@ -2000,6 +2000,13 @@ fn env_hints(sp: &str) -> Vec<(&'static str, String)> {
                 put(k, &l[pre.len()..]);
             }
         }
+        // DeepSeek Harness: "Your working directory is C:\\Users\\a\\p."
+        if let Some(v) = low
+            .strip_prefix("your working directory is ")
+            .map(|_| &l[26..])
+        {
+            put("cwd", v.trim().trim_end_matches('.'));
+        }
         for (tag, k) in [("cwd", "cwd"), ("shell", "shell"), ("current_date", "date")] {
             let open = format!("<{tag}>");
             let close = format!("</{tag}>");
@@ -2599,6 +2606,10 @@ mod tests {
             "/w"
         );
         assert!(env_hints("you are helpful").is_empty());
+        assert_eq!(
+            env_hints("Your working directory is C:\\Users\\J\\Zephyr.")[0],
+            ("cwd", "C:\\Users\\J\\Zephyr".to_string())
+        );
     }
 
     #[test]
