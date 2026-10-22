@@ -2179,7 +2179,15 @@ fn cmd_caps(
             );
         } else {
             println!("{}", tool_sig(t));
-            println!("{}", first_sentence(tool_desc(t), 300));
+            // The detail view is where a responder goes to read: nothing cut
+            // with --full, otherwise the first paragraph.
+            let d = tool_desc(t).trim();
+            if full {
+                println!("{d}");
+            } else {
+                let para = d.split("\n\n").next().unwrap_or("");
+                println!("{}", para.split_whitespace().collect::<Vec<_>>().join(" "));
+            }
             if let Some(props) = tool_schema(t).get("properties").and_then(|v| v.as_object()) {
                 for (k, p) in props {
                     let mut line = format!("  {k}: {}", ptype(p));
@@ -2187,12 +2195,20 @@ fn cmd_caps(
                         line.push_str(&format!(" one of {}", Value::Array(en.clone())));
                     }
                     if let Some(d) = s(p, "description") {
-                        line.push_str(&format!(" — {}", first_sentence(d, 160)));
+                        let d = d.split_whitespace().collect::<Vec<_>>().join(" ");
+                        line.push_str(&format!(" — {d}"));
                     }
                     println!("{line}");
                 }
             }
-            println!("(oh-seat tool {name} key=value ... ; --schema for raw JSON)");
+            println!(
+                "(oh-seat tool {name} key=value ... ;{} --schema for raw JSON)",
+                if full {
+                    ""
+                } else {
+                    " --full for the whole description;"
+                }
+            );
         }
         return Ok(OK);
     }
