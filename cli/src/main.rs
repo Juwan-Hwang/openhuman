@@ -1469,6 +1469,24 @@ struct Prepared {
     input: Value,
 }
 
+/// Other conversations this seat knows tools for, as a `-c` hint.
+fn other_tool_convs<'a>(
+    tools: impl Iterator<Item = (&'a String, &'a Vec<Value>)>,
+    c: &str,
+) -> Option<String> {
+    let v: Vec<&str> = tools
+        .filter(|(k, t)| k.as_str() != c && !t.is_empty())
+        .map(|(k, _)| k.as_str())
+        .collect();
+    if v.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Conversations with tools: {} (pass -c CONV, any piece of the id).",
+        v.join(", ")
+    ))
+}
+
 fn prepare(
     cx: &mut Ctx,
     c: &str,
@@ -1487,6 +1505,16 @@ fn prepare(
             name.clone()
         };
         let parsed = input::parse(&args).map_err(|e| Fail(USAGE, format!("{tag}: {e}")))?;
+        if tools.is_empty() && !force {
+            // A reply-only conversation (a title or summary request) can
+            // be the active one: point at the conversations that do have
+            // tools instead of letting the server answer 404.
+            if let Some(h) = other_tool_convs(cx.st.tools.iter(), c) {
+                return usage(format!(
+                    "{c} declared no tools (reply only), so `{name}` cannot run there. {h}"
+                ));
+            }
+        }
         if tools.is_empty() {
             // No tool list known (the caller declared none we can read):
             // send as written and let the server judge the name.
@@ -2524,6 +2552,18 @@ mod tests {
             "/w"
         );
         assert!(env_hints("you are helpful").is_empty());
+    }
+
+    #[test]
+    fn other_tool_convs_hint() {
+        let a = "cnv_a".to_string();
+        let b = "cnv_b".to_string();
+        let full = vec![json!({"name": "bash"})];
+        let none: Vec<Value> = vec![];
+        let m = [(&a, &none), (&b, &full)];
+        let h = other_tool_convs(m.iter().copied(), "cnv_a").unwrap();
+        assert!(h.contains("cnv_b") && h.contains("-c"));
+        assert!(other_tool_convs(m.iter().copied(), "cnv_b").is_none());
     }
 
     #[test]
