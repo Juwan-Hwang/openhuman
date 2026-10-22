@@ -1347,6 +1347,7 @@ fn error_text(e: &Value) -> bool {
         || head.starts_with("error -")
         || head.starts_with("<tool_use_error>")
         || head.starts_with("tool error")
+        || head.starts_with("blocked:")
 }
 
 fn result_exit(e: &Value) -> u8 {
@@ -2391,6 +2392,10 @@ mod tests {
         let r = |o: &str| json!({"type": "tool.result", "status": "success", "output": o});
         assert_eq!(
             result_exit(&r("error: bash sandbox requested but unavailable")),
+            TOOL_ERR
+        );
+        assert_eq!(
+            result_exit(&r("blocked: this command runs a verification check")),
             TOOL_ERR
         );
         assert_eq!(result_exit(&r("no errors found")), OK);
