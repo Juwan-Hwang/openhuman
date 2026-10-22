@@ -1837,6 +1837,31 @@ fn ptype(p: &Value) -> String {
             let inner = p.get("items").map(ptype).unwrap_or_else(|| "any".into());
             format!("{inner}[]")
         }
+        // A small object spells out its fields, so an `object[]` parameter
+        // (pi's edit `edits`) can be filled without reading the raw schema.
+        Some(Value::String(t)) if t == "object" => {
+            let props = p.get("properties").and_then(|v| v.as_object());
+            match props {
+                Some(pr) if !pr.is_empty() && pr.len() <= 6 => {
+                    let req: Vec<&str> = p
+                        .get("required")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                        .unwrap_or_default();
+                    let mut f: Vec<(bool, String)> = pr
+                        .iter()
+                        .map(|(k, v)| {
+                            let r = req.contains(&k.as_str());
+                            (!r, format!("{k}{}: {}", if r { "*" } else { "" }, ptype(v)))
+                        })
+                        .collect();
+                    f.sort_by_key(|(o, _)| *o);
+                    let f: Vec<String> = f.into_iter().map(|(_, x)| x).collect();
+                    format!("{{{}}}", f.join(", "))
+                }
+                _ => t.clone(),
+            }
+        }
         Some(Value::String(t)) => t.clone(),
         Some(Value::Array(a)) => a
             .iter()
@@ -2317,6 +2342,21 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn object_items_spell_out_fields() {
+        let p = serde_json::json!({"type":"array","items":{"type":"object",
+            "properties":{"oldText":{"type":"string"},"newText":{"type":"string"},"n":{"type":"integer"}},
+            "required":["oldText","newText"]}});
+        assert_eq!(
+            super::ptype(&p),
+            "{newText*: string, oldText*: string, n: integer}[]"
+        );
+        assert_eq!(
+            super::ptype(&serde_json::json!({"type":"object"})),
+            "object"
+        );
+    }
+
     use super::*;
 
     #[test]
