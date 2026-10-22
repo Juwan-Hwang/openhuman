@@ -1664,7 +1664,17 @@ fn absolutize_paths(m: &mut serde_json::Map<String, Value>, cwd: &str) {
         if absolute {
             continue;
         }
-        let rel = v.strip_prefix("./").unwrap_or(v);
+        let rel = v
+            .strip_prefix("./")
+            .or_else(|| v.strip_prefix(".\\"))
+            .unwrap_or(v);
+        // One separator style on Windows: `E:\\a\\b/c` reads as a typo.
+        let rel = if win {
+            rel.replace('/', "\\")
+        } else {
+            rel.to_string()
+        };
+        let rel = rel.as_str();
         let sep = if win { '\\' } else { '/' };
         let base = cwd.trim_end_matches(['/', '\\']);
         let joined = if rel == "." {
@@ -2565,6 +2575,10 @@ mod tests {
         w.insert("filePath".into(), json!("./a.txt"));
         absolutize_paths(&mut w, "C:\\work");
         assert_eq!(w["filePath"], "C:\\work\\a.txt");
+        let mut q = serde_json::Map::new();
+        q.insert("file_path".into(), json!("aevum/package.json"));
+        absolutize_paths(&mut q, "E:\\aevum");
+        assert_eq!(q["file_path"], "E:\\aevum\\aevum\\package.json");
     }
 
     #[test]
