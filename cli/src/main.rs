@@ -1887,7 +1887,19 @@ fn first_sentence(d: &str, max: usize) -> String {
         .map(str::trim)
         .find(|l| !l.is_empty())
         .unwrap_or("");
-    let cut = line.find(". ").map(|i| &line[..=i]).unwrap_or(line);
+    // A sentence ends at ". ", but not inside "e.g. " / "i.e. ".
+    let mut end = None;
+    let mut from = 0;
+    while let Some(i) = line[from..].find(". ").map(|i| i + from) {
+        let before = line[..=i].to_ascii_lowercase();
+        if before.ends_with("e.g.") || before.ends_with("i.e.") || before.ends_with("etc.") {
+            from = i + 2;
+            continue;
+        }
+        end = Some(i);
+        break;
+    }
+    let cut = end.map(|i| &line[..=i]).unwrap_or(line);
     let mut out: String = cut.chars().take(max).collect();
     if cut.chars().count() > max {
         out.push('…');
@@ -2429,6 +2441,14 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn first_sentence_skips_eg() {
+        assert_eq!(
+            super::first_sentence("Roll dice (e.g. 2d6, d20). Returns rolls.", 90),
+            "Roll dice (e.g. 2d6, d20)."
+        );
+    }
+
     #[test]
     fn object_items_spell_out_fields() {
         let p = serde_json::json!({"type":"array","items":{"type":"object",
