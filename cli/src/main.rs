@@ -614,7 +614,19 @@ impl Ctx {
         if self.st.convs.is_empty() {
             return "none yet".into();
         }
-        self.st.convs.keys().cloned().collect::<Vec<_>>().join(", ")
+        let mut v: Vec<(&u64, &String)> = self.st.convs.iter().map(|(k, i)| (&i.t, k)).collect();
+        v.sort_by(|a, b| b.cmp(a));
+        let more = v.len().saturating_sub(5);
+        let mut out = v
+            .iter()
+            .take(5)
+            .map(|x| x.1.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if more > 0 {
+            out.push_str(&format!(" and {more} older"));
+        }
+        out
     }
 
     /// The caller's tools for a conversation, cached; `fresh` re-reads them.
