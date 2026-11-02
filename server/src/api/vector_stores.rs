@@ -3,7 +3,7 @@
 //! task with the store's files attached and the query as the message, and
 //! the seat answers with ranked passages, checked at reply time.
 //!
-//! Stores and file batches persist through the VectorStoreRepository
+//! Stores and file batches persist through the ObjectRepository
 //! (migration 010), not process statics.
 
 use axum::extract::{Path, Query, State};
@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use crate::api::task::{self, Delivery, Finished};
 use crate::auth::AuthPrincipal;
-use crate::storage::traits::VectorObject;
+use crate::storage::traits::StoredObject;
 use crate::storage::AppState;
 
 fn err(status: StatusCode, msg: &str) -> Response {
@@ -36,16 +36,16 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-async fn get_store(app: &AppState, owner: &str, id: &str) -> Option<VectorObject> {
-    app.vector
-        .get_vector_object(owner, id)
+async fn get_store(app: &AppState, owner: &str, id: &str) -> Option<StoredObject> {
+    app.object
+        .get_object(owner, id)
         .await
         .filter(|s| s.obj["object"] == "vector_store")
 }
 
 /// Recount the store's files and bytes after a change.
 async fn refresh(app: &AppState, owner: &str, id: &str) {
-    let Some(mut s) = app.vector.get_vector_object(owner, id).await else {
+    let Some(mut s) = app.object.get_object(owner, id).await else {
         return;
     };
     let total = s.input.len();
@@ -58,8 +58,16 @@ async fn refresh(app: &AppState, owner: &str, id: &str) {
         json!({"in_progress": 0, "completed": total, "failed": 0, "cancelled": 0, "total": total});
     s.obj["usage_bytes"] = json!(bytes);
     s.obj["last_active_at"] = json!(now());
-    app.vector
-        .put_vector_object(id, owner, s.obj, s.input)
+    app.object
+        .put_object(
+            id,
+            owner,
+            StoredObject {
+                obj: s.obj,
+                input: s.input,
+                history: Vec::new(),
+            },
+        )
         .await;
 }
 
@@ -101,7 +109,7 @@ async fn add_files(
             .ok_or(format!("No file found with id '{fid}'."))?;
         added.push(e);
     }
-    let Some(mut s) = app.vector.get_vector_object(owner, vs).await else {
+    let Some(mut s) = app.object.get_object(owner, vs).await else {
         return Err(format!("No vector store found with id '{vs}'."));
     };
     let ids: Vec<String> = added
@@ -110,8 +118,16 @@ async fn add_files(
         .collect();
     s.input.retain(|f| !ids.iter().any(|i| f["id"] == json!(i)));
     s.input.extend(added.iter().cloned());
-    app.vector
-        .put_vector_object(vs, owner, s.obj, s.input)
+    app.object
+        .put_object(
+            vs,
+            owner,
+            StoredObject {
+                obj: s.obj,
+                input: s.input,
+                history: Vec::new(),
+            },
+        )
         .await;
     refresh(app, owner, vs).await;
     Ok(added)
@@ -169,8 +185,16 @@ pub async fn create(
         "last_active_at": t,
         "metadata": b.get("metadata").cloned().unwrap_or(json!({})),
     });
-    app.vector
-        .put_vector_object(&id, &owner, obj, Vec::new())
+    app.object
+        .put_object(
+            &id,
+            &owner,
+            StoredObject {
+                obj,
+                input: Vec::new(),
+                history: Vec::new(),
+            },
+        )
         .await;
     let files: Vec<(String, Value, Value)> = b
         .get("file_ids")
@@ -189,7 +213,7 @@ pub async fn create(
         })
         .unwrap_or_default();
     if let Err(e) = add_files(&app, &owner, &id, &files).await {
-        app.vector.delete_vector_object(&owner, &id).await;
+        app.object.delete_object(&owner, &id).await;
         return err(StatusCode::NOT_FOUND, &e);
     }
     match get_store(&app, &owner, &id).await {
@@ -204,8 +228,8 @@ pub async fn list(
     Query(q): Query<ListQuery>,
 ) -> Response {
     let items = app
-        .vector
-        .list_vector_objects(&principal.agent.id, "vector_store")
+        .object
+        .list_objects(&principal.agent.id, "vector_store")
         .await
         .into_iter()
         .map(|(_, s)| s.obj)
@@ -240,8 +264,16 @@ pub async fn modify(
         }
     }
     s.obj["last_active_at"] = json!(now());
-    app.vector
-        .put_vector_object(&id, &owner, s.obj, s.input)
+    app.object
+        .put_object(
+            &id,
+            &owner,
+            StoredObject {
+                obj: s.obj,
+                input: s.input,
+                history: Vec::new(),
+            },
+        )
         .await;
     retrieve(State(app), principal, Path(id)).await
 }
@@ -252,10 +284,7 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Response {
     if get_store(&app, &principal.agent.id, &id).await.is_some()
-        && app
-            .vector
-            .delete_vector_object(&principal.agent.id, &id)
-            .await
+        && app.object.delete_object(&principal.agent.id, &id).await
     {
         Json(json!({"id": id, "object": "vector_store.deleted", "deleted": true})).into_response()
     } else {
@@ -344,8 +373,16 @@ pub async fn update_file(
     for f in s.input.iter_mut().filter(|f| f["id"] == json!(fid)) {
         f["attributes"] = attrs.clone();
     }
-    app.vector
-        .put_vector_object(&id, &owner, s.obj, s.input)
+    app.object
+        .put_object(
+            &id,
+            &owner,
+            StoredObject {
+                obj: s.obj,
+                input: s.input,
+                history: Vec::new(),
+            },
+        )
         .await;
     get_file(State(app), principal, Path((id, fid))).await
 }
@@ -363,8 +400,16 @@ pub async fn delete_file(
         return not_found("vector store file", &fid);
     }
     s.input.retain(|f| f["id"] != json!(fid));
-    app.vector
-        .put_vector_object(&id, &owner, s.obj, s.input)
+    app.object
+        .put_object(
+            &id,
+            &owner,
+            StoredObject {
+                obj: s.obj,
+                input: s.input,
+                history: Vec::new(),
+            },
+        )
         .await;
     refresh(&app, &owner, &id).await;
     Json(json!({"id": fid, "object": "vector_store.file.deleted", "deleted": true})).into_response()
@@ -447,14 +492,22 @@ pub async fn create_batch(
         "status": "completed",
         "file_counts": {"in_progress": 0, "completed": n, "failed": 0, "cancelled": 0, "total": n},
     });
-    app.vector
-        .put_vector_object(&bid, &principal.agent.id, obj.clone(), added)
+    app.object
+        .put_object(
+            &bid,
+            &principal.agent.id,
+            StoredObject {
+                obj: obj.clone(),
+                input: added,
+                history: Vec::new(),
+            },
+        )
         .await;
     Json(obj).into_response()
 }
 
-async fn get_batch(app: &AppState, owner: &str, id: &str, bid: &str) -> Option<VectorObject> {
-    app.vector.get_vector_object(owner, bid).await.filter(|s| {
+async fn get_batch(app: &AppState, owner: &str, id: &str, bid: &str) -> Option<StoredObject> {
+    app.object.get_object(owner, bid).await.filter(|s| {
         s.obj["object"] == "vector_store.files_batch" && s.obj["vector_store_id"] == json!(id)
     })
 }

@@ -433,42 +433,44 @@ pub trait FileRepository: Send + Sync {
     async fn find_output_by_bytes(&self, bytes: &[u8]) -> Option<(String, i64)>;
 }
 
-// ── Vector Store Repository ──
+// ── API Object Repository ──
 
-/// A stored vector-search object: the public API object plus its file
-/// entries, kept out of `obj` so they never leak into API responses.
-#[derive(Clone, Debug)]
-pub struct VectorObject {
+/// A stored OpenAI-style API object: the public object (`obj`, returned
+/// in responses verbatim) plus private working state (`input`: thread
+/// messages, run steps, store file entries; `history`: tool round trips
+/// a run continues from). The private parts never leak into responses.
+#[derive(Clone, Debug, Default)]
+pub struct StoredObject {
     pub obj: serde_json::Value,
     pub input: Vec<serde_json::Value>,
+    pub history: Vec<serde_json::Value>,
 }
 
-/// `/v1/vector_stores` persistence (migration 010): `vs_…` stores and
-/// `vsfb_…` file batches. Handlers read-modify-write whole objects.
+/// Persistence for the stateful OpenAI-style APIs — vector stores,
+/// assistants/threads/runs, agents/sessions (migration 010). Kind comes
+/// from `obj["object"]`; handlers read-modify-write whole objects.
 #[async_trait]
-pub trait VectorStoreRepository: Send + Sync {
+pub trait ObjectRepository: Send + Sync {
     /// Create or replace an object, evicting the owner's
     /// least-recently-active objects of the same kind past the per-owner
-    /// cap (`OPENHUMAN_VECTOR_OBJECTS_MAX_PER_OWNER`, default 500).
-    async fn put_vector_object(
-        &self,
-        id: &str,
-        owner: &str,
-        obj: serde_json::Value,
-        input: Vec<serde_json::Value>,
-    );
+    /// cap (`OPENHUMAN_API_OBJECTS_MAX_PER_OWNER`, default 2000).
+    async fn put_object(&self, id: &str, owner: &str, obj: StoredObject);
 
     /// Fetch one object, owner-scoped.
-    async fn get_vector_object(&self, owner: &str, id: &str) -> Option<VectorObject>;
+    async fn get_object(&self, owner: &str, id: &str) -> Option<StoredObject>;
 
-    /// The owner's objects of one kind ("vector_store",
-    /// "vector_store.files_batch"), most recently active first.
-    async fn list_vector_objects(
+    /// Mutate an object in place (read-modify-write under the backend's
+    /// own guard). Returns false when no object has the id.
+    async fn update_object(
         &self,
-        owner: &str,
-        object_kind: &str,
-    ) -> Vec<(String, VectorObject)>;
+        id: &str,
+        f: &(dyn for<'a> Fn(&'a mut StoredObject) + Send + Sync),
+    ) -> bool;
+
+    /// The owner's objects of one kind ("vector_store", "thread.run",
+    /// ...), most recently active first.
+    async fn list_objects(&self, owner: &str, object_kind: &str) -> Vec<(String, StoredObject)>;
 
     /// Delete an object owned by `owner`. Returns whether one was removed.
-    async fn delete_vector_object(&self, owner: &str, id: &str) -> bool;
+    async fn delete_object(&self, owner: &str, id: &str) -> bool;
 }
