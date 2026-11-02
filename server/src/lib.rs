@@ -206,6 +206,38 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/threads/:id/runs/:run_id/steps/:step_id",
             get(api::assistants::get_step),
         )
+        .route("/v1/moderations", post(api::moderations::moderations))
+        .route("/v1/decisions", post(api::decisions::create))
+        .route(
+            "/v1/videos",
+            post(api::videos::create).get(api::videos::list),
+        )
+        .route(
+            "/v1/videos/:id",
+            get(api::videos::retrieve).delete(api::videos::delete),
+        )
+        .route("/v1/videos/:id/content", get(api::videos::content))
+        .route("/v1/videos/edits", post(api::videos::edits))
+        .route("/v1/videos/extensions", post(api::videos::extensions))
+        .route("/v1/videos/characters", post(api::videos::create_character))
+        .route("/v1/videos/characters/:id", get(api::videos::get_character))
+        .route("/v1/videos/:id/remix", post(api::videos::remix))
+        .route(
+            "/v1/webhook_endpoints",
+            post(api::webhooks::create).get(api::webhooks::list),
+        )
+        .route(
+            "/v1/webhook_endpoints/:id",
+            get(api::webhooks::get)
+                .post(api::webhooks::update)
+                .delete(api::webhooks::delete),
+        )
+        .route(
+            "/v1/webhook_endpoints/:id/rotate_secret",
+            post(api::webhooks::rotate_secret),
+        )
+        .route("/v1/webhook_endpoints/:id/test", post(api::webhooks::test))
+        .route("/v1/webhook_event_types", get(api::webhooks::event_types))
         .route("/v1/models", get(list_models))
         .route("/v1/models/:model_id", get(get_model))
         // A base URL configured as `.../v1` by a client that appends `/v1`

@@ -90,6 +90,13 @@ pub async fn require_api_key(
         || path.starts_with("/v1/vector_stores/")
         || path == "/v1/agents"
         || path.starts_with("/v1/agents/")
+        || path == "/v1/videos"
+        || path.starts_with("/v1/videos/")
+        || path == "/v1/webhook_endpoints"
+        || path.starts_with("/v1/webhook_endpoints/")
+        || path == "/v1/webhook_event_types"
+        || path == "/v1/moderations"
+        || path == "/v1/decisions"
         || path == "/v1/assistants"
         || path.starts_with("/v1/assistants/")
         || path == "/v1/threads"
