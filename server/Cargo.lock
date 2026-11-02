@@ -1528,6 +1528,7 @@ dependencies = [
  "hex",
  "jsonwebtoken",
  "libc",
+ "rand 0.8.7",
  "reqwest",
  "serde",
  "serde_json",

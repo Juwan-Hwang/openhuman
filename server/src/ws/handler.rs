@@ -776,6 +776,25 @@ async fn handle_tool_invoke(
                 return;
             }
         }
+        // Target exactly one caller stream: the newest live triple whose
+        // current request declared this tool (§6.6). No target means no
+        // attached caller can execute it — reject like the 1:1 path does
+        // instead of broadcasting a call nobody (or everybody) runs.
+        let Some((target_key, target_session)) =
+            app.rooms.find_tool_target(conversation_id, tool_id).await
+        else {
+            let event = protocol::error_event(
+                conversation_id,
+                "tool_not_found",
+                &format!(
+                    "Tool '{}' is not declared by any live caller stream in this room",
+                    tool_id
+                ),
+            );
+            let json = protocol::event_to_json(&event);
+            app.connections.send_to_human(human_id, &json).await;
+            return;
+        };
         // The call itself is a room message (visible to all members).
         let display = app
             .identity
@@ -815,6 +834,8 @@ async fn handle_tool_invoke(
                     tool_id: tool_id.to_string(),
                     input,
                     text,
+                    target_key,
+                    target_session,
                 },
             )
             .await;

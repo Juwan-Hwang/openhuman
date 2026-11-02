@@ -232,6 +232,10 @@ impl AcceptLimiter {
         let mut map = self.hits.lock().unwrap();
         let now = Instant::now();
         let window = std::time::Duration::from_secs(600);
+        // Bound the table: distinct spoofed keys must not grow it forever.
+        if map.len() > 10_000 {
+            map.retain(|_, ts| ts.iter().any(|t| now.duration_since(*t) < window));
+        }
         let hits = map.entry(key.to_string()).or_default();
         hits.retain(|t| now.duration_since(*t) < window);
         if hits.len() >= 10 {
@@ -247,10 +251,14 @@ fn limiter() -> Arc<AcceptLimiter> {
     ONCE.get_or_init(|| Arc::new(AcceptLimiter::new())).clone()
 }
 
-/// A fresh invite code: 128 bits of randomness, hex-encoded. Only the
-/// SHA-256 digest is stored; the plaintext appears exactly once, here.
+/// A fresh invite code: 128 bits of CSPRNG randomness, hex-encoded (§9:
+/// "至少 128 位随机" — a bare UUIDv4 carries only 122). Only the SHA-256
+/// digest is stored; the plaintext appears exactly once, here.
 fn mint_code() -> String {
-    hex::encode(Uuid::new_v4().into_bytes())
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
 }
 
 pub async fn create_invite(
@@ -315,6 +323,10 @@ pub async fn accept_invite(
     Path(code): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
     let human_id = actor(&principal);
+    // X-Forwarded-For is client-spoofable without a trusted proxy in
+    // front; it stays the IP signal we have, so the account limit is the
+    // real guard. IP is checked FIRST: a rejected IP must not burn one of
+    // the account's 10 attempts.
     let ip = headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
@@ -322,7 +334,7 @@ pub async fn accept_invite(
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
     let lim = limiter();
-    if !lim.allow(&format!("acct:{}", human_id)) || !lim.allow(&format!("ip:{}", ip)) {
+    if !lim.allow(&format!("ip:{}", ip)) || !lim.allow(&format!("acct:{}", human_id)) {
         return Err(err(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
@@ -398,15 +410,23 @@ pub async fn leave_room(
     require_room(&app, &room_id).await?;
     let human_id = actor(&principal);
     let role = app.room.room_member_role(&room_id, &human_id).await;
+    let name = principal.human.display_name.clone();
+    let event = protocol::room_member_left(&room_id, &human_id, &name, "left");
     match role {
         Some(ParticipantRole::Owner) => {
             // Owner leaving tears down the room's caller keys too.
             app.room.room_revoke_keys(&room_id).await;
+            // Members hear the departure BEFORE the room disappears —
+            // broadcasting after the delete raced consumers into 403s.
+            crate::rooms::broadcast_event(&app, &room_id, &event).await;
             // Owners cannot be removed by the member path; delete the room.
             app.conversation.delete_permanent(&room_id).await;
+            // Drop hub state (channel, timers, streams, streaks) with it.
+            app.rooms.remove_room(&room_id).await;
         }
         Some(_) => {
             app.room.room_remove_member(&room_id, &human_id).await;
+            crate::rooms::broadcast_event(&app, &room_id, &event).await;
         }
         None => {
             return Err(err(
@@ -416,9 +436,6 @@ pub async fn leave_room(
             ))
         }
     }
-    let name = principal.human.display_name.clone();
-    let event = protocol::room_member_left(&room_id, &human_id, &name, "left");
-    crate::rooms::broadcast_event(&app, &room_id, &event).await;
     Ok(Json(json!({"left": true})))
 }
 

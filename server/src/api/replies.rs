@@ -52,9 +52,27 @@ pub async fn get_reply(
 /// segments get a room-namespaced poll alias (same handler, same ids).
 pub async fn room_get_reply(
     State(app): State<AppState>,
-    Path((_room_id, invocation_id)): Path<(String, String)>,
+    Path((room_id, invocation_id)): Path<(String, String)>,
     Query(query): Query<PollQuery>,
 ) -> impl IntoResponse {
+    // The room alias must not become a cross-room oracle: an invocation
+    // id minted by another room (or by a 1:1 turn) reads as 404 here.
+    match app.async_reply.get(&invocation_id).await {
+        Some(snapshot) if snapshot.conversation_id == room_id => {}
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": {
+                        "message": "Unknown invocation_id. It may have expired — resubmit the request.",
+                        "type": "invalid_request_error",
+                        "code": "invocation_not_found"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    }
     get_reply_inner(app, invocation_id, query).await
 }
 

@@ -770,6 +770,7 @@ impl crate::storage::traits::RoomRepository for MemoryStore {
         for key in data.api_keys.values_mut() {
             if key.room_id.as_deref() == Some(room_id) {
                 key.scope = crate::model::identity::KeyScope::Revoked;
+                key.room_id = None; // mirror postgres: revoke AND unbind
             }
         }
     }

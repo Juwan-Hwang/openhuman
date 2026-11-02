@@ -121,12 +121,17 @@ pub enum RoomSignal {
     Message(Message),
     /// The turn is over: streams finish with `stop`.
     EndTurn { reason: EndReason },
-    /// The owner invoked a tool: streams finish with `tool_calls`.
+    /// The owner invoked a tool: the TARGET stream finishes with
+    /// `tool_calls`; every other stream ignores the signal (the call
+    /// itself reaches them as a room log line). Without a target every
+    /// attached client ran the same invocation N times (§6.6).
     ToolInvoke {
         invocation_id: String,
         tool_id: String,
         input: Value,
         text: Option<String>,
+        target_key: String,
+        target_session: String,
     },
 }
 
@@ -154,10 +159,21 @@ pub struct RoomHub {
     turns: Arc<Mutex<HashMap<String, TurnState>>>,
     /// Live caller streams per (room, key, session): a new request on the
     /// same triple aborts the previous one (§6.7 resubmit-supersedes).
-    streams: Arc<Mutex<HashMap<TripleKey, (u64, AbortHandle)>>>,
+    streams: Arc<Mutex<HashMap<TripleKey, StreamEntry>>>,
     /// Consecutive empty segments per triple, driving the 20→40→60s
     /// progressive no-content segment length (§6.3).
     empty_streaks: Arc<Mutex<HashMap<TripleKey, u32>>>,
+    /// Last message instant per room, fed by publish() — the deep-idle
+    /// clock reads this instead of hitting the database every 250ms.
+    activity: Arc<Mutex<HashMap<String, chrono::DateTime<Utc>>>>,
+}
+
+/// A live caller stream: abort handle plus the tool names its current
+/// request declared (owner tool.invoke targets and validates against it).
+pub struct StreamEntry {
+    generation: u64,
+    handle: AbortHandle,
+    tools: Vec<String>,
 }
 
 /// Aborts the replaced stream when a newer request on its triple lands,
@@ -175,7 +191,7 @@ impl Drop for StreamGuard {
         let generation = self.generation;
         tokio::spawn(async move {
             let mut streams = hub.streams.lock().await;
-            if streams.get(&key).map(|(g, _)| *g) == Some(generation) {
+            if streams.get(&key).map(|e| e.generation) == Some(generation) {
                 streams.remove(&key);
             }
         });
@@ -198,6 +214,12 @@ impl RoomHub {
 
     /// Publish a signal to every live subscriber (no-op when none).
     pub async fn publish(&self, room_id: &str, signal: RoomSignal) {
+        if matches!(signal, RoomSignal::Message(_)) {
+            self.activity
+                .lock()
+                .await
+                .insert(room_id.to_string(), Utc::now());
+        }
         let channels = self.channels.lock().await;
         if let Some(tx) = channels.get(room_id) {
             // SendError just means no receivers — fine.
@@ -269,8 +291,8 @@ impl RoomHub {
             session_key.to_string(),
         );
         let mut streams = self.streams.lock().await;
-        if let Some((_, prev)) = streams.remove(&key) {
-            prev.abort();
+        if let Some(prev) = streams.remove(&key) {
+            prev.handle.abort();
         }
     }
 
@@ -282,6 +304,7 @@ impl RoomHub {
         key_id: &str,
         session_key: &str,
         handle: AbortHandle,
+        tools: Vec<String>,
     ) -> StreamGuard {
         let key = (
             room_id.to_string(),
@@ -294,7 +317,14 @@ impl RoomHub {
             GEN.fetch_add(1, Ordering::Relaxed)
         };
         let mut streams = self.streams.lock().await;
-        streams.insert(key.clone(), (generation, handle));
+        streams.insert(
+            key.clone(),
+            StreamEntry {
+                generation,
+                handle,
+                tools,
+            },
+        );
         StreamGuard {
             hub: self.clone(),
             key,
@@ -342,19 +372,73 @@ impl RoomHub {
         }
     }
 
+    /// The (key, session) of the live stream that should execute an owner
+    /// tool.invoke: the newest registrant whose current request declared
+    /// the tool. `None` when no live stream knows it — the caller then
+    /// gets `tool_not_found` and nothing enters the log (§6.6).
+    pub async fn find_tool_target(&self, room_id: &str, tool_id: &str) -> Option<(String, String)> {
+        let streams = self.streams.lock().await;
+        streams
+            .iter()
+            .filter(|((r, _, _), e)| r == room_id && e.tools.iter().any(|t| t == tool_id))
+            .max_by_key(|(_, e)| e.generation)
+            .map(|((_, k, sess), _)| (k.clone(), sess.clone()))
+    }
+
+    /// Drop every piece of hub state a room owned (channel, turn timer,
+    /// streams, streaks, activity). Called when the room is deleted so the
+    /// maps don't grow monotonically.
+    pub async fn remove_room(&self, room_id: &str) {
+        self.channels.lock().await.remove(room_id);
+        if let Some(state) = self.turns.lock().await.remove(room_id) {
+            if let Some(timer) = state.timer {
+                timer.abort();
+            }
+        }
+        self.activity.lock().await.remove(room_id);
+        let mut streams = self.streams.lock().await;
+        let doomed: Vec<TripleKey> = streams
+            .keys()
+            .filter(|(r, _, _)| r == room_id)
+            .cloned()
+            .collect();
+        for key in doomed {
+            if let Some(entry) = streams.remove(&key) {
+                entry.handle.abort();
+            }
+        }
+        drop(streams);
+        self.empty_streaks
+            .lock()
+            .await
+            .retain(|(r, _, _), _| r != room_id);
+    }
+
     /// The instant at which the room last saw any message — the deep-idle
-    /// clock the segmenter watches. Derived from the log, so it survives
-    /// hub restarts.
+    /// clock the segmenter watches. Read from the hub's publish-fed cache;
+    /// the log is the fallback after a hub restart.
     pub async fn last_activity(app: &AppState, room_id: &str) -> Option<chrono::DateTime<Utc>> {
+        if let Some(t) = app.rooms.activity.lock().await.get(room_id).copied() {
+            return Some(t);
+        }
         let next = app.room.room_next_seq(room_id).await;
         if next <= 1 {
             return None;
         }
-        app.room
+        let t = app
+            .room
             .room_messages_since(room_id, next - 2, 0, 1)
             .await
             .first()
-            .map(|m| m.created_at)
+            .map(|m| m.created_at);
+        if let Some(t) = t {
+            app.rooms
+                .activity
+                .lock()
+                .await
+                .insert(room_id.to_string(), t);
+        }
+        t
     }
 }
 
@@ -483,13 +567,49 @@ async fn parse_mentions(app: &AppState, room_id: &str, text: &str) -> Vec<String
             }
         }
     }
-    let mut found = Vec::new();
-    for (name, pid) in names {
-        if pid.is_empty() {
-            continue;
+    mention_hits(&names, text)
+}
+
+/// Boundary-aware mention matching: "@Al" must not hit member "Alice".
+/// A mention ends at whitespace, punctuation, or end of text; longer
+/// names win at the same position. Returns the mentioned member ids.
+fn mention_hits(names: &HashMap<String, String>, text: &str) -> Vec<String> {
+    let mut sorted: Vec<&String> = names
+        .iter()
+        .filter(|(_, pid)| !pid.is_empty())
+        .map(|(n, _)| n)
+        .collect();
+    sorted.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    let mut found: Vec<String> = Vec::new();
+    let mut start = 0;
+    while let Some(at) = text[start..].find('@').map(|i| start + i) {
+        let mut matched = false;
+        for name in &sorted {
+            let after = at + 1;
+            if !text[after..].starts_with(name.as_str()) {
+                continue;
+            }
+            let end = after + name.len();
+            let boundary = end >= text.len()
+                || text[end..]
+                    .chars()
+                    .next()
+                    .map(|c| {
+                        !c.is_alphanumeric() && c != '_' && !matches!(c, '\u{4e00}'..='\u{9fff}')
+                    })
+                    .unwrap_or(true);
+            if boundary {
+                let pid = names[*name].clone();
+                if !found.contains(&pid) {
+                    found.push(pid);
+                }
+                start = end;
+                matched = true;
+                break;
+            }
         }
-        if text.contains(&format!("@{}", name)) {
-            found.push(pid);
+        if !matched {
+            start = at + 1;
         }
     }
     found
@@ -502,4 +622,36 @@ pub async fn role_of(
     participant_id: &str,
 ) -> Option<ParticipantRole> {
     app.room.room_member_role(room_id, participant_id).await
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::*;
+
+    fn names(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(n, id)| (n.to_string(), id.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn mentions_match_on_boundaries_only() {
+        let m = names(&[("Al", "h1"), ("Alice", "h2")]);
+        // "@Al" must not hit "Alice"; longer names win at one position.
+        assert_eq!(mention_hits(&m, "@Al 在吗"), vec!["h1".to_string()]);
+        assert_eq!(mention_hits(&m, "@Alice 早"), vec!["h2".to_string()]);
+        // A name that only matches as a prefix of a longer word: no hit.
+        assert!(mention_hits(&m, "找 @Alisha 问").is_empty());
+        assert!(mention_hits(&m, "邮件 a@b.com").is_empty());
+        // Punctuation and end-of-text are valid boundaries.
+        assert_eq!(mention_hits(&m, "@Alice。"), vec!["h2".to_string()]);
+        assert_eq!(mention_hits(&m, "喊@Al"), vec!["h1".to_string()]);
+        // Both members in one message.
+        let both = mention_hits(&m, "@Alice 和 @Al 都来看看");
+        assert!(both.contains(&"h1".to_string()) && both.contains(&"h2".to_string()));
+        // Ambiguous (poisoned) names never match.
+        let poisoned = names(&[("Sam", "")]);
+        assert!(mention_hits(&poisoned, "@Sam 在吗").is_empty());
+    }
 }

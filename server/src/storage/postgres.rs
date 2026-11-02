@@ -1779,10 +1779,14 @@ impl RoomRepository for PostgresStore {
     }
 
     async fn room_revoke_keys(&self, room_id: &str) {
-        let _ = sqlx::query("UPDATE api_keys SET scope = 'revoked' WHERE room_id = $1")
-            .bind(room_id)
-            .execute(&*self.pool)
-            .await;
+        // Revoke AND unbind: the row stays for audit, but the api_keys →
+        // conversations FK is NO ACTION, so a still-bound key would block
+        // deleting the room (silently — delete_permanent swallows it).
+        let _ =
+            sqlx::query("UPDATE api_keys SET scope = 'revoked', room_id = NULL WHERE room_id = $1")
+                .bind(room_id)
+                .execute(&*self.pool)
+                .await;
     }
 
     async fn room_member_count(&self, room_id: &str) -> usize {

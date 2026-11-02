@@ -931,6 +931,31 @@ async fn async_mode_polls_a_room_segment() {
     assert_eq!(log[0]["text"], "异步第一句");
 }
 
+#[tokio::test]
+async fn owner_leave_deletes_the_room_row() {
+    let (_app, addr) = app_with_humans(&[]).await;
+    let room = create_room(&addr, DEMO_KEY, "删房测试").await;
+    let _key = mint_caller_key(&addr, DEMO_KEY, &room, "小明的 Codex").await;
+
+    let res = http()
+        .post(format!("http://{}/v1/rooms/{}/leave", addr, room))
+        .bearer_auth(DEMO_KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    // The conversation row is actually gone — on postgres the
+    // api_keys.room_id FK (NO ACTION) used to block this delete silently.
+    let res = http()
+        .get(format!("http://{}/v1/rooms/{}", addr, room))
+        .bearer_auth(DEMO_KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404, "room must be deleted with the owner");
+}
+
 // ════════════════════════════════════════════════════════════
 // New-member visibility watermark, on both read paths (§4.4)
 // ════════════════════════════════════════════════════════════
@@ -1009,4 +1034,328 @@ async fn new_member_cannot_read_prejoin_history() {
         .unwrap();
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["data"].as_array().unwrap().len(), 2);
+}
+
+// ════════════════════════════════════════════════════════════
+// Review regressions (external review of 433c3f2)
+// ════════════════════════════════════════════════════════════
+
+/// A segment request pinned to one caller session via header.
+async fn segment_conv(
+    addr: &std::net::SocketAddr,
+    room: &str,
+    key: &str,
+    conv: &str,
+    messages: serde_json::Value,
+) -> serde_json::Value {
+    let res = http()
+        .post(format!(
+            "http://{}/rooms/{}/v1/chat/completions",
+            addr, room
+        ))
+        .bearer_auth(key)
+        .header("x-conversation-id", conv)
+        .json(&serde_json::json!({
+            "model": "room", "stream": false,
+            "messages": messages, "tools": [],
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status();
+    let text = res.text().await.unwrap();
+    assert_eq!(status, 200, "segment_conv: {}", text);
+    serde_json::from_str(&text).unwrap()
+}
+
+/// Review #1: member speech landing between two requests of one triple
+/// must stream from the backlog — the old cursor.max(own_speech) jump
+/// silently skipped it.
+#[tokio::test]
+async fn member_speech_between_requests_is_not_skipped() {
+    let (_app, addr) = app_with_humans(&[]).await;
+    let room = create_room(&addr, DEMO_KEY, "游标测试").await;
+    let key = mint_caller_key(&addr, DEMO_KEY, &room, "小明的 Codex").await;
+    let conv = "conv-cursor-gap";
+
+    // First request on the triple: cursor established, closes empty.
+    segment_conv(
+        &addr,
+        &room,
+        &key,
+        conv,
+        serde_json::json!([{"role":"user","content":"第一句"}]),
+    )
+    .await;
+
+    // A member speaks while the caller is away.
+    let mut ws = ws_connect(&addr, DEMO_KEY).await;
+    let _ = ws_next(&mut ws).await; // session.connected
+    ws.send(WsMessage::Text(
+        serde_json::json!({"event_type":"reply.send","conversation_id":room,"text":"成员插话"})
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    // Same triple, new speech: the backlog must carry the member line.
+    let r = segment_conv(
+        &addr,
+        &room,
+        &key,
+        conv,
+        serde_json::json!([
+            {"role":"user","content":"第一句"},
+            {"role":"assistant","content":"嗯"},
+            {"role":"user","content":"第二句"}
+        ]),
+    )
+    .await;
+    let content = r["choices"][0]["message"]["content"].as_str().unwrap_or("");
+    assert!(
+        content.contains("成员插话"),
+        "member speech between requests must stream from the backlog: {}",
+        content
+    );
+}
+
+/// Review #3: a repeated user message AFTER the room answered is a new
+/// turn, not a replay — turn_answered must clear the resend-dedup set.
+#[tokio::test]
+async fn repeated_user_text_after_an_answer_lands_again() {
+    let (_app, addr) = app_with_humans(&[]).await;
+    let room = create_room(&addr, DEMO_KEY, "去重测试2").await;
+    let key = mint_caller_key(&addr, DEMO_KEY, &room, "小明的 Codex").await;
+    let conv = "conv-redo";
+
+    // Turn 1: "继续" lands.
+    segment_conv(
+        &addr,
+        &room,
+        &key,
+        conv,
+        serde_json::json!([{"role":"user","content":"继续"}]),
+    )
+    .await;
+    // The room answers while the caller is away.
+    let mut ws = ws_connect(&addr, DEMO_KEY).await;
+    let _ = ws_next(&mut ws).await;
+    ws.send(WsMessage::Text(
+        serde_json::json!({"event_type":"reply.send","conversation_id":room,"text":"收到，推进了"})
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    // Turn 2: client replays its window — the repeated "继续" is still a
+    // replay (correctly dropped), but this segment delivers the answer,
+    // so the dedup set clears when it closes.
+    let r2 = segment_conv(
+        &addr,
+        &room,
+        &key,
+        conv,
+        serde_json::json!([
+            {"role":"user","content":"继续"},
+            {"role":"assistant","content":"[Alice Chen] 收到，推进了"},
+            {"role":"user","content":"继续"}
+        ]),
+    )
+    .await;
+    assert!(
+        r2["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("收到，推进了"),
+        "turn 2 must deliver the answer"
+    );
+
+    // Turn 3: the user genuinely says "继续" again — it must land.
+    segment_conv(
+        &addr,
+        &room,
+        &key,
+        conv,
+        serde_json::json!([
+            {"role":"user","content":"继续"},
+            {"role":"assistant","content":"[Alice Chen] 收到，推进了"},
+            {"role":"assistant","content":"[小明的 Codex] 继续"},
+            {"role":"user","content":"继续"}
+        ]),
+    )
+    .await;
+
+    let log = room_log(&addr, DEMO_KEY, &room).await;
+    let repeats = log
+        .iter()
+        .filter(|m| m["text"].as_str() == Some("继续"))
+        .count();
+    assert_eq!(repeats, 2, "turn 1 + turn 3 both land: {:?}", log);
+}
+
+/// Review #2: an owner tool.invoke targets ONE stream — the newest whose
+/// request declared the tool — instead of every attached client running
+/// the same invocation.
+#[tokio::test]
+async fn owner_tool_invoke_targets_the_declaring_stream() {
+    let (_app, addr) = app_with_humans(&[]).await;
+    let room = create_room(&addr, DEMO_KEY, "定向调用").await;
+    let key_a = mint_caller_key(&addr, DEMO_KEY, &room, "A 的 Codex").await;
+    let key_b = mint_caller_key(&addr, DEMO_KEY, &room, "B 的 Codex").await;
+
+    // Stream A declares Bash; stream B declares nothing. Both stay open.
+    let req_a = http()
+        .post(format!(
+            "http://{}/rooms/{}/v1/chat/completions",
+            addr, room
+        ))
+        .bearer_auth(&key_a)
+        .header("x-conversation-id", "conv-target-a")
+        .json(&serde_json::json!({
+            "model": "room", "stream": true,
+            "messages": [{"role":"user","content":"A 在线"}],
+            "tools": [{"type":"function","function":{"name":"Bash","description":"b","parameters":{}}}],
+        }))
+        .send()
+        .await
+        .unwrap();
+    let req_b = http()
+        .post(format!(
+            "http://{}/rooms/{}/v1/chat/completions",
+            addr, room
+        ))
+        .bearer_auth(&key_b)
+        .header("x-conversation-id", "conv-target-b")
+        .json(&serde_json::json!({
+            "model": "room", "stream": true,
+            "messages": [{"role":"user","content":"B 在线"}],
+        }))
+        .send()
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // The owner invokes Bash.
+    let mut ws = ws_connect(&addr, DEMO_KEY).await;
+    let _ = ws_next(&mut ws).await;
+    ws.send(WsMessage::Text(
+        serde_json::json!({"event_type":"tool.invoke","conversation_id":room,"invocation_id":"inv_target_1","tool_id":"Bash","input":{"cmd":"ls"}})
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // A closes with tool_calls carrying inv_target_1.
+    let chunks_a = sse_collect(req_a, "inv_target_1", std::time::Duration::from_secs(5)).await;
+    let finished_a = chunks_a
+        .iter()
+        .filter_map(|c| c["choices"][0]["finish_reason"].as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        finished_a.contains(&"tool_calls"),
+        "the declaring stream closes with tool_calls: {:?}",
+        chunks_a.last()
+    );
+
+    // B must NOT close with that invocation: no tool_calls finish for it
+    // within a generous window (its segment stays open).
+    let chunks_b = sse_collect(req_b, "zzz-never", std::time::Duration::from_secs(3)).await;
+    let tool_close_b = chunks_b.iter().any(|c| {
+        c["choices"][0]["finish_reason"].as_str() == Some("tool_calls")
+            && c["choices"][0]["delta"]["tool_calls"]
+                .as_str()
+                .map(|s| s.contains("inv_target_1"))
+                .unwrap_or(false)
+    });
+    assert!(
+        !tool_close_b,
+        "the non-declaring stream must not run the invocation"
+    );
+}
+
+/// Review #2: invoking a tool no live stream declared is rejected, and
+/// nothing enters the room log.
+#[tokio::test]
+async fn owner_tool_invoke_undeclared_tool_is_rejected() {
+    let (_app, addr) = app_with_humans(&[]).await;
+    let room = create_room(&addr, DEMO_KEY, "调用校验").await;
+
+    let mut ws = ws_connect(&addr, DEMO_KEY).await;
+    let _ = ws_next(&mut ws).await; // session.connected
+    ws.send(WsMessage::Text(
+        serde_json::json!({"event_type":"tool.invoke","conversation_id":room,"invocation_id":"inv_nope","tool_id":"NoSuchTool","input":{}})
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+    let ev = ws_next(&mut ws).await;
+    assert_eq!(ev["event_type"], "error");
+    assert_eq!(ev["data"]["code"], "tool_not_found");
+
+    let log = room_log(&addr, DEMO_KEY, &room).await;
+    assert_eq!(log.len(), 0, "a rejected invoke never enters the log");
+}
+
+/// Review #4: a room's poll alias must not read another room's (or a
+/// 1:1's) invocations.
+#[tokio::test]
+async fn room_reply_poll_stays_inside_its_room() {
+    let (_app, addr) = app_with_humans(&[]).await;
+    let room_a = create_room(&addr, DEMO_KEY, "异步A").await;
+    let room_b = create_room(&addr, DEMO_KEY, "异步B").await;
+    let key = mint_caller_key(&addr, DEMO_KEY, &room_a, "小明的 Codex").await;
+    let key_b = mint_caller_key(&addr, DEMO_KEY, &room_b, "小红的 Codex").await;
+
+    let res = http()
+        .post(format!(
+            "http://{}/rooms/{}/v1/chat/completions",
+            addr, room_a
+        ))
+        .bearer_auth(&key)
+        .header("x-openhuman-mode", "async")
+        .json(&serde_json::json!({
+            "model": "room", "messages": [{"role":"user","content":"A 的异步"}],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 202);
+    let ack: serde_json::Value = res.json().await.unwrap();
+    let invocation = ack["id"].as_str().unwrap().to_string();
+
+    // A key bound to room B polling room A's invocation through room B's
+    // own alias: the binding lets it in, so the handler must refuse the
+    // foreign invocation id itself.
+    let res = http()
+        .get(format!(
+            "http://{}/rooms/{}/v1/replies/{}",
+            addr, room_b, invocation
+        ))
+        .bearer_auth(&key_b)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        404,
+        "room B's alias must not serve room A's invocation"
+    );
+
+    // The right room's alias still serves it.
+    let res = http()
+        .get(format!(
+            "http://{}/rooms/{}/v1/replies/{}?wait=10",
+            addr, room_a, invocation
+        ))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "room A's alias serves its own invocation"
+    );
 }

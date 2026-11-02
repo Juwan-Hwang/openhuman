@@ -113,7 +113,7 @@ pub async fn room_chat_completions(
     // Cursor: a new (room, key, session) triple starts at the current tip —
     // no history dump for new windows/subagents (§6.7).
     let next_seq = app.room.room_next_seq(&room_id).await;
-    let mut cursor = match app
+    let cursor = match app
         .room
         .room_cursor_get(&room_id, &key_id, &session_key)
         .await
@@ -201,7 +201,11 @@ pub async fn room_chat_completions(
     speech.append(&mut inbound);
 
     let display = principal.agent.name.clone();
-    let mut last_speech_seq: Option<i64> = None;
+    // NOTE: the cursor is NOT advanced past our own speech here. Member
+    // speech that lands between the cursor read and these appends must
+    // still stream from the backlog; the pump filters our own lines by
+    // their caller_session tag instead (review: the old cursor.max jump
+    // silently dropped that window).
     for mut msg in speech {
         // Tool results are room messages too, 60k middle-truncated (§7.4).
         let is_tool = msg.metadata.get("openai_role").and_then(|v| v.as_str()) == Some("tool");
@@ -219,11 +223,7 @@ pub async fn room_chat_completions(
         msg.metadata
             .insert("caller_session".to_string(), Value::String(tag.clone()));
         let sender = ParticipantRef::agent_named(&principal.agent.id, &display);
-        if let Some(stored) =
-            crate::rooms::append_and_broadcast(&app, &room_id, sender, &text, msg.metadata).await
-        {
-            last_speech_seq = stored.room_seq;
-        }
+        crate::rooms::append_and_broadcast(&app, &room_id, sender, &text, msg.metadata).await;
     }
     // Caller speech counts as room speech for idle purposes only via members;
     // but it must reset a running segment's quiet clock — handled because
@@ -259,10 +259,6 @@ pub async fn room_chat_completions(
     .min(sse_heartbeat_secs());
     let tools = declared_tool_names(&req);
 
-    if let Some(seq) = last_speech_seq {
-        cursor = cursor.max(seq);
-    }
-
     // ── The segment pump: backlog, then live follow ──
     // Supersede: a new request on the same triple replaces the old stream
     // (§6.7) — aborting the old pump closes its channel, ending that SSE.
@@ -277,6 +273,7 @@ pub async fn room_chat_completions(
         let key_id = key_id.clone();
         let session_key = session_key.clone();
         let agent_id = principal.agent.id.clone();
+        let tools = tools.clone();
         tokio::spawn(async move {
             pump(PumpCtx {
                 app,
@@ -296,7 +293,13 @@ pub async fn room_chat_completions(
     };
     let guard = app
         .rooms
-        .stream_register(&room_id, &key_id, &session_key, pump_task.abort_handle())
+        .stream_register(
+            &room_id,
+            &key_id,
+            &session_key,
+            pump_task.abort_handle(),
+            tools,
+        )
         .await;
 
     if stream_flag {
@@ -486,6 +489,8 @@ async fn pump(ctx: PumpCtx) {
 
     // Subscribe BEFORE draining the backlog — no gap between the two.
     let mut sub = app.rooms.subscribe(&room_id).await;
+    // Lines this caller actually saw: the answer signal for resend dedup.
+    let mut delivered = false;
 
     // Backlog first, in room_seq order.
     let backlog = app
@@ -505,6 +510,7 @@ async fn pump(ctx: PumpCtx) {
         if tx.send(PumpEvent::Text(line)).is_err() {
             return;
         }
+        delivered = true;
     }
     advance_cursor(&app, &room_id, &key_id, &session_key, cursor).await;
 
@@ -512,6 +518,13 @@ async fn pump(ctx: PumpCtx) {
     let seg_max = crate::rooms::segment_max_secs(&meta);
     let deep_idle = Duration::from_secs(crate::rooms::deep_idle_mins(&meta) * 60);
 
+    // Resend dedup (§7.2): keyed (room, session tag) at ingest, cleared
+    // here when the room actually answered this caller — a repeated "继续"
+    // after an answer is a new turn, not a replay.
+    let dedup_key = format!("{}\u{1f}{}", room_id, session_tag);
+    // `had_content` counts any backlog row (including our own filtered
+    // speech) and only drives segment timing; `delivered` (above) counts
+    // lines this caller actually saw and is the answer signal for dedup.
     let mut had_content = !backlog.is_empty();
     let mut last_content = std::time::Instant::now();
     let empty_streak = app
@@ -563,6 +576,7 @@ async fn pump(ctx: PumpCtx) {
                     if tx.send(PumpEvent::Text(line)).is_err() {
                         return;
                     }
+                    delivered = true;
                 }
                 advance_cursor(&app, &room_id, &key_id, &session_key, cursor).await;
                 had_content = true;
@@ -573,6 +587,9 @@ async fn pump(ctx: PumpCtx) {
                 app.rooms
                     .segment_record_outcome(&room_id, &key_id, &session_key, had_content)
                     .await;
+                if delivered {
+                    crate::session::turn_answered(&dedup_key);
+                }
                 let _ = tx.send(PumpEvent::CloseStop);
                 return;
             }
@@ -581,13 +598,21 @@ async fn pump(ctx: PumpCtx) {
                 tool_id,
                 input,
                 text,
+                target_key,
+                target_session,
             })) => {
+                // Not ours: another caller's stream executes this one. The
+                // call text already reached us as a room log line.
+                if target_key != key_id || target_session != session_key {
+                    continue;
+                }
                 if let Some(t) = text.filter(|t| !t.trim().is_empty()) {
                     let _ = tx.send(PumpEvent::Text(t));
                 }
                 app.rooms
                     .segment_record_outcome(&room_id, &key_id, &session_key, had_content)
                     .await;
+                crate::session::turn_answered(&dedup_key);
                 let _ = tx.send(PumpEvent::CloseToolCall {
                     id: invocation_id,
                     name: tool_id,
@@ -605,10 +630,17 @@ async fn pump(ctx: PumpCtx) {
                     if let Some(seq) = m.room_seq {
                         cursor = cursor.max(seq);
                     }
+                    if m.sender.participant_id == agent_id
+                        && m.metadata.get("caller_session").and_then(|v| v.as_str())
+                            == Some(&session_tag)
+                    {
+                        continue; // our own speech, same as the backlog pass
+                    }
                     let line = format_room_line(m);
                     if tx.send(PumpEvent::Text(line)).is_err() {
                         return;
                     }
+                    delivered = true;
                 }
                 advance_cursor(&app, &room_id, &key_id, &session_key, cursor).await;
                 had_content = true;
@@ -638,6 +670,9 @@ async fn pump(ctx: PumpCtx) {
                     app.rooms
                         .segment_record_outcome(&room_id, &key_id, &session_key, had_content)
                         .await;
+                    if delivered {
+                        crate::session::turn_answered(&dedup_key);
+                    }
                     let (name, id) = pick_keepalive_tool(&tools);
                     let _ = tx.send(PumpEvent::CloseToolCall {
                         id,
