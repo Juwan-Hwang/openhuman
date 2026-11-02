@@ -212,6 +212,22 @@ pub fn build_router(state: AppState) -> Router {
                 post(api::room_ingress::room_chat_completions),
             )
             .route(
+                "/rooms/:room_id/v1/messages",
+                post(api::adapters::room_messages),
+            )
+            .route(
+                "/rooms/:room_id/v1/v1/messages",
+                post(api::adapters::room_messages),
+            )
+            .route(
+                "/rooms/:room_id/v1/responses",
+                post(api::adapters::room_responses),
+            )
+            .route(
+                "/rooms/:room_id/v1/v1/responses",
+                post(api::adapters::room_responses),
+            )
+            .route(
                 "/rooms/:room_id/v1/models",
                 get(api::room_ingress::room_list_models),
             )

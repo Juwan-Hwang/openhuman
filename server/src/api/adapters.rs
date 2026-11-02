@@ -13,7 +13,7 @@
 use axum::body::Bytes;
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -23,6 +23,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::api::openai::chat_completions;
+use crate::api::room_ingress::room_chat_completions;
 use crate::openai_compat::ChatCompletionRequest;
 use crate::state::AuthPrincipal;
 use crate::AppState;
@@ -265,6 +266,27 @@ pub async fn messages(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    messages_inner(app, None, principal, headers, body).await
+}
+
+/// `POST /rooms/:room_id/v1/messages` — Claude Code pointed at a room.
+pub async fn room_messages(
+    State(app): State<AppState>,
+    Path(room_id): Path<String>,
+    principal: AuthPrincipal,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    messages_inner(app, Some(room_id), principal, headers, body).await
+}
+
+async fn messages_inner(
+    app: AppState,
+    room_id: Option<String>,
+    principal: AuthPrincipal,
+    headers: HeaderMap,
+    body: Value,
+) -> Response {
     use anyllm_translate::anthropic::MessageCreateRequest;
 
     let mut body = body;
@@ -315,7 +337,12 @@ pub async fn messages(
         .unwrap_or_else(crate::session::default_tokenizer);
     let input_tokens = crate::session::count_request_tokens(&tokenizer, &chat);
 
-    let resp = chat_completions(State(app), principal, headers, Json(chat)).await;
+    let resp = match room_id {
+        Some(rid) => {
+            room_chat_completions(State(app), Path(rid), principal, headers, Json(chat)).await
+        }
+        None => chat_completions(State(app), principal, headers, Json(chat)).await,
+    };
     let status = resp.status();
     if !status.is_success() {
         let msg = body_json(resp)
@@ -1058,6 +1085,27 @@ pub async fn responses(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    responses_inner(app, None, principal, headers, body).await
+}
+
+/// `POST /rooms/:room_id/v1/responses` — Codex pointed at a room.
+pub async fn room_responses(
+    State(app): State<AppState>,
+    Path(room_id): Path<String>,
+    principal: AuthPrincipal,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    responses_inner(app, Some(room_id), principal, headers, body).await
+}
+
+async fn responses_inner(
+    app: AppState,
+    room_id: Option<String>,
+    principal: AuthPrincipal,
+    headers: HeaderMap,
+    body: Value,
+) -> Response {
     let model = body
         .get("model")
         .and_then(|v| v.as_str())
@@ -1079,7 +1127,12 @@ pub async fn responses(
         Err(r) => return r,
     };
 
-    let resp = chat_completions(State(app), principal, headers, Json(chat)).await;
+    let resp = match room_id {
+        Some(rid) => {
+            room_chat_completions(State(app), Path(rid), principal, headers, Json(chat)).await
+        }
+        None => chat_completions(State(app), principal, headers, Json(chat)).await,
+    };
     let status = resp.status();
     if !status.is_success() {
         let msg = body_json(resp)

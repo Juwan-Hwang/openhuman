@@ -751,3 +751,86 @@ async fn owner_leave_revokes_room_keys() {
         .unwrap();
     assert_eq!(res.status(), 403, "revoked room key is forbidden");
 }
+
+// ════════════════════════════════════════════════════════════
+// Protocol lines: Anthropic Messages + OpenAI Responses (§5.2)
+// ════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn anthropic_room_line_segments_like_chat() {
+    let (_app, addr) = app_with_humans(&[]).await;
+    let room = create_room(&addr, DEMO_KEY, "Claude线测试").await;
+    let key = mint_caller_key(&addr, DEMO_KEY, &room, "小明的 Claude Code").await;
+
+    // Unbound key: 403 on the Anthropic room line too.
+    let res = http()
+        .post(format!("http://{}/rooms/{}/v1/messages", addr, room))
+        .bearer_auth(DEMO_KEY)
+        .json(&serde_json::json!({"model":"claude","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+
+    // Room key: a quiet segment closes as an Anthropic tool_use turn.
+    let res = http()
+        .post(format!("http://{}/rooms/{}/v1/messages", addr, room))
+        .bearer_auth(&key)
+        .json(&serde_json::json!({
+            "model": "claude", "max_tokens": 64,
+            "tools": [{"name":"get_goal","description":"g","input_schema":{"type":"object","properties":{}}}],
+            "messages": [{"role":"user","content":"来自Claude"}],
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status();
+    let text = res.text().await.unwrap();
+    assert_eq!(status, 200, "anthropic room line: {}", text);
+    let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(body["stop_reason"], "tool_use");
+    let block = &body["content"][0];
+    assert_eq!(block["type"], "tool_use");
+    assert_eq!(block["name"], "get_goal");
+    assert!(block["id"].as_str().unwrap().starts_with("ohka_"));
+
+    let log = room_log(&addr, DEMO_KEY, &room).await;
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0]["text"], "来自Claude");
+    assert_eq!(log[0]["sender_name"], "小明的 Claude Code");
+}
+
+#[tokio::test]
+async fn responses_room_line_segments_like_chat() {
+    let (_app, addr) = app_with_humans(&[]).await;
+    let room = create_room(&addr, DEMO_KEY, "Codex线测试").await;
+    let key = mint_caller_key(&addr, DEMO_KEY, &room, "小明的 Codex").await;
+
+    let res = http()
+        .post(format!("http://{}/rooms/{}/v1/responses", addr, room))
+        .bearer_auth(&key)
+        .json(&serde_json::json!({
+            "model": "gpt", "stream": false,
+            "tools": [{"type":"function","name":"list_bash","description":"b","parameters":{"type":"object","properties":{}}}],
+            "input": "来自Codex",
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status();
+    let text = res.text().await.unwrap();
+    assert_eq!(status, 200, "responses room line: {}", text);
+    let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let call = body["output"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["type"] == "function_call")
+        .expect("a function_call item closes the segment");
+    assert_eq!(call["name"], "list_bash");
+    assert_eq!(call["arguments"], "{}");
+
+    let log = room_log(&addr, DEMO_KEY, &room).await;
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0]["text"], "来自Codex");
+}
