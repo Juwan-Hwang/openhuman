@@ -102,15 +102,24 @@ fn page(mut items: Vec<Value>, q: &ListQuery) -> Value {
     json!({"object": "list", "data": items, "first_id": id_of(items.first()), "last_id": id_of(items.last()), "has_more": has_more})
 }
 
-fn keep_file(owner: &str, f: &(String, String, String, Vec<u8>), purpose: &str) -> String {
-    crate::api::files::put(crate::api::files::StoredFile {
-        owner: owner.to_string(),
-        filename: f.1.clone(),
-        mime: f.2.clone(),
-        purpose: purpose.to_string(),
-        bytes: f.3.clone(),
-        created_at: now(),
-    })
+async fn keep_file(
+    app: &crate::storage::AppState,
+    owner: &str,
+    f: &(String, String, String, Vec<u8>),
+    purpose: &str,
+) -> String {
+    crate::api::files::put(
+        app,
+        crate::api::files::StoredFile {
+            owner: owner.to_string(),
+            filename: f.1.clone(),
+            mime: f.2.clone(),
+            purpose: purpose.to_string(),
+            bytes: f.3.clone(),
+            created_at: now(),
+        },
+    )
+    .await
 }
 
 fn s(m: &Map<String, Value>, k: &str) -> Option<String> {
@@ -123,6 +132,7 @@ fn s(m: &Map<String, Value>, k: &str) -> Option<String> {
 // ── voices ──
 
 pub async fn create_voice(
+    axum::extract::State(app): axum::extract::State<crate::storage::AppState>,
     principal: AuthPrincipal,
     headers: HeaderMap,
     body: axum::body::Bytes,
@@ -158,7 +168,7 @@ pub async fn create_voice(
             {
                 return stored::not_found("voice consent", &cid);
             }
-            input.push(json!({"file_id": keep_file(&owner, smp, "voice_sample")}));
+            input.push(json!({"file_id": keep_file(&app, &owner, smp, "voice_sample").await}));
         }
         "prompt" if s(&f, "prompt").is_none() => {
             return err(StatusCode::BAD_REQUEST, "prompt is required")
@@ -214,13 +224,16 @@ pub async fn delete_voice(principal: AuthPrincipal, Path(id): Path<String>) -> R
 
 /// A custom voice for a speech request: its name, how it should sound, and
 /// its sample as a data URL.
-pub fn voice_for_speech(owner: &str, id: &str) -> Option<(String, Option<String>, Option<String>)> {
+pub async fn voice_for_speech(
+    app: &crate::storage::AppState,
+    owner: &str,
+    id: &str,
+) -> Option<(String, Option<String>, Option<String>)> {
     let v = stored::get(owner, id).filter(|s| s.obj["object"] == "audio.voice")?;
-    let sample = v
-        .input
-        .first()
-        .and_then(|x| x["file_id"].as_str())
-        .and_then(crate::api::files::data_url);
+    let sample = match v.input.first().and_then(|x| x["file_id"].as_str()) {
+        Some(fid) => crate::api::files::data_url(app, fid).await,
+        None => None,
+    };
     Some((
         v.obj["name"].as_str().unwrap_or(id).to_string(),
         v.obj["prompt"].as_str().map(String::from),
@@ -231,6 +244,7 @@ pub fn voice_for_speech(owner: &str, id: &str) -> Option<(String, Option<String>
 // ── voice consents ──
 
 pub async fn create_consent(
+    axum::extract::State(app): axum::extract::State<crate::storage::AppState>,
     principal: AuthPrincipal,
     headers: HeaderMap,
     body: axum::body::Bytes,
@@ -246,7 +260,7 @@ pub async fn create_consent(
         return err(StatusCode::BAD_REQUEST, "recording is required");
     };
     let owner = principal.agent.id.clone();
-    let fid = keep_file(&owner, rec, "voice_consent");
+    let fid = keep_file(&app, &owner, rec, "voice_consent").await;
     let id = format!("cons_{}", uuid::Uuid::now_v7().simple());
     let obj = json!({"id": id, "object": "audio.voice_consent", "created_at": now(), "language": language, "name": name});
     stored::put(
@@ -337,7 +351,8 @@ fn skill_meta(files: &[(String, String, String, Vec<u8>)]) -> (Option<String>, O
     (name, desc)
 }
 
-fn new_version(
+async fn new_version(
+    app: &crate::storage::AppState,
     owner: &str,
     skill_id: &str,
     n: u64,
@@ -345,10 +360,10 @@ fn new_version(
     name: &str,
     desc: &str,
 ) -> Value {
-    let ids: Vec<Value> = files
-        .iter()
-        .map(|f| json!(keep_file(owner, f, "skills")))
-        .collect();
+    let mut ids = Vec::new();
+    for f in files {
+        ids.push(json!(keep_file(app, owner, f, "skills").await));
+    }
     let vid = format!("skillver_{}", uuid::Uuid::now_v7().simple());
     json!({"id": vid, "object": "skill.version", "created_at": now(), "description": desc, "name": name,
            "skill_id": skill_id, "version": n.to_string(), "file_ids": ids})
@@ -363,6 +378,7 @@ fn public_version(v: &Value) -> Value {
 }
 
 pub async fn create_skill(
+    axum::extract::State(app): axum::extract::State<crate::storage::AppState>,
     principal: AuthPrincipal,
     headers: HeaderMap,
     body: axum::body::Bytes,
@@ -383,7 +399,7 @@ pub async fn create_skill(
         .unwrap_or_else(|| "skill".into());
     let desc = s(&f, "description").or(mdesc).unwrap_or_default();
     let id = format!("skill_{}", uuid::Uuid::now_v7().simple());
-    let v = new_version(&owner, &id, 1, &files, &name, &desc);
+    let v = new_version(&app, &owner, &id, 1, &files, &name, &desc).await;
     let obj = json!({"id": id, "object": "skill", "created_at": now(), "default_version": "1", "latest_version": "1", "name": name, "description": desc});
     stored::put(
         &id,
@@ -417,6 +433,7 @@ pub async fn retrieve_skill(principal: AuthPrincipal, Path(id): Path<String>) ->
 }
 
 pub async fn update_skill(
+    axum::extract::State(_app): axum::extract::State<crate::storage::AppState>,
     principal: AuthPrincipal,
     Path(id): Path<String>,
     Json(b): Json<Value>,
@@ -447,14 +464,19 @@ pub async fn delete_skill(principal: AuthPrincipal, Path(id): Path<String>) -> R
 
 /// The files of a version: one file as itself, several as a list of names
 /// and contents (no zip writer here; JSON keeps every file).
-fn content_of(v: &Value) -> Response {
-    let files: Vec<crate::api::files::StoredFile> = v["file_ids"]
+async fn content_of(app: &crate::storage::AppState, v: &Value) -> Response {
+    let mut files: Vec<crate::api::files::StoredFile> = Vec::new();
+    for id in v["file_ids"]
         .as_array()
         .cloned()
         .unwrap_or_default()
         .iter()
-        .filter_map(|f| f.as_str().and_then(crate::api::files::get))
-        .collect();
+        .filter_map(|f| f.as_str())
+    {
+        if let Some(f) = crate::api::files::get(app, id).await {
+            files.push(f);
+        }
+    }
     if files.len() == 1 {
         let f = &files[0];
         return ([(header::CONTENT_TYPE, f.mime.clone())], f.bytes.clone()).into_response();
@@ -462,18 +484,23 @@ fn content_of(v: &Value) -> Response {
     Json(json!({"files": files.iter().map(|f| json!({"name": f.filename, "content": String::from_utf8_lossy(&f.bytes)})).collect::<Vec<_>>()})).into_response()
 }
 
-pub async fn skill_content(principal: AuthPrincipal, Path(id): Path<String>) -> Response {
+pub async fn skill_content(
+    axum::extract::State(app): axum::extract::State<crate::storage::AppState>,
+    principal: AuthPrincipal,
+    Path(id): Path<String>,
+) -> Response {
     let Some(sk) = get_skill(&principal.agent.id, &id) else {
         return stored::not_found("skill", &id);
     };
     let dv = sk.obj["default_version"].clone();
     match sk.input.iter().find(|v| v["version"] == dv) {
-        Some(v) => content_of(v),
+        Some(v) => content_of(&app, v).await,
         None => stored::not_found("skill version", dv.as_str().unwrap_or("")),
     }
 }
 
 pub async fn create_version(
+    axum::extract::State(app): axum::extract::State<crate::storage::AppState>,
     principal: AuthPrincipal,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -495,7 +522,7 @@ pub async fn create_version(
     let (mname, mdesc) = skill_meta(&files);
     let name = mname.unwrap_or_else(|| sk.obj["name"].as_str().unwrap_or("").to_string());
     let desc = mdesc.unwrap_or_else(|| sk.obj["description"].as_str().unwrap_or("").to_string());
-    let v = new_version(&owner, &id, n, &files, &name, &desc);
+    let v = new_version(&app, &owner, &id, n, &files, &name, &desc).await;
     let make_default = f
         .get("default")
         .and_then(|d| d.as_str().map(|x| x == "true").or(d.as_bool()))
@@ -559,13 +586,14 @@ pub async fn delete_version(
 }
 
 pub async fn version_content(
+    axum::extract::State(app): axum::extract::State<crate::storage::AppState>,
     principal: AuthPrincipal,
     Path((id, ver)): Path<(String, String)>,
 ) -> Response {
     match get_skill(&principal.agent.id, &id)
         .and_then(|s| s.input.into_iter().find(|v| v["version"] == json!(ver)))
     {
-        Some(v) => content_of(&v),
+        Some(v) => content_of(&app, &v).await,
         None => stored::not_found("skill version", &ver),
     }
 }

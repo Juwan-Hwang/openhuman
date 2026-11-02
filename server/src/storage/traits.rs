@@ -415,8 +415,9 @@ pub trait TaskRepository: Send + Sync {
 /// oldest files first.
 #[async_trait]
 pub trait FileRepository: Send + Sync {
-    /// Store a file and return its id (`file_...`), minted here.
-    async fn put_file(&self, file: crate::api::files::StoredFile) -> String;
+    /// Store a file under a caller-minted id (`file-<32 hex>`; ids are
+    /// unguessable, and deterministic ids dedupe content).
+    async fn put_file(&self, id: &str, file: crate::api::files::StoredFile);
 
     /// Fetch a file by id (any owner — authorization is the caller's).
     async fn get_file(&self, id: &str) -> Option<crate::api::files::StoredFile>;
@@ -424,8 +425,8 @@ pub trait FileRepository: Send + Sync {
     /// Delete a file owned by `owner`. Returns whether one was removed.
     async fn delete_file(&self, owner: &str, id: &str) -> bool;
 
-    /// The owner's files, newest first (metadata only is fine to clone).
-    async fn list_files(&self, owner: &str) -> Vec<crate::api::files::StoredFile>;
+    /// The owner's files, newest first, with their ids.
+    async fn list_files(&self, owner: &str) -> Vec<(String, crate::api::files::StoredFile)>;
 
     /// Prove the seat produced these bytes: the id and creation time of
     /// the purpose=output file holding exactly them.

@@ -922,14 +922,20 @@ pub async fn reply(
                         .unwrap_or(crate::openai_compat::guess_mime(&filename))
                         .to_string()
                 });
-            ids.push(crate::api::files::put(crate::api::files::StoredFile {
-                owner: principal.agent.id.clone(),
-                filename,
-                mime,
-                purpose: crate::api::files::OUTPUT_PURPOSE.to_string(),
-                bytes,
-                created_at: chrono::Utc::now().timestamp(),
-            }));
+            ids.push(
+                crate::api::files::put(
+                    &app,
+                    crate::api::files::StoredFile {
+                        owner: principal.agent.id.clone(),
+                        filename,
+                        mime,
+                        purpose: crate::api::files::OUTPUT_PURPOSE.to_string(),
+                        bytes,
+                        created_at: chrono::Utc::now().timestamp(),
+                    },
+                )
+                .await,
+            );
         }
         let mut text = b.text.trim().to_string();
         for id in ids {

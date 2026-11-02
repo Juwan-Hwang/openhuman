@@ -103,7 +103,13 @@ fn tokens(text: &str) -> u64 {
 }
 
 /// What an image endpoint makes of the seat's answer.
-fn finish_images(s: Shape, prompt_tokens: u64, owner: String, hdrs: HeaderMap) -> task::Finish {
+fn finish_images(
+    app: crate::storage::AppState,
+    s: Shape,
+    prompt_tokens: u64,
+    owner: String,
+    hdrs: HeaderMap,
+) -> task::Finish {
     Box::new(move |answer| {
         let fail = |status: StatusCode, code: &str, msg: &str| {
             let err = json!({"error": {"message": msg, "type": "invalid_request_error", "code": code, "param": null}});
@@ -150,7 +156,8 @@ fn finish_images(s: Shape, prompt_tokens: u64, owner: String, hdrs: HeaderMap) -
                         real_format = mime.strip_prefix("image/").map(String::from);
                     }
                     if s.url && !s.stream {
-                        item["url"] = json!(task::publish(&hdrs, &owner, mime, bytes.clone()));
+                        item["url"] =
+                            json!(task::publish(&app, &hdrs, &owner, mime, bytes.clone()));
                     } else {
                         item["b64_json"] = json!(crate::openai_compat::b64_encode(bytes));
                     }
@@ -233,6 +240,7 @@ pub async fn generations(
         Delivery::Json
     };
     let finish = finish_images(
+        app.clone(),
         s,
         tokens(&prompt),
         principal.agent.id.clone(),
@@ -260,6 +268,7 @@ pub async fn generations(
 /// `mask: {...}`). Returns the fields as JSON and the pictures as data
 /// URLs, the mask last.
 async fn read_with_images(
+    app: &crate::storage::AppState,
     headers: &HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<(Value, Vec<String>, bool), String> {
@@ -321,7 +330,7 @@ async fn read_with_images(
         }
     } else {
         let v: Value = serde_json::from_slice(&body).map_err(|e| format!("invalid JSON: {e}"))?;
-        let ref_url = |r: &Value| -> Option<String> {
+        async fn ref_url(app: &crate::storage::AppState, r: &Value) -> Option<String> {
             if let Some(u) = r.as_str() {
                 return Some(u.to_string());
             }
@@ -331,18 +340,28 @@ async fn read_with_images(
             {
                 return Some(u.to_string());
             }
-            r.get("file_id")
-                .and_then(|f| f.as_str())
-                .and_then(crate::api::files::data_url)
-        };
+            match r.get("file_id").and_then(|f| f.as_str()) {
+                Some(id) => crate::api::files::data_url(app, id).await,
+                None => None,
+            }
+        }
         for k in ["images", "image"] {
             match v.get(k) {
-                Some(Value::Array(a)) => images.extend(a.iter().filter_map(ref_url)),
-                Some(r) => images.extend(ref_url(r)),
+                Some(Value::Array(a)) => {
+                    for r in a {
+                        if let Some(u) = ref_url(app, r).await {
+                            images.push(u);
+                        }
+                    }
+                }
+                Some(r) => images.extend(ref_url(app, r).await),
                 None => {}
             }
         }
-        mask = v.get("mask").and_then(ref_url);
+        mask = match v.get("mask") {
+            Some(m) => ref_url(app, m).await,
+            None => None,
+        };
         if let Value::Object(o) = v {
             fields = o;
         }
@@ -361,7 +380,7 @@ pub async fn edits(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let (b, images, has_mask) = match read_with_images(&headers, body).await {
+    let (b, images, has_mask) = match read_with_images(&app, &headers, body).await {
         Ok(r) => r,
         Err(e) => return task::invalid(&e),
     };
@@ -388,6 +407,7 @@ pub async fn edits(
         Delivery::Json
     };
     let finish = finish_images(
+        app.clone(),
         s,
         tokens(&prompt),
         principal.agent.id.clone(),
@@ -416,7 +436,7 @@ pub async fn variations(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let (b, images, _) = match read_with_images(&headers, body).await {
+    let (b, images, _) = match read_with_images(&app, &headers, body).await {
         Ok(r) => r,
         Err(e) => return task::invalid(&e),
     };
@@ -431,7 +451,13 @@ pub async fn variations(
     s.stream = false;
     let expected = contract(&s, "make a variation of the attached image");
     let model = str_field(&b, "model");
-    let finish = finish_images(s, 0, principal.agent.id.clone(), headers.clone());
+    let finish = finish_images(
+        app.clone(),
+        s,
+        0,
+        principal.agent.id.clone(),
+        headers.clone(),
+    );
     task::run(
         app,
         principal,

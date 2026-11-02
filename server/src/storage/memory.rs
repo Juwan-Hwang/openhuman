@@ -927,9 +927,9 @@ fn files_max_bytes_total() -> usize {
 
 #[async_trait]
 impl crate::storage::traits::FileRepository for MemoryStore {
-    async fn put_file(&self, file: crate::api::files::StoredFile) -> String {
+    async fn put_file(&self, id: &str, file: crate::api::files::StoredFile) {
         let mut d = self.data.lock().await;
-        let id = format!("file_{}", uuid::Uuid::now_v7().simple());
+        let id = id.to_string();
         let owner = file.owner.clone();
         d.files.insert(id.clone(), file);
         // Byte quotas: evict the oldest files first, whichever purpose.
@@ -962,7 +962,6 @@ impl crate::storage::traits::FileRepository for MemoryStore {
                 d.files.remove(&fid);
             }
         }
-        id
     }
 
     async fn get_file(&self, id: &str) -> Option<crate::api::files::StoredFile> {
@@ -979,15 +978,15 @@ impl crate::storage::traits::FileRepository for MemoryStore {
         }
     }
 
-    async fn list_files(&self, owner: &str) -> Vec<crate::api::files::StoredFile> {
+    async fn list_files(&self, owner: &str) -> Vec<(String, crate::api::files::StoredFile)> {
         let d = self.data.lock().await;
         let mut v: Vec<_> = d
             .files
-            .values()
-            .filter(|f| f.owner == owner)
-            .cloned()
+            .iter()
+            .filter(|(_, f)| f.owner == owner)
+            .map(|(id, f)| (id.clone(), f.clone()))
             .collect();
-        v.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        v.sort_by_key(|(_, f)| std::cmp::Reverse(f.created_at));
         v
     }
 

@@ -157,45 +157,48 @@ fn fold_tool_references(body: &mut Value) {
 /// level and drops them inside tool results. Carry them as image blocks
 /// whose media type is the document's own plus its name, so they reach the
 /// seat as files on the same path pictures take.
-fn fold_documents(body: &mut Value) {
-    fn fold(parts: &mut [Value]) {
-        for p in parts.iter_mut() {
-            match p.get("type").and_then(|t| t.as_str()) {
-                Some("image")
-                    if p.pointer("/source/type").and_then(|t| t.as_str()) == Some("file") =>
-                {
-                    if let Some(img) = document_as_image(p) {
-                        *p = img;
+async fn fold_documents(app: &AppState, body: &mut Value) {
+    fn fold<'a>(app: &'a AppState, parts: &'a mut [Value]) -> futures::future::BoxFuture<'a, ()> {
+        Box::pin(async move {
+            for p in parts.iter_mut() {
+                match p.get("type").and_then(|t| t.as_str()) {
+                    Some("image")
+                        if p.pointer("/source/type").and_then(|t| t.as_str()) == Some("file") =>
+                    {
+                        if let Some(img) = document_as_image(app, p).await {
+                            *p = img;
+                        }
                     }
-                }
-                Some("document") => {
-                    if let Some(img) = document_as_image(p) {
-                        *p = img;
-                    } else if p.pointer("/source/type").and_then(|t| t.as_str()) == Some("file") {
-                        let n = p.get("title").and_then(|t| t.as_str()).unwrap_or("");
-                        *p = json!({"type": "text", "text": crate::openai_compat::missing_file_note(n)});
+                    Some("document") => {
+                        if let Some(img) = document_as_image(app, p).await {
+                            *p = img;
+                        } else if p.pointer("/source/type").and_then(|t| t.as_str()) == Some("file")
+                        {
+                            let n = p.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                            *p = json!({"type": "text", "text": crate::openai_compat::missing_file_note(n)});
+                        }
                     }
-                }
-                Some("tool_result") => {
-                    if let Some(inner) = p.get_mut("content").and_then(|c| c.as_array_mut()) {
-                        fold(inner);
+                    Some("tool_result") => {
+                        if let Some(inner) = p.get_mut("content").and_then(|c| c.as_array_mut()) {
+                            fold(app, inner).await;
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
-        }
+        })
     }
     let Some(msgs) = body.get_mut("messages").and_then(|m| m.as_array_mut()) else {
         return;
     };
     for m in msgs {
         if let Some(parts) = m.get_mut("content").and_then(|c| c.as_array_mut()) {
-            fold(parts);
+            fold(app, parts).await;
         }
     }
 }
 
-fn document_as_image(d: &Value) -> Option<Value> {
+async fn document_as_image(app: &AppState, d: &Value) -> Option<Value> {
     let src = d.get("source")?;
     let title = d.get("title").and_then(|t| t.as_str());
     let kind = src.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -230,7 +233,7 @@ fn document_as_image(d: &Value) -> Option<Value> {
             )
         }
         "file" => {
-            let url = crate::api::files::data_url(src.get("file_id")?.as_str()?)?;
+            let url = crate::api::files::data_url(app, src.get("file_id")?.as_str()?).await?;
             let (meta, b64) = url.strip_prefix("data:")?.split_once(',')?;
             let media = meta.trim_end_matches(";base64").to_string();
             return Some(
@@ -290,8 +293,9 @@ async fn messages_inner(
     use anyllm_translate::anthropic::MessageCreateRequest;
 
     let mut body = body;
+    crate::api::files::prewarm(&app, &body).await;
     fold_tool_references(&mut body);
-    fold_documents(&mut body);
+    fold_documents(&app, &mut body).await;
     let req: MessageCreateRequest = match serde_json::from_value(body) {
         Ok(r) => r,
         Err(e) => {
@@ -1106,6 +1110,7 @@ async fn responses_inner(
     headers: HeaderMap,
     body: Value,
 ) -> Response {
+    crate::api::files::prewarm(&app, &body).await;
     let model = body
         .get("model")
         .and_then(|v| v.as_str())
@@ -1276,8 +1281,9 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn documents_reach_the_seat_as_named_files() {
+    #[tokio::test]
+    async fn documents_reach_the_seat_as_named_files() {
+        let app = crate::storage::AppState::from_store(crate::storage::memory::MemoryStore::new());
         let mut body = json!({
             "model": "m", "max_tokens": 10,
             "messages": [
@@ -1291,7 +1297,7 @@ mod tests {
                 ]}]}
             ]
         });
-        fold_documents(&mut body);
+        fold_documents(&app, &mut body).await;
         let req: anyllm_translate::anthropic::MessageCreateRequest =
             serde_json::from_value(body).unwrap();
         let config = anyllm_translate::TranslationConfig::builder()
@@ -1315,16 +1321,23 @@ mod tests {
         );
     }
 
-    #[test]
-    fn uploaded_file_ids_resolve() {
-        let id = crate::api::files::put(crate::api::files::StoredFile {
-            owner: "a".into(),
-            filename: "n.bin".into(),
-            mime: "application/octet-stream".into(),
-            purpose: "user_data".into(),
-            bytes: vec![0, 255, 1],
-            created_at: 0,
-        });
+    #[tokio::test]
+    async fn uploaded_file_ids_resolve() {
+        let app = crate::storage::AppState::from_store(crate::storage::memory::MemoryStore::new());
+        let id = crate::api::files::put(
+            &app,
+            crate::api::files::StoredFile {
+                owner: "a".into(),
+                filename: "n.bin".into(),
+                mime: "application/octet-stream".into(),
+                purpose: "user_data".into(),
+                bytes: vec![0, 255, 1],
+                created_at: 0,
+            },
+        )
+        .await;
+        // The upload path writes through; the read cache holds the bytes.
+        crate::api::files::prewarm(&app, &json!({"file_id": id})).await;
         let v = responses_content(&json!([{"type": "input_file", "file_id": id}]));
         assert!(
             v.to_string()
@@ -1334,7 +1347,7 @@ mod tests {
         let mut body = json!({"messages": [{"role": "user", "content": [
             {"type": "document", "source": {"type": "file", "file_id": id}}
         ]}]});
-        fold_documents(&mut body);
+        fold_documents(&app, &mut body).await;
         assert_eq!(
             body.pointer("/messages/0/content/0/source/data")
                 .and_then(|v| v.as_str()),

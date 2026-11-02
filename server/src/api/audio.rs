@@ -73,21 +73,22 @@ pub async fn speech(
     // A custom voice: speak like its sample (attached) or its description.
     let mut voice_files = Vec::new();
     let mut voice_note = None;
-    let voice = match crate::api::library::voice_for_speech(&principal.agent.id, &voice_id) {
-        Some((name, prompt, sample)) => {
-            if let Some(s) = sample {
-                voice_files.push(s);
-                voice_note = Some("sound like the attached voice sample".to_string());
-            } else if let Some(p) = prompt {
-                voice_note = Some(format!("the voice: {p}"));
+    let voice =
+        match crate::api::library::voice_for_speech(&app, &principal.agent.id, &voice_id).await {
+            Some((name, prompt, sample)) => {
+                if let Some(s) = sample {
+                    voice_files.push(s);
+                    voice_note = Some("sound like the attached voice sample".to_string());
+                } else if let Some(p) = prompt {
+                    voice_note = Some(format!("the voice: {p}"));
+                }
+                name
             }
-            name
-        }
-        None if voice_id.starts_with("voice_") => {
-            return task::invalid(&format!("No voice found with id '{voice_id}'."))
-        }
-        None => voice_id,
-    };
+            None if voice_id.starts_with("voice_") => {
+                return task::invalid(&format!("No voice found with id '{voice_id}'."))
+            }
+            None => voice_id,
+        };
     let format = str_field(&b, "response_format")
         .unwrap_or_else(|| "mp3".into())
         .to_lowercase();

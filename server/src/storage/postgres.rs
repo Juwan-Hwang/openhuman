@@ -1992,11 +1992,12 @@ fn file_from_row(r: &sqlx::postgres::PgRow) -> crate::api::files::StoredFile {
 
 #[async_trait::async_trait]
 impl crate::storage::traits::FileRepository for PostgresStore {
-    async fn put_file(&self, file: crate::api::files::StoredFile) -> String {
-        let id = format!("file_{}", uuid::Uuid::now_v7().simple());
+    async fn put_file(&self, id: &str, file: crate::api::files::StoredFile) {
+        let id = id.to_string();
         let _ = sqlx::query(
             "INSERT INTO files (id, owner, filename, mime, purpose, bytes)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (id) DO NOTHING",
         )
         .bind(&id)
         .bind(&file.owner)
@@ -2029,7 +2030,6 @@ impl crate::storage::traits::FileRepository for PostgresStore {
         .bind(files_max_bytes_total())
         .execute(&*self.pool)
         .await;
-        id
     }
 
     async fn get_file(&self, id: &str) -> Option<crate::api::files::StoredFile> {
@@ -2054,15 +2054,20 @@ impl crate::storage::traits::FileRepository for PostgresStore {
             .unwrap_or(false)
     }
 
-    async fn list_files(&self, owner: &str) -> Vec<crate::api::files::StoredFile> {
+    async fn list_files(&self, owner: &str) -> Vec<(String, crate::api::files::StoredFile)> {
+        use sqlx::Row;
         sqlx::query(
-            "SELECT owner, filename, mime, purpose, bytes, created_at FROM files
-             WHERE owner = $1 ORDER BY created_at DESC",
+            "SELECT id, owner, filename, mime, purpose, bytes, created_at FROM files
+             WHERE owner = $1 ORDER BY created_at DESC, id DESC",
         )
         .bind(owner)
         .fetch_all(&*self.pool)
         .await
-        .map(|rows| rows.iter().map(file_from_row).collect())
+        .map(|rows| {
+            rows.iter()
+                .map(|r| (r.get("id"), file_from_row(r)))
+                .collect()
+        })
         .unwrap_or_default()
     }
 

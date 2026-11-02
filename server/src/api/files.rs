@@ -1,12 +1,12 @@
 //! `/v1/files`: the OpenAI and Anthropic Files APIs, so a caller that
 //! uploads first and then refers to a `file_id` (SDKs, Anthropic's
 //! `{"type": "file"}` document source) reaches the seat with the file
-//! itself. Kept in memory per process, owned by the uploading key's agent.
+//! itself. Backed by the FileRepository (memory or postgres): files
+//! survive restarts with the postgres backend, and byte quotas are
+//! enforced by the repository on every write. Files are owned by the
+//! uploading key's agent.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-
-use axum::extract::{Multipart, Path};
+use axum::extract::{Multipart, Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::state::AuthPrincipal;
+use crate::storage::AppState;
 
 #[derive(Clone)]
 pub struct StoredFile {
@@ -29,74 +30,99 @@ pub struct StoredFile {
 /// Only these are served without a key, at their unguessable id.
 pub const OUTPUT_PURPOSE: &str = "output";
 
-/// Most bytes kept per owner; that owner's oldest files go first beyond it.
-/// `OMNI2API_FILES_MAX_BYTES_PER_OWNER` overrides.
-fn keep_bytes_per_owner() -> usize {
-    std::env::var("OMNI2API_FILES_MAX_BYTES_PER_OWNER")
-        .ok()
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(512 * 1024 * 1024)
+// ── Sync read cache ──
+//
+// Files are immutable once stored, so a process-local cache can serve the
+// deep synchronous conversion paths (ChatContent::to_text, image_urls,
+// the Anthropic/Responses part folding) that cannot await. The repository
+// stays the source of truth: every async read or write hydrates the
+// cache, and request entry points prewarm it from the body (any
+// `file_id` key, any shape). A stale hit after repo-side quota eviction
+// returns content that did exist — semantically harmless, and bounded by
+// the cache cap below.
+fn cache() -> &'static std::sync::RwLock<std::collections::HashMap<String, StoredFile>> {
+    static C: std::sync::OnceLock<
+        std::sync::RwLock<std::collections::HashMap<String, StoredFile>>,
+    > = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
 }
 
-/// Backstop across all owners. `OMNI2API_FILES_MAX_BYTES_TOTAL` overrides.
-fn keep_bytes_total() -> usize {
-    std::env::var("OMNI2API_FILES_MAX_BYTES_TOTAL")
-        .ok()
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(4 * 512 * 1024 * 1024)
+fn cache_insert(id: &str, f: &StoredFile) {
+    let mut c = cache().write().unwrap();
+    // Bounded: a full cache keeps its newest half by creation time.
+    if c.len() >= 512 {
+        let mut by_age: Vec<(i64, String)> =
+            c.values().map(|f| (f.created_at, String::new())).collect();
+        let mut pairs: Vec<(i64, String)> =
+            c.iter().map(|(id, f)| (f.created_at, id.clone())).collect();
+        pairs.sort();
+        by_age.append(&mut pairs);
+        for (_, id) in by_age.into_iter().take(256) {
+            c.remove(&id);
+        }
+    }
+    c.insert(id.to_string(), f.clone());
 }
 
-/// Files by id, plus ids oldest first.
-type Store = (HashMap<String, StoredFile>, Vec<String>);
-
-fn store() -> &'static Mutex<Store> {
-    static S: OnceLock<Mutex<Store>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new((HashMap::new(), Vec::new())))
+/// A file from the process-local cache, for sync conversion paths.
+/// Misses mean "not hydrated here", not "does not exist".
+pub fn cached(id: &str) -> Option<StoredFile> {
+    cache().read().unwrap().get(id.trim()).cloned()
 }
 
-pub fn put(f: StoredFile) -> String {
+/// The cached file as a named data URL (see [`cached`]).
+pub fn cached_data_url(id: &str) -> Option<String> {
+    let f = cached(id)?;
+    Some(crate::openai_compat::named_data_url(
+        &f.mime,
+        Some(&f.filename),
+        &crate::openai_compat::b64_encode(&f.bytes),
+    ))
+}
+
+/// Hydrate the cache for every `file_id` a request body names, in any
+/// nested position, so the sync conversion core sees current files.
+pub async fn prewarm(app: &AppState, body: &Value) {
+    let mut ids = Vec::new();
+    let mut stack = vec![body];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::Object(o) => {
+                for (k, x) in o {
+                    if k == "file_id" {
+                        if let Some(id) = x.as_str() {
+                            if cached(id).is_none() {
+                                ids.push(id.to_string());
+                            }
+                        }
+                    } else {
+                        stack.push(x);
+                    }
+                }
+            }
+            Value::Array(a) => stack.extend(a.iter()),
+            _ => {}
+        }
+    }
+    for id in ids {
+        if let Some(f) = app.file.get_file(&id).await {
+            cache_insert(&id, &f);
+        }
+    }
+}
+
+/// Store a file, minting its id (`file-<32 hex>`).
+pub async fn put(app: &AppState, f: StoredFile) -> String {
     let id = format!("file-{}", Uuid::now_v7().simple());
-    let mut g = store().lock().unwrap();
-    g.0.insert(id.clone(), f);
-    g.1.push(id.clone());
-    // The owner's own oldest files go first; other owners are untouched.
-    let owner = g.0.get(&id).map(|x| x.owner.clone()).unwrap_or_default();
-    let mut mine: usize =
-        g.0.values()
-            .filter(|x| x.owner == owner)
-            .map(|x| x.bytes.len())
-            .sum();
-    while mine > keep_bytes_per_owner() {
-        let Some(pos) =
-            g.1.iter()
-                .position(|i| g.0.get(i.as_str()).is_some_and(|x| x.owner == owner))
-        else {
-            break;
-        };
-        if g.1[pos] == id {
-            break; // the owner's only file is the one just stored; keep it
-        }
-        let old = g.1.remove(pos);
-        if let Some(x) = g.0.remove(&old) {
-            mine -= x.bytes.len();
-        }
-    }
-    // Global backstop: total across owners.
-    let mut total: usize = g.0.values().map(|x| x.bytes.len()).sum();
-    while total > keep_bytes_total() && g.1.len() > 1 {
-        let old = g.1.remove(0);
-        if let Some(x) = g.0.remove(&old) {
-            total -= x.bytes.len();
-        }
-    }
+    app.file.put_file(&id, f.clone()).await;
+    cache_insert(&id, &f);
     id
 }
 
 /// A stored file as a named data URL, when it exists (any owner: ids are
 /// unguessable and only reach the seat inside the owner's own request).
-pub fn data_url(id: &str) -> Option<String> {
-    let g = store().lock().unwrap();
-    let f = g.0.get(id.trim())?;
+pub async fn data_url(app: &AppState, id: &str) -> Option<String> {
+    let f = app.file.get_file(id.trim()).await?;
     Some(crate::openai_compat::named_data_url(
         &f.mime,
         Some(&f.filename),
@@ -110,15 +136,17 @@ pub fn data_url(id: &str) -> Option<String> {
 /// server-side `put` callers may set it (callers cannot upload with it), so
 /// every output file in the store came back from the seat, whichever key —
 /// the seat's or the caller's — it was stored under.
-pub fn made_by_seat(bytes: &[u8]) -> Option<(String, i64)> {
-    let g = store().lock().unwrap();
-    g.0.values()
-        .find(|f| f.purpose == OUTPUT_PURPOSE && f.bytes == bytes)
-        .map(|f| ("omni2api-seat".to_string(), f.created_at))
+pub async fn made_by_seat(app: &AppState, bytes: &[u8]) -> Option<(String, i64)> {
+    app.file
+        .find_output_by_bytes(bytes)
+        .await
+        .map(|(_, ts)| ("openhuman-seat".to_string(), ts))
 }
 
-pub fn get(id: &str) -> Option<StoredFile> {
-    store().lock().unwrap().0.get(id.trim()).cloned()
+pub async fn get(app: &AppState, id: &str) -> Option<StoredFile> {
+    let f = app.file.get_file(id.trim()).await?;
+    cache_insert(id.trim(), &f);
+    Some(f)
 }
 
 /// The mime type of common media from its first bytes.
@@ -153,9 +181,9 @@ pub fn sniff_mime(b: &[u8]) -> Option<&'static str> {
 
 /// `GET /files/:id`: a seat-made output, without a key, so a URL in an
 /// API answer (`response_format: "url"`) opens in any browser or SDK.
-pub async fn public(Path(id): Path<String>) -> Response {
+pub async fn public(State(app): State<AppState>, Path(id): Path<String>) -> Response {
     let id = id.split('.').next().unwrap_or("").to_string();
-    match get(&id).filter(|f| f.purpose == OUTPUT_PURPOSE) {
+    match get(&app, &id).await.filter(|f| f.purpose == OUTPUT_PURPOSE) {
         Some(f) => (
             [
                 (header::CONTENT_TYPE, f.mime.clone()),
@@ -198,7 +226,11 @@ fn not_found(id: &str) -> Response {
         .into_response()
 }
 
-pub async fn upload(principal: AuthPrincipal, mut mp: Multipart) -> Response {
+pub async fn upload(
+    State(app): State<AppState>,
+    principal: AuthPrincipal,
+    mut mp: Multipart,
+) -> Response {
     let mut file: Option<(String, String, Vec<u8>)> = None;
     let mut purpose = "user_data".to_string();
     loop {
@@ -259,52 +291,58 @@ pub async fn upload(principal: AuthPrincipal, mut mp: Multipart) -> Response {
         bytes,
         created_at: chrono::Utc::now().timestamp(),
     };
-    let id = put(f.clone());
+    let id = put(&app, f.clone()).await;
     Json(meta(&id, &f)).into_response()
 }
 
-fn owned(principal: &AuthPrincipal, id: &str) -> Option<StoredFile> {
-    let g = store().lock().unwrap();
-    g.0.get(id)
+async fn owned(app: &AppState, principal: &AuthPrincipal, id: &str) -> Option<StoredFile> {
+    app.file
+        .get_file(id)
+        .await
         .filter(|f| f.owner == principal.agent.id)
-        .cloned()
 }
 
-pub async fn get_meta(principal: AuthPrincipal, Path(id): Path<String>) -> Response {
-    match owned(&principal, &id) {
+pub async fn get_meta(
+    State(app): State<AppState>,
+    principal: AuthPrincipal,
+    Path(id): Path<String>,
+) -> Response {
+    match owned(&app, &principal, &id).await {
         Some(f) => Json(meta(&id, &f)).into_response(),
         None => not_found(&id),
     }
 }
 
-pub async fn content(principal: AuthPrincipal, Path(id): Path<String>) -> Response {
-    match owned(&principal, &id) {
+pub async fn content(
+    State(app): State<AppState>,
+    principal: AuthPrincipal,
+    Path(id): Path<String>,
+) -> Response {
+    match owned(&app, &principal, &id).await {
         Some(f) => ([(header::CONTENT_TYPE, f.mime.clone())], f.bytes).into_response(),
         None => not_found(&id),
     }
 }
 
-pub async fn list(principal: AuthPrincipal) -> Response {
-    let g = store().lock().unwrap();
-    let data: Vec<Value> =
-        g.1.iter()
-            .rev()
-            .filter_map(|id| {
-                g.0.get(id)
-                    .filter(|f| f.owner == principal.agent.id)
-                    .map(|f| meta(id, f))
-            })
-            .collect();
+pub async fn list(State(app): State<AppState>, principal: AuthPrincipal) -> Response {
+    let data: Vec<Value> = app
+        .file
+        .list_files(&principal.agent.id)
+        .await
+        .iter()
+        .map(|(id, f)| meta(id, f))
+        .collect();
     Json(json!({"object": "list", "data": data, "has_more": false})).into_response()
 }
 
-pub async fn delete(principal: AuthPrincipal, Path(id): Path<String>) -> Response {
-    if owned(&principal, &id).is_none() {
+pub async fn delete(
+    State(app): State<AppState>,
+    principal: AuthPrincipal,
+    Path(id): Path<String>,
+) -> Response {
+    if !app.file.delete_file(&principal.agent.id, &id).await {
         return not_found(&id);
     }
-    let mut g = store().lock().unwrap();
-    g.0.remove(&id);
-    g.1.retain(|x| x != &id);
     Json(json!({"id": id, "object": "file", "type": "file_deleted", "deleted": true}))
         .into_response()
 }

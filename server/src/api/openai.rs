@@ -1381,6 +1381,17 @@ pub async fn chat_completions(
         "Extracted agent profile from HTTP request"
     );
 
+    // Hydrate the file cache for every file part the request carries, so
+    // the sync conversion core (to_text, image_urls) sees current files.
+    for m in &req.messages {
+        if let crate::openai_compat::ChatContent::Parts(parts) = &m.content {
+            for p in parts {
+                if let Some(f) = &p.file {
+                    crate::api::files::prewarm(&app, f).await;
+                }
+            }
+        }
+    }
     let task = task_of(&req);
     // A task with a session (a realtime connection) is a conversation the
     // seat sits in, not a side call.

@@ -244,7 +244,7 @@ pub fn file_part_url(f: &serde_json::Value) -> Option<String> {
     if let Some(u) = f
         .get("file_id")
         .and_then(|v| v.as_str())
-        .and_then(crate::api::files::data_url)
+        .and_then(crate::api::files::cached_data_url)
     {
         return Some(u);
     }

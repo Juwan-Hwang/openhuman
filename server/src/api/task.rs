@@ -202,6 +202,7 @@ pub async fn run(
     // Read the chat body to its end in the background: padding first, then
     // one JSON object.
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<Answer, String>>();
+    let app_bg = app.clone();
     tokio::spawn(async move {
         let mut body = resp.into_body().into_data_stream();
         let mut buf = Vec::new();
@@ -214,7 +215,7 @@ pub async fn run(
                 }
             }
         }
-        let _ = tx.send(answer_from_chat(&buf).await);
+        let _ = tx.send(answer_from_chat(&app_bg, &buf).await);
     });
 
     match delivery {
@@ -357,7 +358,7 @@ pub fn sse(event: &str, data: &Value) -> String {
 }
 
 /// The seat's answer out of a non-streaming chat completion body.
-pub(crate) async fn answer_from_chat(body: &[u8]) -> Result<Answer, String> {
+pub(crate) async fn answer_from_chat(app: &AppState, body: &[u8]) -> Result<Answer, String> {
     let text = String::from_utf8_lossy(body);
     let v: Value = serde_json::from_str(text.trim())
         .map_err(|_| format!("unreadable answer: {}", text.trim()))?;
@@ -379,7 +380,7 @@ pub(crate) async fn answer_from_chat(body: &[u8]) -> Result<Answer, String> {
         .and_then(|c| c.as_str())
         .unwrap_or("")
         .to_string();
-    let mut a = parse_answer(&content);
+    let mut a = parse_answer(app, &content).await;
     a.tool_calls = v
         .pointer("/choices/0/message/tool_calls")
         .and_then(|t| t.as_array())
@@ -390,7 +391,7 @@ pub(crate) async fn answer_from_chat(body: &[u8]) -> Result<Answer, String> {
 
 /// Split a reply into its text and the files it names: attachment ids
 /// (`file-<32 hex>`), data URLs and http(s) links.
-pub fn parse_answer(content: &str) -> Answer {
+pub async fn parse_answer(app: &AppState, content: &str) -> Answer {
     let mut files = Vec::new();
     let mut text = String::new();
     let mut rest = content;
@@ -413,11 +414,13 @@ pub fn parse_answer(content: &str) -> Answer {
             .find(|c: char| c.is_whitespace() || matches!(c, ')' | '"' | '\'' | '<' | '>' | ']'))
             .unwrap_or(tail.len());
         let token = &tail[..end];
-        let taken = if let Some(f) = token
+        let taken = if let Some(f) = match token
             .strip_prefix("file-")
             .filter(|h| h.len() >= 32 && h[..32].bytes().all(|b| b.is_ascii_hexdigit()))
-            .and_then(|h| crate::api::files::get(&format!("file-{}", &h[..32])))
         {
+            Some(h) => crate::api::files::get(app, &format!("file-{}", &h[..32])).await,
+            None => None,
+        } {
             files.push(Output::Bytes {
                 mime: f.mime,
                 name: f.filename,
@@ -516,7 +519,13 @@ pub async fn fetch(o: &Output) -> Option<(String, Vec<u8>)> {
 
 /// Keep an output under a public id and return its URL, for answers that
 /// hand back links (`response_format: "url"`).
-pub fn publish(headers: &HeaderMap, owner: &str, mime: &str, bytes: Vec<u8>) -> String {
+pub fn publish(
+    app: &AppState,
+    headers: &HeaderMap,
+    owner: &str,
+    mime: &str,
+    bytes: Vec<u8>,
+) -> String {
     let ext = match mime {
         "image/png" => ".png",
         "image/jpeg" => ".jpg",
@@ -527,13 +536,22 @@ pub fn publish(headers: &HeaderMap, owner: &str, mime: &str, bytes: Vec<u8>) -> 
         "video/mp4" => ".mp4",
         _ => "",
     };
-    let id = crate::api::files::put(crate::api::files::StoredFile {
+    let id = format!("file-{}", uuid::Uuid::now_v7().simple());
+    let repo = app.file.clone();
+    let f = crate::api::files::StoredFile {
         owner: owner.to_string(),
         filename: format!("output{ext}"),
         mime: mime.to_string(),
         purpose: crate::api::files::OUTPUT_PURPOSE.to_string(),
         bytes,
         created_at: chrono::Utc::now().timestamp(),
+    };
+    // The URL goes into the answer at once; the write is scheduled
+    // immediately and files are immutable, so a reader that arrives
+    // after the write always sees the content.
+    let wid = id.clone();
+    tokio::spawn(async move {
+        repo.put_file(&wid, f).await;
     });
     format!("{}/files/{id}{ext}", base_url(headers))
 }
@@ -610,10 +628,14 @@ pub fn image_size(b: &[u8]) -> Option<(u32, u32)> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn answer_splits_text_and_files() {
-        let a =
-            parse_answer("A red fox.\n![x](data:image/png;base64,aGVsbG8=) see https://e.x/a.png");
+    #[tokio::test]
+    async fn answer_splits_text_and_files() {
+        let app = crate::storage::AppState::from_store(crate::storage::memory::MemoryStore::new());
+        let a = parse_answer(
+            &app,
+            "A red fox.\n![x](data:image/png;base64,aGVsbG8=) see https://e.x/a.png",
+        )
+        .await;
         assert_eq!(a.files.len(), 2);
         assert!(a.text.starts_with("A red fox."));
         assert!(!a.text.contains("data:"));
@@ -627,9 +649,10 @@ mod tests {
         assert!(matches!(&a.files[1], Output::Link(u) if u == "https://e.x/a.png"));
     }
 
-    #[test]
-    fn unknown_file_ids_stay_text() {
-        let a = parse_answer("see file-nothing here");
+    #[tokio::test]
+    async fn unknown_file_ids_stay_text() {
+        let app = crate::storage::AppState::from_store(crate::storage::memory::MemoryStore::new());
+        let a = parse_answer(&app, "see file-nothing here").await;
         assert!(a.files.is_empty());
         assert_eq!(a.text, "see file-nothing here");
     }
