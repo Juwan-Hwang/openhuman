@@ -21,6 +21,10 @@ ALTER TABLE conversation_participants
 
 -- 4) Per-room monotone sequence on messages (NULL for non-room messages).
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS room_seq BIGINT;
+-- Snapshot of the sender's display name at send time. Room logs and
+-- history render it without joining identities; the memory backend kept
+-- it inside the Message struct, postgres used to drop it.
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_name TEXT;
 CREATE INDEX IF NOT EXISTS idx_messages_room ON messages (conversation_id, room_seq)
     WHERE room_seq IS NOT NULL;
 

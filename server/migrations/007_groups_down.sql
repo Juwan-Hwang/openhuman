@@ -1,3 +1,4 @@
+ALTER TABLE messages DROP COLUMN IF EXISTS sender_name;
 -- Rollback for 007_groups.sql. NOT run automatically: execute it by hand
 -- after exporting any room data worth keeping — it destroys every room,
 -- its log positions, invites, cursors, and unbinds room caller keys.

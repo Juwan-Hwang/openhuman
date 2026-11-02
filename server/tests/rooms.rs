@@ -1,8 +1,9 @@
 //! Integration tests: group rooms (design doc §13.1).
 //!
-//! Runs on the memory backend (the postgres cells run in CI with
-//! DATABASE_URL, mirroring postgres_compat.rs). Timings are shortened via
-//! env (`OPENHUMAN_ROOM_SEGMENT_MAX_SECS=2`) and per-room metadata.
+//! Backend is selected like main.rs: memory by default, postgres when
+//! `OPENHUMAN_BACKEND=postgres` and `DATABASE_URL` are set (the §13.2
+//! postgres cell, mirroring postgres_compat.rs). Timings are shortened
+//! via env (`OPENHUMAN_ROOM_SEGMENT_MAX_SECS=2`) and per-room metadata.
 
 use openhuman_server::build_router;
 use openhuman_server::model::identity::{ApiKey, HumanIdentity, KeyScope};
@@ -26,7 +27,31 @@ fn setup() {
 
 async fn app_with_humans(extra: &[&str]) -> (axum::Router, std::net::SocketAddr) {
     setup();
+    // §13.2 postgres cell: same suite against a live database. Inserts
+    // below are ON CONFLICT idempotent and every test uses fresh room ids,
+    // so parallel tests sharing one database are safe. OPENHUMAN_DEMO=1
+    // keeps the seeded demo key live — migrate() revokes it otherwise.
+    if std::env::var("OPENHUMAN_BACKEND").ok().as_deref() == Some("postgres") {
+        std::env::set_var("OPENHUMAN_DEMO", "1");
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL (postgres rooms cell)");
+        let store = openhuman_server::storage::postgres::PostgresStore::new(&url)
+            .await
+            .expect("connect postgres");
+        store.migrate().await.expect("migrations 001-007 apply");
+        seed_extra_humans(&store, extra).await;
+        // Same split as main.rs: PostgresStore for persistence plus an
+        // in-memory reply registry for the reply channels.
+        let reply = openhuman_server::storage::postgres::InMemoryReplyRegistry::new();
+        return serve(AppState::from_postgres(store, reply)).await;
+    }
     let store = MemoryStore::seeded();
+    seed_extra_humans(&store, extra).await;
+    serve(AppState::from_store(store)).await
+}
+
+/// The extra humans/agents/responder keys a test asks for, shared by both
+/// backends. `S: IdentityRepository` covers MemoryStore and PostgresStore.
+async fn seed_extra_humans<S: IdentityRepository>(store: &S, extra: &[&str]) {
     for (i, name) in extra.iter().enumerate() {
         let hid = format!("hum_test_{}", name);
         let key = format!("ohk_test_{}", name);
@@ -63,7 +88,10 @@ async fn app_with_humans(extra: &[&str]) -> (axum::Router, std::net::SocketAddr)
             )
             .await;
     }
-    let state = AppState::from_store(store);
+}
+
+/// Bind the router on an ephemeral port and serve it in the background.
+async fn serve(state: AppState) -> (axum::Router, std::net::SocketAddr) {
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -917,8 +945,7 @@ async fn new_member_cannot_read_prejoin_history() {
     let _ = ws_next(&mut ws).await; // session.connected
     ws.send(WsMessage::Text(
         serde_json::json!({"event_type":"reply.send","conversation_id":room,"text":"加入前的秘密"})
-            .to_string()
-            .into(),
+            .to_string(),
     ))
     .await
     .unwrap();
@@ -936,8 +963,7 @@ async fn new_member_cannot_read_prejoin_history() {
     // Owner speaks again — this one is visible to bob.
     ws.send(WsMessage::Text(
         serde_json::json!({"event_type":"reply.send","conversation_id":room,"text":"加入后的招呼"})
-            .to_string()
-            .into(),
+            .to_string(),
     ))
     .await
     .unwrap();

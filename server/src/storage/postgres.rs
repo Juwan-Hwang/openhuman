@@ -92,35 +92,43 @@ impl PostgresStore {
     /// All files are written to be re-runnable, so this is safe to
     /// call on every boot.
     pub async fn migrate(&self) -> anyhow::Result<()> {
+        // Concurrent boots (or parallel tests) raced the migrations and
+        // died on `CREATE EXTENSION`'s unique index. Take a session-wide
+        // advisory lock inside one transaction: xact-scoped, so it always
+        // releases on commit or rollback.
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(727001)")
+            .execute(&mut *tx)
+            .await?;
         let sql1 = include_str!("../../migrations/001_init.sql");
-        self.pool.execute(sql1).await?;
+        tx.execute(sql1).await?;
         let sql2 = include_str!("../../migrations/002_capabilities.sql");
-        self.pool.execute(sql2).await?;
+        tx.execute(sql2).await?;
         // 003 backfills real SHA-256 digests and drops the plaintext
         // `raw_key` column. It must run last — it reads `raw_key` in order
         // to derive the digests it replaces it with.
         let sql3 = include_str!("../../migrations/003_api_key_hashing.sql");
-        self.pool.execute(sql3).await?;
+        tx.execute(sql3).await?;
         let sql4 = include_str!("../../migrations/004_conversation_trash.sql");
-        self.pool.execute(sql4).await?;
+        tx.execute(sql4).await?;
         let sql5 = include_str!("../../migrations/005_tool_call_lookup.sql");
-        self.pool.execute(sql5).await?;
+        tx.execute(sql5).await?;
         let sql6 = include_str!("../../migrations/006_key_scope.sql");
-        self.pool.execute(sql6).await?;
+        tx.execute(sql6).await?;
         // 007 opens group rooms (type/role CHECKs, room_seq, counters,
         // invites, cursors, key binding). Re-runnable like the rest; the
         // rollback is 007_groups_down.sql, run by hand only.
         let sql7 = include_str!("../../migrations/007_groups.sql");
-        self.pool.execute(sql7).await?;
+        tx.execute(sql7).await?;
         // 001 re-seeds the public demo key on every boot. Outside an
         // explicit demo it must not authenticate anything.
         if std::env::var("OPENHUMAN_DEMO").ok().as_deref() != Some("1") {
-            self.pool
-                .execute("UPDATE api_keys SET scope = 'revoked' WHERE id = 'key_demo_001'")
+            tx.execute("UPDATE api_keys SET scope = 'revoked' WHERE id = 'key_demo_001'")
                 .await?;
         } else {
             tracing::warn!("OPENHUMAN_DEMO=1 — the public demo key is live");
         }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -903,8 +911,8 @@ impl MessageRepository for PostgresStore {
 
         let _ = sqlx::query(
             r#"
-            INSERT INTO messages (id, conversation_id, sender_id, sender_type, content, attachments, metadata, status, created_at, room_seq)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            INSERT INTO messages (id, conversation_id, sender_id, sender_type, sender_name, content, attachments, metadata, status, created_at, room_seq)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (id) DO NOTHING
             "#,
         )
@@ -912,6 +920,7 @@ impl MessageRepository for PostgresStore {
         .bind(&message.conversation_id)
         .bind(&message.sender.participant_id)
         .bind(sender_type_str)
+        .bind(&message.sender.display_name)
         .bind(&content_json)
         .bind(&attachments_json)
         .bind(&metadata_json)
@@ -939,7 +948,7 @@ impl MessageRepository for PostgresStore {
 
     async fn list(&self, conversation_id: &str) -> Vec<Message> {
         let rows = sqlx::query(
-            "SELECT id, conversation_id, sender_id, sender_type, content, attachments, metadata, status, created_at, room_seq \
+            "SELECT id, conversation_id, sender_id, sender_type, sender_name, content, attachments, metadata, status, created_at, room_seq \
              FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC",
         )
         .bind(conversation_id)
@@ -981,7 +990,7 @@ impl MessageRepository for PostgresStore {
                     sender: ParticipantRef {
                         participant_id: sender_id,
                         participant_type: sender_type,
-                        display_name: None,
+                        display_name: r.try_get("sender_name").ok().flatten(),
                     },
                     content,
                     attachments: serde_json::from_value(attachments_json).unwrap_or_default(),
@@ -1002,7 +1011,7 @@ impl MessageRepository for PostgresStore {
         // backlog was never drained and messages stayed `pending` forever.
         let rows = sqlx::query(
             r#"
-            SELECT m.id, m.conversation_id, m.sender_id, m.sender_type, m.content,
+            SELECT m.id, m.conversation_id, m.sender_id, m.sender_type, m.sender_name, m.content,
                    m.attachments, m.metadata, m.status, m.created_at, m.room_seq
             FROM messages m
             JOIN conversation_participants cp
@@ -1053,7 +1062,7 @@ impl MessageRepository for PostgresStore {
                     sender: ParticipantRef {
                         participant_id: sender_id,
                         participant_type: sender_type,
-                        display_name: None,
+                        display_name: r.try_get("sender_name").ok().flatten(),
                     },
                     content,
                     attachments: serde_json::from_value(attachments_json).unwrap_or_default(),
@@ -1086,7 +1095,7 @@ impl MessageRepository for PostgresStore {
         // loaded the whole conversation and scanned it in Rust, which gets
         // slower with every message in the thread.
         let row = sqlx::query(
-            "SELECT id, conversation_id, sender_id, sender_type, content, attachments, metadata, status, created_at, room_seq \
+            "SELECT id, conversation_id, sender_id, sender_type, sender_name, content, attachments, metadata, status, created_at, room_seq \
              FROM messages \
              WHERE conversation_id = $1 \
                AND metadata->>'tool_call_id' = $2 \
@@ -1114,7 +1123,7 @@ impl MessageRepository for PostgresStore {
                     "human" => ParticipantType::Human,
                     _ => ParticipantType::Agent,
                 },
-                display_name: None,
+                display_name: row.try_get("sender_name").ok().flatten(),
             },
             content: serde_json::from_value(content_json).unwrap_or(ContentBlock::text("")),
             attachments: serde_json::from_value(attachments_json).unwrap_or_default(),
@@ -1425,7 +1434,7 @@ fn message_from_row(r: &sqlx::postgres::PgRow) -> Option<Message> {
                 "human" => ParticipantType::Human,
                 _ => ParticipantType::Agent,
             },
-            display_name: None,
+            display_name: r.try_get("sender_name").ok().flatten(),
         },
         content: serde_json::from_value(content_json).unwrap_or(ContentBlock::text("")),
         attachments: serde_json::from_value(r.try_get("attachments").ok()?).unwrap_or_default(),
@@ -1523,8 +1532,8 @@ impl RoomRepository for PostgresStore {
         let metadata_json = serde_json::to_value(&message.metadata).unwrap_or_default();
         sqlx::query(
             "INSERT INTO messages \
-             (id, conversation_id, sender_id, sender_type, content, attachments, metadata, status, created_at, room_seq) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             (id, conversation_id, sender_id, sender_type, sender_name, content, attachments, metadata, status, created_at, room_seq) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&message.id)
         .bind(&message.conversation_id)
@@ -1533,6 +1542,7 @@ impl RoomRepository for PostgresStore {
             ParticipantType::Human => "human",
             ParticipantType::Agent => "agent",
         })
+        .bind(&message.sender.display_name)
         .bind(&content_json)
         .bind(&attachments_json)
         .bind(&metadata_json)
@@ -1572,7 +1582,7 @@ impl RoomRepository for PostgresStore {
         limit: usize,
     ) -> Vec<Message> {
         let rows = sqlx::query(
-            "SELECT id, conversation_id, sender_id, sender_type, content, attachments, metadata, status, created_at, room_seq \
+            "SELECT id, conversation_id, sender_id, sender_type, sender_name, content, attachments, metadata, status, created_at, room_seq \
              FROM messages \
              WHERE conversation_id = $1 AND room_seq IS NOT NULL AND room_seq > $2 AND room_seq >= $3 \
              ORDER BY room_seq ASC LIMIT $4",

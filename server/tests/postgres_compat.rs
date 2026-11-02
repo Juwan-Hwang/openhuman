@@ -30,9 +30,23 @@ use openhuman_server::model::identity::{
 };
 use openhuman_server::model::message::{Message, MessageStatus, MessageVisibility};
 
+/// Serialize the whole file: every test calls clean_db, which wipes the
+/// shared database — including the seeded demo key — so parallel tests
+/// race each other's fixtures. tokio's Mutex keeps the guard await-safe
+/// (clippy::await_holding_lock fires on the std one).
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().await
+}
+
 /// Skip tests if DATABASE_URL is not set or PostgreSQL is not available.
 async fn get_store() -> Option<PostgresStore> {
     let db_url = std::env::var("DATABASE_URL").ok()?;
+    // The suite's fixture IS the seeded demo key. migrate() revokes it
+    // unless OPENHUMAN_DEMO=1 (security default since 72a1f37), so the
+    // tests opt into the demo explicitly.
+    std::env::set_var("OPENHUMAN_DEMO", "1");
     match PostgresStore::new(&db_url).await {
         Ok(store) => {
             // Run migrations (creates tables + seeds demo data).
@@ -64,6 +78,7 @@ async fn clean_db(store: &PostgresStore) {
 #[tokio::test]
 #[ignore = "Requires PostgreSQL — set DATABASE_URL and run with --ignored"]
 async fn test_pg_resolve_principal() {
+    let _guard = serial().await;
     let store = match get_store().await {
         Some(s) => s,
         None => return,
@@ -84,6 +99,7 @@ async fn test_pg_resolve_principal() {
 #[tokio::test]
 #[ignore = "Requires PostgreSQL — set DATABASE_URL and run with --ignored"]
 async fn test_pg_resolve_principal_invalid_key() {
+    let _guard = serial().await;
     let store = match get_store().await {
         Some(s) => s,
         None => return,
@@ -98,6 +114,7 @@ async fn test_pg_resolve_principal_invalid_key() {
 #[tokio::test]
 #[ignore = "Requires PostgreSQL — set DATABASE_URL and run with --ignored"]
 async fn test_pg_find_or_create_conversation() {
+    let _guard = serial().await;
     let store = match get_store().await {
         Some(s) => s,
         None => return,
@@ -150,6 +167,7 @@ async fn test_pg_find_or_create_conversation() {
 #[tokio::test]
 #[ignore = "Requires PostgreSQL — set DATABASE_URL and run with --ignored"]
 async fn test_pg_conversation_scoped_by_session() {
+    let _guard = serial().await;
     let store = match get_store().await {
         Some(s) => s,
         None => return,
@@ -185,6 +203,7 @@ async fn test_pg_conversation_scoped_by_session() {
 #[tokio::test]
 #[ignore = "Requires PostgreSQL — set DATABASE_URL and run with --ignored"]
 async fn test_pg_conversation_scoped_by_human() {
+    let _guard = serial().await;
     let store = match get_store().await {
         Some(s) => s,
         None => return,
@@ -227,6 +246,7 @@ async fn test_pg_conversation_scoped_by_human() {
 #[tokio::test]
 #[ignore = "Requires PostgreSQL — set DATABASE_URL and run with --ignored"]
 async fn test_pg_message_insert_and_list() {
+    let _guard = serial().await;
     let store = match get_store().await {
         Some(s) => s,
         None => return,
@@ -325,6 +345,7 @@ async fn resubmitted_turn_supersedes_the_open_one() {
 #[tokio::test]
 #[ignore = "Requires PostgreSQL — set DATABASE_URL and run with --ignored"]
 async fn test_pg_full_storage_chain() {
+    let _guard = serial().await;
     let store = match get_store().await {
         Some(s) => s,
         None => return,
