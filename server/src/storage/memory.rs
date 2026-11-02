@@ -144,6 +144,24 @@ impl MemoryStore {
             data: Arc::new(Mutex::new(data)),
         }
     }
+
+    /// Add one more human + agent + API key, for callers that need a
+    /// second principal (demos, tests). Like `seeded`, the plaintext key
+    /// exists only at the call site; the map stores the digest.
+    pub async fn add_seeded_identity(
+        &self,
+        human: HumanIdentity,
+        agent: AgentIdentity,
+        key_id: &str,
+        raw_key: &str,
+    ) {
+        let api_key = ApiKey::new(key_id, raw_key, agent.id.clone(), human.id.clone());
+        let mut data = self.data.lock().await;
+        data.humans.insert(human.id.clone(), human);
+        data.agents.insert(agent.id.clone(), agent);
+        data.api_keys
+            .insert(ApiKey::hash_of(raw_key), api_key.persisted());
+    }
 }
 
 impl Default for MemoryStore {
