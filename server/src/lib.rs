@@ -224,6 +224,14 @@ pub fn build_router(state: AppState) -> Router {
                 post(api::adapters::room_responses),
             )
             .route(
+                "/rooms/:room_id/v1/replies/:invocation_id",
+                get(api::replies::room_get_reply),
+            )
+            .route(
+                "/rooms/:room_id/v1/v1/replies/:invocation_id",
+                get(api::replies::room_get_reply),
+            )
+            .route(
                 "/rooms/:room_id/v1/v1/responses",
                 post(api::adapters::room_responses),
             )

@@ -834,3 +834,64 @@ async fn responses_room_line_segments_like_chat() {
     assert_eq!(log.len(), 1);
     assert_eq!(log[0]["text"], "来自Codex");
 }
+
+// ════════════════════════════════════════════════════════════
+// Async mode: 202 + poll, room cursor rides the segment (§5.3)
+// ════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn async_mode_polls_a_room_segment() {
+    let (_app, addr) = app_with_humans(&[]).await;
+    let room = create_room(&addr, DEMO_KEY, "异步测试").await;
+    let key = mint_caller_key(&addr, DEMO_KEY, &room, "小明的 Codex").await;
+
+    let res = http()
+        .post(format!(
+            "http://{}/rooms/{}/v1/chat/completions",
+            addr, room
+        ))
+        .bearer_auth(&key)
+        .header("x-openhuman-mode", "async")
+        .json(&serde_json::json!({
+            "model": "room", "messages": [{"role":"user","content":"异步第一句"}],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 202);
+    let ack: serde_json::Value = res.json().await.unwrap();
+    let invocation = ack["id"].as_str().unwrap().to_string();
+    assert_eq!(ack["source"], "room_segment");
+
+    // The plain poll path refuses a room-bound key (binding holds).
+    let res = http()
+        .get(format!("http://{}/v1/replies/{}", addr, invocation))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+
+    // Long-poll until the quiet close completes the segment.
+    let res = http()
+        .get(format!(
+            "http://{}/rooms/{}/v1/replies/{}?wait=10",
+            addr, room, invocation
+        ))
+        .bearer_auth(&key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let reply: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(
+        reply["choices"][0]["finish_reason"], "tool_calls",
+        "the polled segment closes with the keepalive call: {}",
+        reply
+    );
+
+    // Caller speech still landed in the room log.
+    let log = room_log(&addr, DEMO_KEY, &room).await;
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0]["text"], "异步第一句");
+}

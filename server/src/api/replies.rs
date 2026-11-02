@@ -11,7 +11,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::api::openai::{parse_turn, HumanReply};
 use crate::async_reply::{AsyncStatus, DEFAULT_WAIT_SECS};
@@ -44,6 +44,25 @@ pub async fn get_reply(
     Path(invocation_id): Path<String>,
     Query(query): Query<PollQuery>,
 ) -> impl IntoResponse {
+    get_reply_inner(app, invocation_id, query).await
+}
+
+/// `GET /rooms/:room_id/v1/replies/:invocation_id` — room callers poll here:
+/// a room-bound key is refused on the plain `/v1/*` surface, so async room
+/// segments get a room-namespaced poll alias (same handler, same ids).
+pub async fn room_get_reply(
+    State(app): State<AppState>,
+    Path((_room_id, invocation_id)): Path<(String, String)>,
+    Query(query): Query<PollQuery>,
+) -> impl IntoResponse {
+    get_reply_inner(app, invocation_id, query).await
+}
+
+async fn get_reply_inner(
+    app: AppState,
+    invocation_id: String,
+    query: PollQuery,
+) -> axum::response::Response {
     let snapshot = match app.async_reply.get(&invocation_id).await {
         Some(s) => s,
         None => {
@@ -117,6 +136,22 @@ fn completed_response(
     age_secs: i64,
 ) -> axum::response::Response {
     let payload = payload.unwrap_or("");
+
+    // A room segment completes with a full chat.completion body — hand it
+    // back as-is (with the invocation id attached) instead of wrapping the
+    // JSON as reply text.
+    if let Ok(v) = serde_json::from_str::<Value>(payload) {
+        if v.get("object").and_then(|o| o.as_str()) == Some("chat.completion")
+            && v.get("choices").is_some()
+        {
+            let mut v = v;
+            v["id"] = json!(invocation_id);
+            v["object"] = json!("chat.completion.async");
+            v["status"] = json!(AsyncStatus::Completed.as_str());
+            v["age_secs"] = json!(age_secs);
+            return (StatusCode::OK, Json(v)).into_response();
+        }
+    }
 
     let message = match parse_turn(payload) {
         HumanReply::Text { text, .. } => json!({

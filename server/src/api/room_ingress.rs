@@ -360,9 +360,44 @@ pub async fn room_chat_completions(
         return Sse::new(stream).into_response();
     }
 
+    // Async mode: 202 + invocation_id; the segment is collected in the
+    // background and completed for `GET /v1/replies/:id` (§5.3). The room
+    // cursor rides the same pump, so a polled segment advances exactly
+    // like a streamed one.
+    if crate::api::openai::is_async_mode(&headers) {
+        let invocation_id = app.async_reply.create(&room_id).await;
+        let app2 = app.clone();
+        let inv = invocation_id.clone();
+        let mdl = model_name.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            let payload = collect_segment(&mut rx, &mdl).await;
+            app2.async_reply.complete(&inv, &payload.to_string()).await;
+        });
+        return (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "id": invocation_id,
+                "object": "chat.completion.async",
+                "status": "pending",
+                "conversation_id": room_id,
+                "poll_url": format!("/rooms/{}/v1/replies/{}", room_id, invocation_id),
+                "source": "room_segment",
+            })),
+        )
+            .into_response();
+    }
+
     // Non-streaming: one request = one segment, collected whole (§5.3).
+    let response = collect_segment(&mut rx, &model_name).await;
+    drop(guard);
+    Json(response).into_response()
+}
+
+/// Collect one segment's pump events into a whole chat.completion body.
+async fn collect_segment(rx: &mut mpsc::UnboundedReceiver<PumpEvent>, model_name: &str) -> Value {
     let mut text = String::new();
-    let response = loop {
+    loop {
         let ev = match rx.recv().await {
             Some(e) => e,
             None => break json!({"error": {"message": "stream ended"}}),
@@ -403,9 +438,7 @@ pub async fn room_chat_completions(
                 })
             }
         }
-    };
-    drop(guard);
-    Json(response).into_response()
+    }
 }
 
 /// Events the pump hands to a frontend (SSE or collector).

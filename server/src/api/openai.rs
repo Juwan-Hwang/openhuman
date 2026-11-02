@@ -1912,7 +1912,7 @@ fn reply_timeout_secs() -> u64 {
 /// Accepts `x-openhuman-mode: async`, and also honours a global override via
 /// `OPENHUMAN_ASYNC_MODE=always` for deployments where no request should ever
 /// block on a human.
-fn is_async_mode(headers: &HeaderMap) -> bool {
+pub(crate) fn is_async_mode(headers: &HeaderMap) -> bool {
     let always = std::env::var("OPENHUMAN_ASYNC_MODE")
         .map(|v| v.trim().eq_ignore_ascii_case("always"))
         .unwrap_or(false);
