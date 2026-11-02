@@ -29,6 +29,7 @@ import 'agent_integration_sheet.dart';
 import 'agent_runtime_panel.dart';
 import 'chat_controller.dart';
 import 'conversation_sidebar.dart';
+import 'room_composer.dart';
 import 'room_panel.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -90,6 +91,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final controller = ref.read(chatControllerProvider.notifier);
     final humanUser = controller.humanUser;
 
+    void sendText(String text) {
+      final sent = controller.sendReply(text);
+      if (!sent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('未连接 — 请先重连后再发送。'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+
     // Group-room context (§10.6): end.turn and the tool-invoke panel are
     // owner-only. The server enforces it; the buttons simply don't show.
     final activeConvId = ref.watch(activeConversationIdProvider);
@@ -101,8 +114,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
     }
     final isGroup = activeInfo?.isGroup ?? false;
-    final isRoomOwner =
-        isGroup &&
+    final isRoomOwner = isGroup &&
         activeConvId != null &&
         ref.watch(roomOwnershipProvider(activeConvId));
     final showOwnerControls = !isGroup || isRoomOwner;
@@ -110,7 +122,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
-          icon: Icon(_showSidebar ? Icons.menu_open_rounded : Icons.menu_rounded),
+          icon:
+              Icon(_showSidebar ? Icons.menu_open_rounded : Icons.menu_rounded),
           onPressed: () => setState(() => _showSidebar = !_showSidebar),
           tooltip: 'Conversations',
         ),
@@ -175,7 +188,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           // ── Toggle Runtime Panel (owner-only in rooms, §10.6) ──
           if (showOwnerControls)
             IconButton(
-              onPressed: () => setState(() => _showRuntimePanel = !_showRuntimePanel),
+              onPressed: () =>
+                  setState(() => _showRuntimePanel = !_showRuntimePanel),
               icon: Icon(
                 _showRuntimePanel
                     ? Icons.view_sidebar_rounded
@@ -218,7 +232,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   // Turn-ended banner
                   if (_turnEnded)
                     Material(
-                      color: theme.colorScheme.tertiaryContainer.withValues(alpha: 0.3),
+                      color: theme.colorScheme.tertiaryContainer
+                          .withValues(alpha: 0.3),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 16, vertical: 8),
@@ -246,19 +261,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       messages: messages,
                       onSendPressed: _turnEnded
                           ? (_) {} // disabled
-                          : (partialText) {
-                              final sent =
-                                  controller.sendReply(partialText.text);
-                              if (!sent && mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content:
-                                        Text('未连接 — 请先重连后再发送。'),
-                                    duration: Duration(seconds: 2),
-                                  ),
-                                );
-                              }
-                            },
+                          : (partialText) => sendText(partialText.text),
                       user: humanUser,
                       // Without this the chat kept the library's own
                       // theme and the console looked half restyled.
@@ -270,6 +273,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       // `data:image/...;base64,` URLs, which the default
                       // network image provider cannot load.
                       imageMessageBuilder: _buildImageMessage,
+                      // §10.4 group rooms: "@name" completion composer and
+                      // highlighted mention spans. 1:1 chats keep the
+                      // library's default input and bubble.
+                      customBottomWidget: isGroup && activeConvId != null
+                          ? RoomComposer(
+                              roomId: activeConvId,
+                              enabled: !_turnEnded,
+                              onSend: sendText,
+                            )
+                          : null,
+                      textMessageBuilder: isGroup && activeConvId != null
+                          ? (msg, {required messageWidth, required showName}) =>
+                              buildMentionTextMessage(
+                                context,
+                                msg,
+                                messageWidth: messageWidth,
+                                showName: showName,
+                                memberNames: roomMemberNames(
+                                  ref
+                                      .read(roomInfoProvider(activeConvId))
+                                      .valueOrNull,
+                                ),
+                              )
+                          : null,
                     ),
                   ),
                 ],
@@ -333,11 +360,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // SSE stream with `finish_reason: stop` + [DONE]. WorkBuddy then
     // treats the reply as complete.
     final client = ref.read(openHumanClientProvider);
-    final conversationId =
-        ref.read(activeConversationIdProvider) ??
-            (client.activeConversations.isNotEmpty
-                ? client.activeConversations.first
-                : null);
+    final conversationId = ref.read(activeConversationIdProvider) ??
+        (client.activeConversations.isNotEmpty
+            ? client.activeConversations.first
+            : null);
     if (conversationId == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
