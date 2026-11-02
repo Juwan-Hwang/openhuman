@@ -5,10 +5,17 @@
 //! Phase 10: `GET /v1/replies/{invocation_id}` (async reply polling)
 
 pub mod adapters;
+pub mod audio;
+pub mod completions;
 pub mod files;
 pub mod history;
+pub mod images;
+pub mod library;
 pub mod mock;
 pub mod openai;
 pub mod replies;
 pub mod room_ingress;
 pub mod rooms;
+pub mod stored;
+pub mod task;
+pub mod webhooks;

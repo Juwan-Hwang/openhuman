@@ -608,8 +608,89 @@ pub fn count_request_tokens(
     n
 }
 
+// ── API tasks ──
+
+struct TaskInfo {
+    api: String,
+    files: bool,
+    /// What a valid answer looks like (an embeddings task: how many vectors
+    /// of what length), checked when the seat replies.
+    spec: Value,
+}
+
+/// Conversations opened by a non-chat endpoint (an image, a transcript...).
+fn tasks() -> &'static Mutex<HashMap<String, TaskInfo>> {
+    static T: std::sync::OnceLock<Mutex<HashMap<String, TaskInfo>>> = std::sync::OnceLock::new();
+    T.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// `files`: whether the answer is files (a picture) or text (a transcript).
+pub fn mark_task(conversation_id: &str, api: &str, files: bool, spec: Value) {
+    let mut g = tasks().lock().unwrap();
+    // Bounded: a task is answered once and never looked up again. Evict one
+    // entry rather than wiping the map: clearing it dropped the specs of
+    // every other pending task, whose replies then failed validation.
+    let max: usize = std::env::var("OPENHUMAN_SESSION_MAX_TASKS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(10_000);
+    while g.len() > max {
+        let Some(k) = g.keys().next().cloned() else {
+            break;
+        };
+        g.remove(&k);
+    }
+    g.insert(
+        conversation_id.to_string(),
+        TaskInfo {
+            api: api.to_string(),
+            files,
+            spec,
+        },
+    );
+}
+
+/// The endpoint a task conversation answers and whether it takes files.
+pub fn task_api(conversation_id: &str) -> Option<(String, bool)> {
+    tasks()
+        .lock()
+        .unwrap()
+        .get(conversation_id)
+        .map(|t| (t.api.clone(), t.files))
+}
+
+/// The endpoint and answer spec of a task conversation.
+pub fn task_spec(conversation_id: &str) -> Option<(String, Value)> {
+    tasks()
+        .lock()
+        .unwrap()
+        .get(conversation_id)
+        .map(|t| (t.api.clone(), t.spec.clone()))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn task_marks_evict_one_not_all() {
+        std::env::set_var("OPENHUMAN_SESSION_MAX_TASKS", "3");
+        for i in 0..6 {
+            mark_task(
+                &format!("conv_evict_{i}"),
+                "images",
+                true,
+                serde_json::Value::Null,
+            );
+        }
+        let g = tasks().lock().unwrap();
+        assert!(g.len() <= 4, "bounded, {} left", g.len());
+        assert!(
+            (4..6).any(|i| g.contains_key(&format!("conv_evict_{i}"))),
+            "recent specs survive"
+        );
+        drop(g);
+        std::env::remove_var("OPENHUMAN_SESSION_MAX_TASKS");
+    }
+
     use super::*;
 
     #[test]

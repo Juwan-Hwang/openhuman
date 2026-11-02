@@ -112,6 +112,87 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/v1/models", get(list_models))
         .route("/v1/v1/models/:model_id", get(get_model))
         .route("/v1/tokenizers", get(list_tokenizers))
+        // The other OpenAI endpoints: each request is a task the seat
+        // answers (see `api/task.rs`).
+        .route("/v1/images/generations", post(api::images::generations))
+        .route("/v1/v1/images/generations", post(api::images::generations))
+        .route(
+            "/v1/images/edits",
+            post(api::images::edits).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/v1/images/edits",
+            post(api::images::edits).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route("/v1/completions", post(api::completions::completions))
+        .route("/v1/v1/completions", post(api::completions::completions))
+        .route("/v1/audio/speech", post(api::audio::speech))
+        .route("/v1/v1/audio/speech", post(api::audio::speech))
+        .route(
+            "/v1/audio/transcriptions",
+            post(api::audio::transcriptions).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/v1/audio/transcriptions",
+            post(api::audio::transcriptions).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/audio/translations",
+            post(api::audio::translations).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/v1/audio/translations",
+            post(api::audio::translations).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/audio/voices",
+            post(api::library::create_voice)
+                .get(api::library::list_voices)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/audio/voices/:id",
+            get(api::library::get_voice).delete(api::library::delete_voice),
+        )
+        .route(
+            "/v1/audio/voice_consents",
+            post(api::library::create_consent)
+                .get(api::library::list_consents)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/audio/voice_consents/:id",
+            get(api::library::get_consent)
+                .post(api::library::update_consent)
+                .delete(api::library::delete_consent),
+        )
+        .route(
+            "/v1/skills",
+            post(api::library::create_skill)
+                .get(api::library::list_skills)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/skills/:id",
+            get(api::library::retrieve_skill)
+                .post(api::library::update_skill)
+                .delete(api::library::delete_skill),
+        )
+        .route("/v1/skills/:id/content", get(api::library::skill_content))
+        .route(
+            "/v1/skills/:id/versions",
+            post(api::library::create_version)
+                .get(api::library::list_versions)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/skills/:id/versions/:version",
+            get(api::library::get_version).delete(api::library::delete_version),
+        )
+        .route(
+            "/v1/skills/:id/versions/:version/content",
+            get(api::library::version_content),
+        )
         // Companion to async mode: poll for a human's reply without
         // holding the original request open.
         // axum 0.7 path-parameter syntax is `:name` — `{name}` would be
