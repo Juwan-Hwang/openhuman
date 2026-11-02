@@ -145,16 +145,19 @@ struct TurnState {
 /// This is coordination state, not data — it lives in `AppState` next to
 /// the connection registry and survives nothing (rebuilt on boot; streams
 /// re-attach from their cursors).
+/// Stream registry key: (room, api key, caller session).
+type TripleKey = (String, String, String);
+
 #[derive(Clone, Default)]
 pub struct RoomHub {
     channels: Arc<Mutex<HashMap<String, broadcast::Sender<RoomSignal>>>>,
     turns: Arc<Mutex<HashMap<String, TurnState>>>,
     /// Live caller streams per (room, key, session): a new request on the
     /// same triple aborts the previous one (§6.7 resubmit-supersedes).
-    streams: Arc<Mutex<HashMap<(String, String, String), (u64, AbortHandle)>>>,
+    streams: Arc<Mutex<HashMap<TripleKey, (u64, AbortHandle)>>>,
     /// Consecutive empty segments per triple, driving the 20→40→60s
     /// progressive no-content segment length (§6.3).
-    empty_streaks: Arc<Mutex<HashMap<(String, String, String), u32>>>,
+    empty_streaks: Arc<Mutex<HashMap<TripleKey, u32>>>,
 }
 
 /// Aborts the replaced stream when a newer request on its triple lands,

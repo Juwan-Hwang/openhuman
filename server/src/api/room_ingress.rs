@@ -78,16 +78,6 @@ fn session_tag(session_key: &str) -> String {
     crate::crypto::sha256_hex(session_key)[..4].to_string()
 }
 
-/// What the ingress did with one inbound message.
-enum Ingest {
-    /// A keepalive result: dropped on sight, never logged (§6.2).
-    KeepaliveDrop,
-    /// Already delivered once (retry / replay): dropped (§6.1 step 2).
-    Duplicate,
-    /// New caller speech: append to the room log.
-    Speech(Message),
-}
-
 /// POST /rooms/:room_id/v1/chat/completions
 pub async fn room_chat_completions(
     State(app): State<AppState>,
@@ -193,8 +183,14 @@ pub async fn room_chat_completions(
                 .get("images")
                 .map(|v| v.to_string())
                 .unwrap_or_default();
-            let fingerprint = format!("user:{}:{}:{}", req.messages.len(), stripped, images);
-            if !crate::session::first_user_turn(&room_id, &fingerprint) {
+            // Resend-dedup per (room, caller session): clients resend the
+            // full window every turn, so the fingerprint is the stripped
+            // text itself — the message count would defeat it. A genuine
+            // repeat after the turn was answered passes, because
+            // turn_answered clears the seen set.
+            let fingerprint = format!("user:{}:{}", stripped, images);
+            let dedup_key = format!("{}\u{1f}{}", room_id, tag);
+            if !crate::session::first_user_turn(&dedup_key, &fingerprint) {
                 return false;
             }
             msg.content = crate::model::content::ContentBlock::text(&stripped);
@@ -472,7 +468,7 @@ async fn pump(ctx: PumpCtx) {
         {
             continue; // our own speech, already in the caller's context
         }
-        let line = format_room_line(&m);
+        let line = format_room_line(m);
         if tx.send(PumpEvent::Text(line)).is_err() {
             return;
         }

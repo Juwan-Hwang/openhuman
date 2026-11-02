@@ -40,8 +40,17 @@ pub fn is_keepalive_call_id(call_id: &str) -> bool {
 /// a keepalive result when the call it answers was a whitelisted (or
 /// fallback-named) tool with `{}` arguments that the owner never invoked.
 pub fn looks_like_keepalive_pair(tool_name: &str, args: &serde_json::Value) -> bool {
+    let empty_args = match args {
+        serde_json::Value::Object(o) => o.is_empty(),
+        // Clients echo function arguments as a JSON *string*.
+        serde_json::Value::String(s) => serde_json::from_str::<serde_json::Value>(s)
+            .ok()
+            .and_then(|v| v.as_object().map(|o| o.is_empty()))
+            .unwrap_or(false),
+        _ => false,
+    };
     (KEEPALIVE_TOOL_WHITELIST.contains(&tool_name) || tool_name == KEEPALIVE_FALLBACK_TOOL)
-        && args.as_object().map(|o| o.is_empty()).unwrap_or(false)
+        && empty_args
 }
 
 /// Strip a client interjection lead-in; returns the bare user text.
