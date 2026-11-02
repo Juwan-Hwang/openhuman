@@ -88,6 +88,8 @@ pub async fn require_api_key(
         || path.starts_with("/v1/batches/")
         || path == "/v1/vector_stores"
         || path.starts_with("/v1/vector_stores/")
+        || path == "/v1/agents"
+        || path.starts_with("/v1/agents/")
         || path == "/v1/assistants"
         || path.starts_with("/v1/assistants/")
         || path == "/v1/threads"

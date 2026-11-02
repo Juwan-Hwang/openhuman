@@ -21,7 +21,7 @@ pub mod storage;
 pub mod ws;
 
 use axum::middleware::from_fn_with_state;
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
@@ -338,7 +338,90 @@ pub fn build_router(state: AppState) -> Router {
             delete(api::history::delete_conversation_permanent),
         )
         // The seeded agent name is rarely what the human calls it.
-        .route("/v1/agents/:agent_id", patch(api::history::rename_agent))
+        // The Agents API (beta): agents, sessions with turns, items and
+        // an event stream. PATCH on /v1/agents/:agent_id stays with
+        // history::rename_agent (seat-agent identities in history).
+        .route(
+            "/v1/agents",
+            post(api::agents::create_agent).get(api::agents::list_agents),
+        )
+        .route(
+            "/v1/agents/:agent_id",
+            get(api::agents::get_agent)
+                .post(api::agents::update_agent)
+                .delete(api::agents::delete_agent)
+                .patch(api::history::rename_agent),
+        )
+        .route(
+            "/v1/agents/sessions",
+            post(api::agents::create_session).get(api::agents::list_sessions),
+        )
+        .route(
+            "/v1/agents/sessions/:id",
+            get(api::agents::get_session)
+                .post(api::agents::update_session)
+                .delete(api::agents::delete_session),
+        )
+        .route(
+            "/v1/agents/sessions/:id/events",
+            post(api::agents::create_events).get(api::agents::stream_events),
+        )
+        .route(
+            "/v1/agents/sessions/:id/items",
+            get(api::agents::list_items),
+        )
+        .route(
+            "/v1/agents/sessions/:id/turns",
+            get(api::agents::list_turns),
+        )
+        .route(
+            "/v1/agents/sessions/:id/turns/:turn",
+            get(api::agents::get_turn),
+        )
+        .route(
+            "/v1/agents/sessions/:id/turns/:turn/items",
+            get(api::agents::list_turn_items),
+        )
+        .route(
+            "/v1/agents/sessions/:id/traces",
+            get(api::agents::empty_list),
+        )
+        .route(
+            "/v1/agents/sessions/:id/artifacts",
+            get(api::agents::empty_list),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents",
+            get(api::agents::empty_list),
+        )
+        .route(
+            "/v1/agents/sessions/:id/artifacts/:art",
+            get(api::agents::none_found).delete(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/artifacts/:art/content",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub/items",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub/turns",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub/turns/:turn",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub/turns/:turn/items",
+            get(api::agents::none_found),
+        )
         // Agent Seat: the human seat over plain HTTP, for agents that
         // cannot hold a WebSocket (see `seat.rs`).
         .route("/v1/seat/inbox", get(seat::inbox))
