@@ -197,6 +197,7 @@ pub fn build_router(state: AppState) -> Router {
                 "/v1/rooms/:room_id/messages",
                 get(api::rooms::room_messages),
             )
+            .route("/v1/rooms/:room_id/callers", get(api::rooms::room_callers))
             .route(
                 "/v1/rooms/:room_id/caller-keys",
                 post(api::rooms::create_caller_key),

@@ -116,20 +116,18 @@ pub enum EndReason {
 
 /// A signal on a room's live channel — what streams and timers listen to.
 #[derive(Debug, Clone)]
+// Message dominates and is the hot path; boxing it buys nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum RoomSignal {
     /// A message committed to the room log (carries its `room_seq`).
     Message(Message),
     /// The turn is over: streams finish with `stop`.
     EndTurn { reason: EndReason },
-    /// The owner invoked a tool: the TARGET stream finishes with
-    /// `tool_calls`; every other stream ignores the signal (the call
-    /// itself reaches them as a room log line). Without a target every
-    /// attached client ran the same invocation N times (§6.6).
+    /// The owner invoked a tool: the TARGET stream takes the parked call
+    /// (`RoomHub::take_invoke`) and finishes with `tool_calls`; every other
+    /// stream ignores the signal (the call reaches them as a room log
+    /// line). A target between segments takes it on its next request.
     ToolInvoke {
-        invocation_id: String,
-        tool_id: String,
-        input: Value,
-        text: Option<String>,
         target_key: String,
         target_session: String,
     },
@@ -166,14 +164,62 @@ pub struct RoomHub {
     /// Last message instant per room, fed by publish() — the deep-idle
     /// clock reads this instead of hitting the database every 250ms.
     activity: Arc<Mutex<HashMap<String, chrono::DateTime<Utc>>>>,
+    /// Every caller triple seen recently (live or between segments), with
+    /// the tools its last request declared: the owner picks a tool target
+    /// from this list (`GET /v1/rooms/:id/callers`).
+    callers: Arc<Mutex<HashMap<TripleKey, CallerInfo>>>,
+    /// Owner tool invocations waiting for their target triple's stream.
+    /// Taken by that stream when it is live, or by its next request when
+    /// the invoke landed between two segments.
+    pending: Arc<Mutex<HashMap<TripleKey, PendingInvoke>>>,
 }
 
-/// A live caller stream: abort handle plus the tool names its current
-/// request declared (owner tool.invoke targets and validates against it).
+/// A caller triple as the owner sees it when choosing a tool target.
+#[derive(Clone, Debug)]
+pub struct CallerInfo {
+    pub key_id: String,
+    pub session_key: String,
+    /// Short session tag shown next to the caller's name (§10.2).
+    pub session_tag: String,
+    pub display_name: String,
+    pub tools: Vec<String>,
+    pub last_seen: std::time::Instant,
+}
+
+/// An owner tool call parked for one caller triple.
+#[derive(Clone, Debug)]
+pub struct PendingInvoke {
+    pub invocation_id: String,
+    pub tool_id: String,
+    pub input: Value,
+    pub text: Option<String>,
+}
+
+/// A caller counts as reachable for an owner tool call for this long after
+/// its last request: comfortably longer than any segment gap, short enough
+/// that a closed window stops being offered.
+const CALLER_REACHABLE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Why an owner tool call could not be routed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TargetError {
+    /// No reachable caller declared the tool.
+    NotDeclared,
+    /// The named target is not a reachable caller of this room.
+    UnknownTarget,
+    /// The named target did not declare the tool.
+    TargetLacksTool,
+    /// Several callers declared it and the owner named none: the tool
+    /// would run on someone's machine by guesswork. Lists the candidates
+    /// (`<display> · <tag>`).
+    Ambiguous(Vec<String>),
+}
+
+/// A live caller stream: its abort handle. The tools it declared live in
+/// `RoomHub::callers`, which outlives the stream across segment gaps.
 pub struct StreamEntry {
     generation: u64,
     handle: AbortHandle,
-    tools: Vec<String>,
 }
 
 /// Aborts the replaced stream when a newer request on its triple lands,
@@ -298,6 +344,7 @@ impl RoomHub {
 
     /// Register a pump task as the triple's live stream. Supersede first;
     /// the guard removes the entry on drop only if nobody newer replaced it.
+    #[allow(clippy::too_many_arguments)]
     pub async fn stream_register(
         &self,
         room_id: &str,
@@ -305,6 +352,8 @@ impl RoomHub {
         session_key: &str,
         handle: AbortHandle,
         tools: Vec<String>,
+        display_name: &str,
+        session_tag: &str,
     ) -> StreamGuard {
         let key = (
             room_id.to_string(),
@@ -316,15 +365,19 @@ impl RoomHub {
             static GEN: AtomicU64 = AtomicU64::new(1);
             GEN.fetch_add(1, Ordering::Relaxed)
         };
-        let mut streams = self.streams.lock().await;
-        streams.insert(
+        self.callers.lock().await.insert(
             key.clone(),
-            StreamEntry {
-                generation,
-                handle,
+            CallerInfo {
+                key_id: key_id.to_string(),
+                session_key: session_key.to_string(),
+                session_tag: session_tag.to_string(),
+                display_name: display_name.to_string(),
                 tools,
+                last_seen: std::time::Instant::now(),
             },
         );
+        let mut streams = self.streams.lock().await;
+        streams.insert(key.clone(), StreamEntry { generation, handle });
         StreamGuard {
             hub: self.clone(),
             key,
@@ -372,17 +425,112 @@ impl RoomHub {
         }
     }
 
-    /// The (key, session) of the live stream that should execute an owner
-    /// tool.invoke: the newest registrant whose current request declared
-    /// the tool. `None` when no live stream knows it — the caller then
-    /// gets `tool_not_found` and nothing enters the log (§6.6).
-    pub async fn find_tool_target(&self, room_id: &str, tool_id: &str) -> Option<(String, String)> {
-        let streams = self.streams.lock().await;
-        streams
+    /// Reachable callers of a room, newest first.
+    pub async fn callers(&self, room_id: &str) -> Vec<CallerInfo> {
+        let mut callers = self.callers.lock().await;
+        callers.retain(|_, c| c.last_seen.elapsed() < CALLER_REACHABLE);
+        let mut out: Vec<CallerInfo> = callers
             .iter()
-            .filter(|((r, _, _), e)| r == room_id && e.tools.iter().any(|t| t == tool_id))
-            .max_by_key(|(_, e)| e.generation)
-            .map(|((_, k, sess), _)| (k.clone(), sess.clone()))
+            .filter(|((r, _, _), _)| r == room_id)
+            .map(|(_, c)| c.clone())
+            .collect();
+        out.sort_by_key(|c| std::cmp::Reverse(c.last_seen));
+        out
+    }
+
+    /// Is this triple's stream open right now?
+    pub async fn is_live(&self, room_id: &str, key_id: &str, session_key: &str) -> bool {
+        self.streams.lock().await.contains_key(&(
+            room_id.to_string(),
+            key_id.to_string(),
+            session_key.to_string(),
+        ))
+    }
+
+    /// The caller triple that should execute an owner tool call (§6.6).
+    ///
+    /// `target` is what the owner picked: a session tag (`a3f9`), or
+    /// `key_id:tag` when two keys' tags collide. Without a target the call
+    /// routes only when exactly one reachable caller declared the tool —
+    /// with several, running it on whichever registered last would put the
+    /// owner's command on a member's machine by chance.
+    pub async fn find_tool_target(
+        &self,
+        room_id: &str,
+        tool_id: &str,
+        target: Option<&str>,
+    ) -> Result<(String, String), TargetError> {
+        let callers = self.callers(room_id).await;
+        if let Some(t) = target.map(str::trim).filter(|t| !t.is_empty()) {
+            let (want_key, want_tag) = match t.split_once(':') {
+                Some((k, tag)) => (Some(k), tag),
+                None => (None, t),
+            };
+            let named: Vec<&CallerInfo> = callers
+                .iter()
+                .filter(|c| {
+                    c.session_tag == want_tag && want_key.map(|k| k == c.key_id).unwrap_or(true)
+                })
+                .collect();
+            return match named.as_slice() {
+                [] => Err(TargetError::UnknownTarget),
+                [c] if c.tools.iter().any(|x| x == tool_id) => {
+                    Ok((c.key_id.clone(), c.session_key.clone()))
+                }
+                [_] => Err(TargetError::TargetLacksTool),
+                many => Err(TargetError::Ambiguous(
+                    many.iter()
+                        .map(|c| format!("{}:{}", c.key_id, c.session_tag))
+                        .collect(),
+                )),
+            };
+        }
+        let declaring: Vec<&CallerInfo> = callers
+            .iter()
+            .filter(|c| c.tools.iter().any(|x| x == tool_id))
+            .collect();
+        match declaring.as_slice() {
+            [] => Err(TargetError::NotDeclared),
+            [c] => Ok((c.key_id.clone(), c.session_key.clone())),
+            many => Err(TargetError::Ambiguous(
+                many.iter()
+                    .map(|c| format!("{} · {}", c.display_name, c.session_tag))
+                    .collect(),
+            )),
+        }
+    }
+
+    /// Park an owner tool call for its target triple. A newer call for the
+    /// same triple replaces an untaken older one (the owner re-clicked).
+    pub async fn park_invoke(
+        &self,
+        room_id: &str,
+        key_id: &str,
+        session_key: &str,
+        invoke: PendingInvoke,
+    ) {
+        self.pending.lock().await.insert(
+            (
+                room_id.to_string(),
+                key_id.to_string(),
+                session_key.to_string(),
+            ),
+            invoke,
+        );
+    }
+
+    /// Take the call parked for this triple, if any (exactly once).
+    pub async fn take_invoke(
+        &self,
+        room_id: &str,
+        key_id: &str,
+        session_key: &str,
+    ) -> Option<PendingInvoke> {
+        self.pending.lock().await.remove(&(
+            room_id.to_string(),
+            key_id.to_string(),
+            session_key.to_string(),
+        ))
     }
 
     /// Drop every piece of hub state a room owned (channel, turn timer,
@@ -396,6 +544,14 @@ impl RoomHub {
             }
         }
         self.activity.lock().await.remove(room_id);
+        self.callers
+            .lock()
+            .await
+            .retain(|(r, _, _), _| r != room_id);
+        self.pending
+            .lock()
+            .await
+            .retain(|(r, _, _), _| r != room_id);
         let mut streams = self.streams.lock().await;
         let doomed: Vec<TripleKey> = streams
             .keys()

@@ -533,6 +533,45 @@ pub async fn room_messages(
     Ok(Json(json!({"messages": out})))
 }
 
+// ── Connected callers (owner tool-call targets) ──
+
+/// `GET /v1/rooms/:id/callers` — the AI callers reachable in this room,
+/// newest first: each caller session with the tools its last request
+/// declared. The owner picks one as the `target` of a `tool.invoke`.
+pub async fn room_callers(
+    State(app): State<AppState>,
+    principal: axum::Extension<AuthPrincipal>,
+    Path(room_id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_room(&app, &room_id).await?;
+    if app
+        .room
+        .room_member_role(&room_id, &actor(&principal))
+        .await
+        .is_none()
+    {
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            "not_a_member",
+            "You are not a member of this room.",
+        ));
+    }
+    let mut out = Vec::new();
+    for c in app.rooms.callers(&room_id).await {
+        let live = app.rooms.is_live(&room_id, &c.key_id, &c.session_key).await;
+        out.push(json!({
+            "target": format!("{}:{}", c.key_id, c.session_tag),
+            "key_id": c.key_id,
+            "session": c.session_tag,
+            "display_name": format!("{} · {}", c.display_name, c.session_tag),
+            "tools": c.tools,
+            "live": live,
+            "last_seen_secs": c.last_seen.elapsed().as_secs(),
+        }));
+    }
+    Ok(Json(json!({"callers": out})))
+}
+
 // ── Room-bound caller keys ──
 
 #[derive(Deserialize)]

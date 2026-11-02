@@ -31,6 +31,13 @@ pub const KEEPALIVE_FALLBACK_TOOL: &str = "ohka_noop";
 /// confirms it (§6.4).
 pub const CLAUDE_INTERJECTION_PREFIX: &str = "The user sent a new message while you were working:";
 
+/// The trailer Claude Code 2.1.30x appends after the interjected text
+/// (measured on 2.1.306 in an interactive TUI, 2026-11-02):
+/// `\n\nThis is how Claude Code surfaces messages the user sends mid-turn
+/// — … Address the message above as you continue this turn.`
+pub const CLAUDE_INTERJECTION_TRAILER: &str =
+    "This is how Claude Code surfaces messages the user sends mid-turn";
+
 /// Is this call id one of our keepalives?
 pub fn is_keepalive_call_id(call_id: &str) -> bool {
     call_id.starts_with(KEEPALIVE_ID_PREFIX)
@@ -54,8 +61,38 @@ pub fn looks_like_keepalive_pair(tool_name: &str, args: &serde_json::Value) -> b
 }
 
 /// Strip a client interjection lead-in; returns the bare user text.
+///
+/// Only text that opens with Claude's lead-in is touched; then its trailer
+/// (if any) goes too, so the room sees exactly what the person typed.
 pub fn strip_interjection_leadin(text: &str) -> &str {
-    text.strip_prefix(CLAUDE_INTERJECTION_PREFIX)
-        .map(str::trim_start)
-        .unwrap_or(text)
+    let Some(rest) = text.strip_prefix(CLAUDE_INTERJECTION_PREFIX) else {
+        return text;
+    };
+    let rest = rest.trim_start();
+    match rest.rfind(CLAUDE_INTERJECTION_TRAILER) {
+        Some(i) => rest[..i].trim_end(),
+        None => rest,
+    }
+}
+
+#[cfg(test)]
+mod interjection_tests {
+    use super::*;
+
+    #[test]
+    fn strips_claude_2_1_306_leadin_and_trailer() {
+        let raw = "The user sent a new message while you were working:\n插话：暗号 X\n\nThis is how Claude Code surfaces messages the user sends mid-turn — within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.";
+        assert_eq!(strip_interjection_leadin(raw), "插话：暗号 X");
+    }
+
+    #[test]
+    fn leadin_without_trailer_and_plain_text() {
+        assert_eq!(
+            strip_interjection_leadin("The user sent a new message while you were working:\nhi"),
+            "hi"
+        );
+        // A user quoting the trailer in ordinary text is left alone.
+        let plain = "This is how Claude Code surfaces messages the user sends mid-turn?";
+        assert_eq!(strip_interjection_leadin(plain), plain);
+    }
 }

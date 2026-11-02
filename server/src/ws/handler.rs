@@ -401,6 +401,7 @@ pub(crate) async fn handle_client_message(
             tool_id,
             input,
             text,
+            target,
         } => {
             handle_tool_invoke(
                 app,
@@ -409,6 +410,7 @@ pub(crate) async fn handle_client_message(
                 &tool_id,
                 input,
                 text,
+                target,
                 human_id,
                 agent_id,
             )
@@ -758,6 +760,7 @@ async fn handle_tool_invoke(
     tool_id: &str,
     input: serde_json::Value,
     text: Option<String>,
+    target: Option<String>,
     human_id: &str,
     agent_id: &str,
 ) {
@@ -776,24 +779,47 @@ async fn handle_tool_invoke(
                 return;
             }
         }
-        // Target exactly one caller stream: the newest live triple whose
-        // current request declared this tool (§6.6). No target means no
-        // attached caller can execute it — reject like the 1:1 path does
-        // instead of broadcasting a call nobody (or everybody) runs.
-        let Some((target_key, target_session)) =
-            app.rooms.find_tool_target(conversation_id, tool_id).await
-        else {
-            let event = protocol::error_event(
-                conversation_id,
-                "tool_not_found",
-                &format!(
-                    "Tool '{}' is not declared by any live caller stream in this room",
-                    tool_id
-                ),
-            );
-            let json = protocol::event_to_json(&event);
-            app.connections.send_to_human(human_id, &json).await;
-            return;
+        // Route to exactly one caller triple (§6.6): the one the owner named
+        // (`target`), or the only reachable caller that declared the tool.
+        // Several candidates and no target is an error listing them — the
+        // owner's command must never land on a member's machine by chance.
+        let (target_key, target_session) = match app
+            .rooms
+            .find_tool_target(conversation_id, tool_id, target.as_deref())
+            .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                let (code, msg) = match e {
+                    crate::rooms::TargetError::NotDeclared => (
+                        "tool_not_found",
+                        format!(
+                            "Tool '{}' is not declared by any caller connected to this room.",
+                            tool_id
+                        ),
+                    ),
+                    crate::rooms::TargetError::UnknownTarget => (
+                        "target_not_found",
+                        "No caller with that session is connected to this room.".to_string(),
+                    ),
+                    crate::rooms::TargetError::TargetLacksTool => (
+                        "tool_not_found",
+                        format!("That caller did not declare tool '{}'.", tool_id),
+                    ),
+                    crate::rooms::TargetError::Ambiguous(c) => (
+                        "target_required",
+                        format!(
+                            "Several callers declare '{}'; pick one as target: {}",
+                            tool_id,
+                            c.join(", ")
+                        ),
+                    ),
+                };
+                let event = protocol::error_event(conversation_id, code, &msg);
+                let json = protocol::event_to_json(&event);
+                app.connections.send_to_human(human_id, &json).await;
+                return;
+            }
         };
         // The call itself is a room message (visible to all members).
         let display = app
@@ -827,13 +853,22 @@ async fn handle_tool_invoke(
         )
         .await;
         app.rooms
-            .publish(
+            .park_invoke(
                 conversation_id,
-                crate::rooms::RoomSignal::ToolInvoke {
+                &target_key,
+                &target_session,
+                crate::rooms::PendingInvoke {
                     invocation_id: invocation_id.to_string(),
                     tool_id: tool_id.to_string(),
                     input,
                     text,
+                },
+            )
+            .await;
+        app.rooms
+            .publish(
+                conversation_id,
+                crate::rooms::RoomSignal::ToolInvoke {
                     target_key,
                     target_session,
                 },

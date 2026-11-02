@@ -641,6 +641,18 @@ pub(crate) fn is_auxiliary_request(req: &ChatCompletionRequest) -> bool {
     }) {
         return true;
     }
+    // Codex 0.16x asks for a thread title with the instruction in a USER
+    // message (measured in its interactive TUI, 2026-11-02): matched by
+    // its exact opening, never by a loose keyword in user text.
+    if req.messages.iter().any(|m| {
+        m.role == ChatRole::User
+            && m.content
+                .to_text()
+                .trim_start()
+                .starts_with("Generate a concise, single-line task title")
+    }) {
+        return true;
+    }
     let prompt: String = req
         .messages
         .iter()

@@ -188,11 +188,13 @@ pub async fn room_chat_completions(
             // text itself — the message count would defeat it. A genuine
             // repeat after the turn was answered passes, because
             // turn_answered clears the seen set.
-            let fingerprint = format!("user:{}:{}", stripped, images);
             let dedup_key = format!("{}\u{1f}{}", room_id, tag);
+            let stripped = crate::session::room_resend_tail(&dedup_key, &stripped);
+            let fingerprint = format!("user:{}:{}", stripped, images);
             if !crate::session::first_user_turn(&dedup_key, &fingerprint) {
                 return false;
             }
+            crate::session::room_speech_logged(&dedup_key, &stripped);
             msg.content = crate::model::content::ContentBlock::text(&stripped);
         }
         msg.conversation_id = room_id.clone();
@@ -299,6 +301,8 @@ pub async fn room_chat_completions(
             &session_key,
             pump_task.abort_handle(),
             tools,
+            &principal.agent.name,
+            &session_tag(&session_key),
         )
         .await;
 
@@ -514,6 +518,16 @@ async fn pump(ctx: PumpCtx) {
     }
     advance_cursor(&app, &room_id, &key_id, &session_key, cursor).await;
 
+    // An owner tool call that landed between two segments of this triple
+    // runs now, on the request that came for it (§6.6).
+    if let Some(inv) = app.rooms.take_invoke(&room_id, &key_id, &session_key).await {
+        app.rooms
+            .segment_record_outcome(&room_id, &key_id, &session_key, true)
+            .await;
+        close_with_invoke(&tx, inv);
+        return;
+    }
+
     let quiet = crate::rooms::segment_quiet_secs(&meta);
     let seg_max = crate::rooms::segment_max_secs(&meta);
     let deep_idle = Duration::from_secs(crate::rooms::deep_idle_mins(&meta) * 60);
@@ -594,10 +608,6 @@ async fn pump(ctx: PumpCtx) {
                 return;
             }
             Some(Ok(RoomSignal::ToolInvoke {
-                invocation_id,
-                tool_id,
-                input,
-                text,
                 target_key,
                 target_session,
             })) => {
@@ -606,18 +616,19 @@ async fn pump(ctx: PumpCtx) {
                 if target_key != key_id || target_session != session_key {
                     continue;
                 }
-                if let Some(t) = text.filter(|t| !t.trim().is_empty()) {
-                    let _ = tx.send(PumpEvent::Text(t));
+                // A pump whose client already hung up must leave the call
+                // parked for the next request instead of eating it.
+                if tx.is_closed() {
+                    return;
                 }
+                let Some(inv) = app.rooms.take_invoke(&room_id, &key_id, &session_key).await else {
+                    continue; // already taken (a superseded twin got it)
+                };
                 app.rooms
                     .segment_record_outcome(&room_id, &key_id, &session_key, had_content)
                     .await;
                 crate::session::turn_answered(&dedup_key);
-                let _ = tx.send(PumpEvent::CloseToolCall {
-                    id: invocation_id,
-                    name: tool_id,
-                    args: input,
-                });
+                close_with_invoke(&tx, inv);
                 return;
             }
             Some(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
@@ -684,6 +695,19 @@ async fn pump(ctx: PumpCtx) {
             }
         }
     }
+}
+
+/// Close the segment with the owner's real tool call (and the words the
+/// owner said with it, as content before the call).
+fn close_with_invoke(tx: &mpsc::UnboundedSender<PumpEvent>, inv: crate::rooms::PendingInvoke) {
+    if let Some(t) = inv.text.filter(|t| !t.trim().is_empty()) {
+        let _ = tx.send(PumpEvent::Text(t));
+    }
+    let _ = tx.send(PumpEvent::CloseToolCall {
+        id: inv.invocation_id,
+        name: inv.tool_id,
+        args: inv.input,
+    });
 }
 
 /// Pick the keepalive tool from the client's own declared tools (§6.2).

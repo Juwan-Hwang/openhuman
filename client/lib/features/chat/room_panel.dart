@@ -5,12 +5,16 @@
 ///   邀请     mint / copy / revoke invite codes (owner only)
 ///   连接配置  Base URL `/rooms/<id>/v1`, model name, caller key minting
 ///             with a display name — all copyable (owner only)
+///   已连接的 AI  each caller session with its declared tools; the owner
+///             runs a tool on exactly the session they pick (owner only)
 ///   设置     idle-release seconds + segmentation toggle (owner only)
 ///
 /// Non-owners see the member list and the read-only connection info of
 /// their own; the owner-only sections are hidden (the server enforces the
 /// rule either way).
 library;
+
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -212,6 +216,10 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                   ],
                   const Divider(height: 32),
 
+                  // ── 已连接的 AI（工具调用目标，§6.6）──
+                  _CallersSection(roomId: widget.roomId),
+                  const Divider(height: 32),
+
                   // ── 设置 ──
                   Text('房间设置', style: theme.textTheme.titleSmall),
                   const SizedBox(height: 8),
@@ -371,5 +379,152 @@ class _SettingsEditorState extends State<_SettingsEditor> {
         ),
       ],
     );
+  }
+}
+
+/// The AI callers reachable in the room. A tool call runs on the one
+/// session the owner picks here — with several callers declaring the same
+/// tool, the server refuses an untargeted call rather than guess whose
+/// machine runs it.
+class _CallersSection extends ConsumerStatefulWidget {
+  const _CallersSection({required this.roomId});
+
+  final String roomId;
+
+  @override
+  ConsumerState<_CallersSection> createState() => _CallersSectionState();
+}
+
+class _CallersSectionState extends ConsumerState<_CallersSection> {
+  late Future<List<Map<String, dynamic>>> _callers = _load();
+
+  Future<List<Map<String, dynamic>>> _load() =>
+      ref.read(openHumanClientProvider).listRoomCallers(widget.roomId);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text('已连接的 AI', style: theme.textTheme.titleSmall),
+            const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.refresh, size: 18),
+              tooltip: '刷新',
+              onPressed: () => setState(() => _callers = _load()),
+            ),
+          ],
+        ),
+        FutureBuilder<List<Map<String, dynamic>>>(
+          future: _callers,
+          builder: (context, snap) {
+            if (snap.connectionState != ConnectionState.done) {
+              return const Padding(
+                padding: EdgeInsets.all(8),
+                child: LinearProgressIndicator(),
+              );
+            }
+            if (snap.hasError) return Text('加载失败：${snap.error}');
+            final callers = snap.data ?? const [];
+            if (callers.isEmpty) {
+              return Text(
+                '还没有 AI 接入这个房间。',
+                style: theme.textTheme.bodySmall,
+              );
+            }
+            return Column(
+              children: [
+                for (final c in callers)
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(
+                      Icons.smart_toy_outlined,
+                      size: 20,
+                      color: c['live'] == true
+                          ? theme.colorScheme.primary
+                          : theme.colorScheme.onSurfaceVariant,
+                    ),
+                    title: Text(c['display_name'] as String? ?? '?'),
+                    subtitle: Text(
+                      '${c['live'] == true ? '在线' : '段间（下次请求时执行）'} · '
+                      '${(c['tools'] as List?)?.length ?? 0} 个工具',
+                    ),
+                    trailing: ((c['tools'] as List?)?.isNotEmpty ?? false)
+                        ? TextButton(
+                            onPressed: () => _invoke(context, c),
+                            child: const Text('调用工具'),
+                          )
+                        : null,
+                  ),
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Future<void> _invoke(BuildContext context, Map<String, dynamic> caller) async {
+    final tools =
+        (caller['tools'] as List?)?.whereType<String>().toList() ?? const <String>[];
+    var tool = tools.first;
+    final input = TextEditingController(text: '{}');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setLocal) => AlertDialog(
+          title: Text('在 ${caller['display_name']} 上调用'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButton<String>(
+                value: tool,
+                isExpanded: true,
+                items: [
+                  for (final t in tools)
+                    DropdownMenuItem(value: t, child: Text(t)),
+                ],
+                onChanged: (v) => setLocal(() => tool = v ?? tool),
+              ),
+              TextField(
+                controller: input,
+                maxLines: 4,
+                decoration: const InputDecoration(labelText: '参数（JSON）'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('执行'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final args = jsonDecode(input.text.trim().isEmpty ? '{}' : input.text);
+      await ref.read(openHumanClientProvider).invokeTool(
+            widget.roomId,
+            tool,
+            args,
+            target: caller['target'] as String?,
+          );
+      messenger.showSnackBar(const SnackBar(content: Text('已发送')));
+    } on FormatException {
+      messenger.showSnackBar(const SnackBar(content: Text('参数不是合法的 JSON')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('执行失败：$e')));
+    }
   }
 }

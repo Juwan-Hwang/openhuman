@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/**']
   pull_request:
     branches: [main]
 
@@ -19,6 +19,36 @@ jobs:
       - run: cargo fmt -- --check
       - run: cargo clippy -- -D warnings
       - run: cargo test
+
+  server-postgres:
+    name: Server (Rust, PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: openhuman
+          POSTGRES_PASSWORD: openhuman
+          POSTGRES_DB: openhuman
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openhuman"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      OPENHUMAN_BACKEND: postgres
+      DATABASE_URL: postgres://openhuman:openhuman@localhost:5432/openhuman
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # The room suite and the storage compat suite against a real
+      # database; one thread so the suites never race on shared tables.
+      - run: cargo test --test rooms --test postgres_compat -- --include-ignored --test-threads=1
 
   sdk-dart:
     name: SDK (Dart)

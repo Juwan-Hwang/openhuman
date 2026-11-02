@@ -344,6 +344,11 @@ pub enum ClientMessage {
         /// `tool_calls` — dropping this is what made companion prose vanish.
         #[serde(default)]
         text: Option<String>,
+        /// Group rooms only: which caller runs the call — a caller session
+        /// tag (`a3f9`) or `key_id:tag`, as `GET /v1/rooms/:id/callers`
+        /// lists them. Required when several callers declare the tool.
+        #[serde(default)]
+        target: Option<String>,
     },
 
     /// Human explicitly ends the current turn.

@@ -500,6 +500,7 @@ class OpenHumanClient {
     String toolId,
     dynamic input, {
     String? text,
+    String? target,
   }) async {
     _connection.invokeTool(
       conversationId: conversationId,
@@ -507,6 +508,7 @@ class OpenHumanClient {
       toolId: toolId,
       input: input,
       text: text,
+      target: target,
     );
   }
 
@@ -594,6 +596,18 @@ class OpenHumanClient {
       '/v1/rooms/$roomId/caller-keys',
       body: {'display_name': displayName},
     );
+  }
+
+  /// AI callers reachable in a room (member), newest first. Each entry has
+  /// `target` (pass it to [invokeTool] in a room), `display_name`,
+  /// `session`, `tools` (names its last request declared) and `live`
+  /// (false between two segments; a call made then runs on its next
+  /// request).
+  Future<List<Map<String, dynamic>>> listRoomCallers(String roomId) async {
+    final res = await _getJson('/v1/rooms/$roomId/callers');
+    return (res['callers'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
   }
 
   /// Room settings (owner): idle release seconds and segmentation knobs.

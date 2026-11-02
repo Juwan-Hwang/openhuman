@@ -50,6 +50,9 @@ struct Inner {
     /// conversation_id → fingerprints of user turns delivered since the
     /// last final reply
     seen_users: HashMap<String, HashSet<String>>,
+    /// room caller (room + session tag) → the last user text it put in the
+    /// room log; survives turn_answered (see `room_resend_tail`)
+    last_room_speech: HashMap<String, String>,
     /// conversation_id → context snapshot
     context: HashMap<String, Value>,
     /// agent_id → client type of its last main request
@@ -266,6 +269,37 @@ pub fn first_user_turn(conversation_id: &str, fingerprint: &str) -> bool {
         .entry(conversation_id.to_string())
         .or_default()
         .insert(sha(fingerprint))
+}
+
+/// Room ingress: what is genuinely new in a caller's user text.
+///
+/// Codex steering (type while it streams) aborts the open segment and
+/// resends its pending input with the steer appended — the earlier prompt
+/// and the new words arrive as one merged user turn (`a\n\nb`), after a
+/// segment that delivered content and so cleared the resend dedup. When
+/// the merged text opens with exactly the last speech this caller logged,
+/// only the remainder is new. A text that IS the last speech, alone, stays
+/// whole (a deliberate repeat after an answer).
+pub fn room_resend_tail(caller: &str, text: &str) -> String {
+    let inner = inner();
+    let map = inner.lock().unwrap();
+    if let Some(last) = map.last_room_speech.get(caller) {
+        if let Some(rest) = text.strip_prefix(last.as_str()) {
+            if rest.starts_with("\n\n") && !rest.trim().is_empty() {
+                return rest.trim_start().to_string();
+            }
+        }
+    }
+    text.to_string()
+}
+
+/// Remember the user text this room caller just logged.
+pub fn room_speech_logged(caller: &str, text: &str) {
+    inner()
+        .lock()
+        .unwrap()
+        .last_room_speech
+        .insert(caller.to_string(), text.to_string());
 }
 
 /// A turn ended with a final reply: later repeats of earlier user turns are

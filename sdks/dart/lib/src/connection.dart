@@ -529,14 +529,19 @@ class OpenHumanConnection {
     required String toolId,
     required dynamic input,
     String? text,
+    String? target,
   }) {
-    _sendWire(ToolInvokeMessage(
-      conversationId: conversationId,
-      invocationId: invocationId,
-      toolId: toolId,
-      input: input,
-      text: text,
-    ).toWireJson());
+    _sendWire({
+      ...ToolInvokeMessage(
+        conversationId: conversationId,
+        invocationId: invocationId,
+        toolId: toolId,
+        input: input,
+        text: text,
+      ).toWireJson(),
+      // Group rooms: which caller runs it (`GET /v1/rooms/:id/callers`).
+      if (target != null) 'target': target,
+    });
   }
 
   // ── Send: end.turn ──────────────────────────────────

@@ -1359,3 +1359,232 @@ async fn room_reply_poll_stays_inside_its_room() {
         "room A's alias serves its own invocation"
     );
 }
+
+/// Does this SSE chunk carry a real tool call with this id?
+fn runs_call(chunk: &serde_json::Value, id: &str) -> bool {
+    chunk["choices"][0]["delta"]["tool_calls"]
+        .as_array()
+        .map(|calls| calls.iter().any(|c| c["id"] == id))
+        .unwrap_or(false)
+}
+
+fn bash_tool() -> serde_json::Value {
+    serde_json::json!([{"type":"function","function":{"name":"Bash","description":"b","parameters":{}}}])
+}
+
+async fn open_stream(
+    addr: &std::net::SocketAddr,
+    room: &str,
+    key: &str,
+    conv: &str,
+    text: &str,
+) -> reqwest::Response {
+    http()
+        .post(format!(
+            "http://{}/rooms/{}/v1/chat/completions",
+            addr, room
+        ))
+        .bearer_auth(key)
+        .header("x-conversation-id", conv)
+        .json(&serde_json::json!({
+            "model": "room", "stream": true,
+            "messages": [{"role":"user","content":text}],
+            "tools": bash_tool(),
+        }))
+        .send()
+        .await
+        .unwrap()
+}
+
+async fn room_callers(addr: &std::net::SocketAddr, room: &str) -> Vec<serde_json::Value> {
+    let v: serde_json::Value = http()
+        .get(format!("http://{}/v1/rooms/{}/callers", addr, room))
+        .bearer_auth(DEMO_KEY)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    v["callers"].as_array().cloned().unwrap_or_default()
+}
+
+/// Two callers both declare Bash: an untargeted owner call is refused with
+/// the candidates (it must never land on a member's machine by chance),
+/// and naming one from `GET /callers` runs it on exactly that one.
+#[tokio::test]
+async fn owner_tool_invoke_with_two_candidates_needs_a_target() {
+    let (_app, addr) = app_with_humans(&[]).await;
+    let room = create_room(&addr, DEMO_KEY, "两个候选").await;
+    let key_a = mint_caller_key(&addr, DEMO_KEY, &room, "A 的 Claude").await;
+    let key_b = mint_caller_key(&addr, DEMO_KEY, &room, "B 的 Claude").await;
+    let req_a = open_stream(&addr, &room, &key_a, "conv-two-a", "A 在线").await;
+    let req_b = open_stream(&addr, &room, &key_b, "conv-two-b", "B 在线").await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let callers = room_callers(&addr, &room).await;
+    assert_eq!(callers.len(), 2, "both callers listed: {:?}", callers);
+    assert!(callers.iter().all(|c| c["live"] == true));
+    let target_b = callers
+        .iter()
+        .find(|c| {
+            c["display_name"]
+                .as_str()
+                .unwrap()
+                .starts_with("B 的 Claude")
+        })
+        .unwrap()["target"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mut ws = ws_connect(&addr, DEMO_KEY).await;
+    let _ = ws_next(&mut ws).await;
+    ws.send(WsMessage::Text(
+        serde_json::json!({"event_type":"tool.invoke","conversation_id":room,"invocation_id":"inv_amb","tool_id":"Bash","input":{"cmd":"ls"}})
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+    let ev = ws_next(&mut ws).await;
+    assert_eq!(ev["event_type"], "error");
+    assert_eq!(ev["data"]["code"], "target_required");
+    assert_eq!(
+        room_log(&addr, DEMO_KEY, &room)
+            .await
+            .iter()
+            .filter(|m| m["metadata"]["tool_id"] == "Bash")
+            .count(),
+        0
+    );
+
+    ws.send(WsMessage::Text(
+        serde_json::json!({"event_type":"tool.invoke","conversation_id":room,"invocation_id":"inv_to_b","tool_id":"Bash","input":{"cmd":"ls"},"target":target_b})
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+    let chunks_b = sse_collect(req_b, "tool_calls", std::time::Duration::from_secs(5)).await;
+    let ran_b = chunks_b.iter().any(|c| c.to_string().contains("inv_to_b"));
+    assert!(
+        ran_b,
+        "the named target runs the call: {:?}",
+        chunks_b.last()
+    );
+    let chunks_a = sse_collect(req_a, "tool_calls", std::time::Duration::from_secs(2)).await;
+    assert!(
+        !chunks_a.iter().any(|c| runs_call(c, "inv_to_b")),
+        "the other caller sees the call as a room line but never runs it"
+    );
+}
+
+/// An owner call landing between two segments (no live stream) is parked
+/// and closes the target's very next request with the real tool call.
+#[tokio::test]
+async fn owner_tool_invoke_between_segments_runs_on_next_request() {
+    let (_app, addr) = app_with_humans(&[]).await;
+    let room = create_room(&addr, DEMO_KEY, "段间调用").await;
+    let key = mint_caller_key(&addr, DEMO_KEY, &room, "小明的 Codex").await;
+    // Short empty segments so the first request closes on its own.
+    let res = http()
+        .patch(format!("http://{}/v1/rooms/{}", addr, room))
+        .bearer_auth(DEMO_KEY)
+        .json(&serde_json::json!({"room_segment_max_secs": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+
+    let first = open_stream(&addr, &room, &key, "conv-gap", "在吗").await;
+    let chunks = sse_collect(first, "tool_calls", std::time::Duration::from_secs(5)).await;
+    assert!(
+        chunks.iter().any(|c| c.to_string().contains("ohka_")),
+        "keepalive close"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let callers = room_callers(&addr, &room).await;
+    assert_eq!(callers.len(), 1);
+    assert_eq!(callers[0]["live"], false, "between segments");
+
+    let mut ws = ws_connect(&addr, DEMO_KEY).await;
+    let _ = ws_next(&mut ws).await;
+    ws.send(WsMessage::Text(
+        serde_json::json!({"event_type":"tool.invoke","conversation_id":room,"invocation_id":"inv_gap","tool_id":"Bash","input":{"cmd":"pwd"}})
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+    let ack = ws_next(&mut ws).await;
+    assert_ne!(
+        ack["event_type"], "error",
+        "routed to the only caller: {}",
+        ack
+    );
+
+    let next = open_stream(&addr, &room, &key, "conv-gap", "在吗").await;
+    let chunks = sse_collect(next, "tool_calls", std::time::Duration::from_secs(5)).await;
+    assert!(
+        chunks.iter().any(|c| runs_call(c, "inv_gap")),
+        "the next request carries the parked call: {:?}",
+        chunks.last()
+    );
+}
+
+/// Codex steering (measured on 0.163 TUI): typing while it streams resends
+/// the earlier prompt merged with the new words. Only the new words may
+/// enter the room log — the earlier prompt is already there.
+#[tokio::test]
+async fn steer_resend_logs_only_the_new_words() {
+    let (_app, addr) = app_with_humans(&[]).await;
+    let room = create_room(&addr, DEMO_KEY, "转向重发").await;
+    let key = mint_caller_key(&addr, DEMO_KEY, &room, "小明的 Codex").await;
+    let _ = segment_conv(
+        &addr,
+        &room,
+        &key,
+        "conv-steer",
+        serde_json::json!([{"role":"user","content":"我进群了"}]),
+    )
+    .await;
+    let _ = segment_conv(
+        &addr,
+        &room,
+        &key,
+        "conv-steer",
+        serde_json::json!([
+            {"role":"user","content":"我进群了"},
+            {"role":"user","content":"插话：暗号 X"},
+        ]),
+    )
+    .await;
+    let texts: Vec<String> = room_log(&addr, DEMO_KEY, &room)
+        .await
+        .iter()
+        .map(|m| m["text"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(texts, vec!["我进群了", "插话：暗号 X"], "log: {:?}", texts);
+}
+
+/// Codex's title side call carries its instruction in a user message; it
+/// must never enter the room log.
+#[tokio::test]
+async fn codex_title_side_call_bypasses_room_log() {
+    let (_app, addr) = app_with_humans(&[]).await;
+    let room = create_room(&addr, DEMO_KEY, "标题旁路").await;
+    let key = mint_caller_key(&addr, DEMO_KEY, &room, "小明的 Codex").await;
+    let res = http()
+        .post(format!(
+            "http://{}/rooms/{}/v1/chat/completions",
+            addr, room
+        ))
+        .bearer_auth(&key)
+        .json(&serde_json::json!({
+            "model": "room", "stream": false,
+            "messages": [{"role":"user","content":"Generate a concise, single-line task title of at most 36 characters. Do not answer the request.\n\nUser prompt:\n你好"}],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert!(room_log(&addr, DEMO_KEY, &room).await.is_empty());
+}

@@ -205,6 +205,8 @@ When the human's client sends `tool.invoke` as its reply to a turn, the server d
 
 `finish_reason` becomes `tool_calls`, so compliant clients execute the tool and post the result back as a `role: tool` message. If the client omits `invocation_id`, the server generates one — the agent's result message will still match, because the id is echoed on both sides of the round trip.
 
+**Group rooms** (`OPENHUMAN_ROOMS=1`): only the room owner may send `tool.invoke`, and it runs on exactly one caller session. `GET /v1/rooms/{room_id}/callers` lists the reachable callers (`target`, `display_name`, `tools`, `live`); pass the chosen one as `"target"`. Without a target the call routes only when a single caller declared the tool; with several the server answers `error` `target_required` listing them. A call made while the target is between two segments runs on its next request.
+
 ## HTTP Endpoints
 
 | Route | Purpose |
