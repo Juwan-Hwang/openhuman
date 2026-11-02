@@ -405,3 +405,29 @@ pub trait TaskRepository: Send + Sync {
     /// The owner's tasks, newest first (status endpoints, batches).
     async fn list_tasks(&self, owner: &str, limit: i64) -> Vec<crate::model::task::TaskRecord>;
 }
+
+// ── File Repository ──
+
+/// Files API storage — caller uploads and seat-produced outputs.
+/// Implementations enforce the byte quotas
+/// (OPENHUMAN_FILES_MAX_BYTES_PER_OWNER, default 512 MiB;
+/// OPENHUMAN_FILES_MAX_BYTES_TOTAL, default 2 GiB) by evicting the
+/// oldest files first.
+#[async_trait]
+pub trait FileRepository: Send + Sync {
+    /// Store a file and return its id (`file_...`), minted here.
+    async fn put_file(&self, file: crate::api::files::StoredFile) -> String;
+
+    /// Fetch a file by id (any owner — authorization is the caller's).
+    async fn get_file(&self, id: &str) -> Option<crate::api::files::StoredFile>;
+
+    /// Delete a file owned by `owner`. Returns whether one was removed.
+    async fn delete_file(&self, owner: &str, id: &str) -> bool;
+
+    /// The owner's files, newest first (metadata only is fine to clone).
+    async fn list_files(&self, owner: &str) -> Vec<crate::api::files::StoredFile>;
+
+    /// Prove the seat produced these bytes: the id and creation time of
+    /// the purpose=output file holding exactly them.
+    async fn find_output_by_bytes(&self, bytes: &[u8]) -> Option<(String, i64)>;
+}

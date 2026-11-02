@@ -58,6 +58,8 @@ struct MemoryData {
     room_cursors: HashMap<(String, String, String), i64>,
     /// API tasks by id (insertion order tracked by created_at + id).
     tasks: HashMap<String, crate::model::task::TaskRecord>,
+    /// Files by id.
+    files: HashMap<String, crate::api::files::StoredFile>,
 }
 
 // ── MemoryStore ──
@@ -904,5 +906,96 @@ impl TaskRepository for MemoryStore {
         v.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
         v.truncate(limit.max(0) as usize);
         v
+    }
+}
+
+// ── File Repository (memory) ──
+
+fn files_max_bytes_per_owner() -> usize {
+    std::env::var("OPENHUMAN_FILES_MAX_BYTES_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(512 * 1024 * 1024)
+}
+
+fn files_max_bytes_total() -> usize {
+    std::env::var("OPENHUMAN_FILES_MAX_BYTES_TOTAL")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(2 * 1024 * 1024 * 1024)
+}
+
+#[async_trait]
+impl crate::storage::traits::FileRepository for MemoryStore {
+    async fn put_file(&self, file: crate::api::files::StoredFile) -> String {
+        let mut d = self.data.lock().await;
+        let id = format!("file_{}", uuid::Uuid::now_v7().simple());
+        let owner = file.owner.clone();
+        d.files.insert(id.clone(), file);
+        // Byte quotas: evict the oldest files first, whichever purpose.
+        let mut by_age: Vec<(i64, String, String, usize)> = d
+            .files
+            .iter()
+            .map(|(fid, f)| (f.created_at, fid.clone(), f.owner.clone(), f.bytes.len()))
+            .collect();
+        by_age.sort();
+        let owner_bytes: usize = d
+            .files
+            .values()
+            .filter(|f| f.owner == owner)
+            .map(|f| f.bytes.len())
+            .sum();
+        let mut over_owner = owner_bytes.saturating_sub(files_max_bytes_per_owner());
+        let total_bytes: usize = d.files.values().map(|f| f.bytes.len()).sum();
+        let mut over_total = total_bytes.saturating_sub(files_max_bytes_total());
+        for (_, fid, row_owner, len) in by_age {
+            if over_owner == 0 && over_total == 0 {
+                break;
+            }
+            if row_owner == owner && over_owner > 0 {
+                over_owner = over_owner.saturating_sub(len);
+                d.files.remove(&fid);
+                continue;
+            }
+            if over_total > 0 {
+                over_total = over_total.saturating_sub(len);
+                d.files.remove(&fid);
+            }
+        }
+        id
+    }
+
+    async fn get_file(&self, id: &str) -> Option<crate::api::files::StoredFile> {
+        self.data.lock().await.files.get(id).cloned()
+    }
+
+    async fn delete_file(&self, owner: &str, id: &str) -> bool {
+        let mut d = self.data.lock().await;
+        if d.files.get(id).is_some_and(|f| f.owner == owner) {
+            d.files.remove(id);
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn list_files(&self, owner: &str) -> Vec<crate::api::files::StoredFile> {
+        let d = self.data.lock().await;
+        let mut v: Vec<_> = d
+            .files
+            .values()
+            .filter(|f| f.owner == owner)
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        v
+    }
+
+    async fn find_output_by_bytes(&self, bytes: &[u8]) -> Option<(String, i64)> {
+        let d = self.data.lock().await;
+        d.files
+            .iter()
+            .find(|(_, f)| f.purpose == "output" && f.bytes == bytes)
+            .map(|(id, f)| (id.clone(), f.created_at))
     }
 }

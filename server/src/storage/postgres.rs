@@ -124,6 +124,9 @@ impl PostgresStore {
         // rest; the rollback is 008_task_cards_down.sql, run by hand only.
         let sql8 = include_str!("../../migrations/008_task_cards.sql");
         tx.execute(sql8).await?;
+        // 009 persists the Files API. Rollback: 009_files_down.sql by hand.
+        let sql9 = include_str!("../../migrations/009_files.sql");
+        tx.execute(sql9).await?;
         // 001 re-seeds the public demo key on every boot. Outside an
         // explicit demo it must not authenticate anything.
         if std::env::var("OPENHUMAN_DEMO").ok().as_deref() != Some("1") {
@@ -1831,7 +1834,7 @@ fn task_from_row(r: &sqlx::postgres::PgRow) -> crate::model::task::TaskRecord {
         id: r.get("id"),
         owner: r.get("owner"),
         api: r.get("api"),
-        status: crate::model::task::TaskStatus::from_str(&status)
+        status: crate::model::task::TaskStatus::parse(&status)
             .unwrap_or(crate::model::task::TaskStatus::Failed),
         conversation_id: r.get("conversation_id"),
         request: r.get("request"),
@@ -1955,5 +1958,129 @@ impl crate::storage::traits::TaskRepository for PostgresStore {
         .await
         .map(|rows| rows.iter().map(task_from_row).collect())
         .unwrap_or_default()
+    }
+}
+
+// ── File Repository (postgres) ──
+
+fn files_max_bytes_per_owner() -> i64 {
+    std::env::var("OPENHUMAN_FILES_MAX_BYTES_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(512 * 1024 * 1024)
+}
+
+fn files_max_bytes_total() -> i64 {
+    std::env::var("OPENHUMAN_FILES_MAX_BYTES_TOTAL")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(2 * 1024 * 1024 * 1024)
+}
+
+fn file_from_row(r: &sqlx::postgres::PgRow) -> crate::api::files::StoredFile {
+    use sqlx::Row;
+    let created: chrono::DateTime<chrono::Utc> = r.get("created_at");
+    crate::api::files::StoredFile {
+        owner: r.get("owner"),
+        filename: r.get("filename"),
+        mime: r.get("mime"),
+        purpose: r.get("purpose"),
+        bytes: r.get("bytes"),
+        created_at: created.timestamp(),
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::storage::traits::FileRepository for PostgresStore {
+    async fn put_file(&self, file: crate::api::files::StoredFile) -> String {
+        let id = format!("file_{}", uuid::Uuid::now_v7().simple());
+        let _ = sqlx::query(
+            "INSERT INTO files (id, owner, filename, mime, purpose, bytes)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(&id)
+        .bind(&file.owner)
+        .bind(&file.filename)
+        .bind(&file.mime)
+        .bind(&file.purpose)
+        .bind(&file.bytes)
+        .execute(&*self.pool)
+        .await;
+        // Byte quotas: a row whose running byte total (newest first)
+        // exceeds the cap is old enough to go. Two steps, race-tolerable.
+        let _ = sqlx::query(
+            "DELETE FROM files f WHERE f.owner = $1 AND EXISTS (
+                 SELECT 1 FROM (
+                     SELECT id, SUM(octet_length(bytes)) OVER (ORDER BY created_at DESC, id DESC) AS running
+                     FROM files WHERE owner = $1
+                 ) s WHERE s.id = f.id AND s.running > $2)",
+        )
+        .bind(&file.owner)
+        .bind(files_max_bytes_per_owner())
+        .execute(&*self.pool)
+        .await;
+        let _ = sqlx::query(
+            "DELETE FROM files f WHERE EXISTS (
+                 SELECT 1 FROM (
+                     SELECT id, SUM(octet_length(bytes)) OVER (ORDER BY created_at DESC, id DESC) AS running
+                     FROM files
+                 ) s WHERE s.id = f.id AND s.running > $1)",
+        )
+        .bind(files_max_bytes_total())
+        .execute(&*self.pool)
+        .await;
+        id
+    }
+
+    async fn get_file(&self, id: &str) -> Option<crate::api::files::StoredFile> {
+        sqlx::query(
+            "SELECT owner, filename, mime, purpose, bytes, created_at FROM files WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&*self.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| file_from_row(&r))
+    }
+
+    async fn delete_file(&self, owner: &str, id: &str) -> bool {
+        sqlx::query("DELETE FROM files WHERE id = $1 AND owner = $2")
+            .bind(id)
+            .bind(owner)
+            .execute(&*self.pool)
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .unwrap_or(false)
+    }
+
+    async fn list_files(&self, owner: &str) -> Vec<crate::api::files::StoredFile> {
+        sqlx::query(
+            "SELECT owner, filename, mime, purpose, bytes, created_at FROM files
+             WHERE owner = $1 ORDER BY created_at DESC",
+        )
+        .bind(owner)
+        .fetch_all(&*self.pool)
+        .await
+        .map(|rows| rows.iter().map(file_from_row).collect())
+        .unwrap_or_default()
+    }
+
+    async fn find_output_by_bytes(&self, bytes: &[u8]) -> Option<(String, i64)> {
+        use sqlx::Row;
+        sqlx::query(
+            "SELECT id, created_at FROM files
+             WHERE purpose = 'output' AND md5(bytes) = md5($1) AND bytes = $1
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(bytes)
+        .fetch_optional(&*self.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| {
+            let created: chrono::DateTime<chrono::Utc> = r.get("created_at");
+            (r.get("id"), created.timestamp())
+        })
     }
 }

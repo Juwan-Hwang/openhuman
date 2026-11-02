@@ -27,7 +27,7 @@ impl TaskStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "queued" => Some(Self::Queued),
             "running" => Some(Self::Running),
