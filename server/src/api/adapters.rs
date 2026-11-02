@@ -151,6 +151,114 @@ fn fold_tool_references(body: &mut Value) {
     }
 }
 
+/// Anthropic `document` blocks (a PDF from Claude Code's Read, a file the
+/// person attached): the translator turns them into a text note at the top
+/// level and drops them inside tool results. Carry them as image blocks
+/// whose media type is the document's own plus its name, so they reach the
+/// seat as files on the same path pictures take.
+fn fold_documents(body: &mut Value) {
+    fn fold(parts: &mut [Value]) {
+        for p in parts.iter_mut() {
+            match p.get("type").and_then(|t| t.as_str()) {
+                Some("image")
+                    if p.pointer("/source/type").and_then(|t| t.as_str()) == Some("file") =>
+                {
+                    if let Some(img) = document_as_image(p) {
+                        *p = img;
+                    }
+                }
+                Some("document") => {
+                    if let Some(img) = document_as_image(p) {
+                        *p = img;
+                    } else if p.pointer("/source/type").and_then(|t| t.as_str()) == Some("file") {
+                        let n = p.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                        *p = json!({"type": "text", "text": crate::openai_compat::missing_file_note(n)});
+                    }
+                }
+                Some("tool_result") => {
+                    if let Some(inner) = p.get_mut("content").and_then(|c| c.as_array_mut()) {
+                        fold(inner);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let Some(msgs) = body.get_mut("messages").and_then(|m| m.as_array_mut()) else {
+        return;
+    };
+    for m in msgs {
+        if let Some(parts) = m.get_mut("content").and_then(|c| c.as_array_mut()) {
+            fold(parts);
+        }
+    }
+}
+
+fn document_as_image(d: &Value) -> Option<Value> {
+    let src = d.get("source")?;
+    let title = d.get("title").and_then(|t| t.as_str());
+    let kind = src.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let mime = src
+        .get("media_type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("application/pdf");
+    let (mime, b64) = match kind {
+        "base64" => (mime.to_string(), src.get("data")?.as_str()?.to_string()),
+        "text" => (
+            if mime.is_empty() {
+                "text/plain".to_string()
+            } else {
+                mime.to_string()
+            },
+            crate::openai_compat::b64_encode(src.get("data")?.as_str()?.as_bytes()),
+        ),
+        "content" => {
+            let text = src
+                .get("content")
+                .and_then(|c| c.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            (
+                "text/plain".to_string(),
+                crate::openai_compat::b64_encode(text.as_bytes()),
+            )
+        }
+        "file" => {
+            let url = crate::api::files::data_url(src.get("file_id")?.as_str()?)?;
+            let (meta, b64) = url.strip_prefix("data:")?.split_once(',')?;
+            let media = meta.trim_end_matches(";base64").to_string();
+            return Some(
+                json!({"type": "image", "source": {"type": "base64", "media_type": media, "data": b64}}),
+            );
+        }
+        "url" => {
+            let url = src.get("url")?.as_str()?;
+            return Some(json!({"type": "image", "source": {"type": "url", "url": url}}));
+        }
+        _ => return None,
+    };
+    let name = title.map(str::to_string).unwrap_or_else(|| {
+        let ext = match mime.as_str() {
+            "application/pdf" => "pdf",
+            "text/plain" => "txt",
+            m => m.rsplit('/').next().unwrap_or("bin"),
+        };
+        format!("document.{ext}")
+    });
+    // The translator writes `data:{media_type};base64,{data}`.
+    let url = crate::openai_compat::named_data_url(&mime, Some(&name), "");
+    let media = url
+        .trim_start_matches("data:")
+        .trim_end_matches(";base64,")
+        .to_string();
+    Some(json!({"type": "image", "source": {"type": "base64", "media_type": media, "data": b64}}))
+}
+
 pub async fn messages(
     State(app): State<AppState>,
     principal: AuthPrincipal,
@@ -161,6 +269,7 @@ pub async fn messages(
 
     let mut body = body;
     fold_tool_references(&mut body);
+    fold_documents(&mut body);
     let req: MessageCreateRequest = match serde_json::from_value(body) {
         Ok(r) => r,
         Err(e) => {
@@ -399,6 +508,18 @@ fn responses_content(content: &Value) -> Value {
                             .unwrap_or_default();
                         out.push(json!({"type": "image_url", "image_url": {"url": url}}));
                     }
+                    "input_file" => {
+                        only_text = false;
+                        match crate::openai_compat::file_part_url(p) {
+                            Some(url) => {
+                                out.push(json!({"type": "image_url", "image_url": {"url": url}}))
+                            }
+                            None => {
+                                let n = p.get("filename").and_then(|v| v.as_str()).unwrap_or("");
+                                out.push(json!({"type": "text", "text": crate::openai_compat::missing_file_note(n)}));
+                            }
+                        }
+                    }
                     "refusal" => {
                         out.push(json!({"type": "text", "text": p.get("refusal").cloned().unwrap_or(json!(""))}));
                     }
@@ -418,6 +539,41 @@ fn responses_content(content: &Value) -> Value {
         }
         _ => Value::String(String::new()),
     }
+}
+
+/// One flat function name for a tool inside a Responses `namespace`
+/// (Codex groups each MCP server's tools as `mcp__<server>` or
+/// `mcp__<server>__`): `mcp__seat` + `next` = `mcp__seat__next`.
+fn ns_join(ns: &str, name: &str) -> String {
+    if ns.ends_with("__") {
+        format!("{ns}{name}")
+    } else {
+        format!("{ns}__{name}")
+    }
+}
+
+/// (flat name, namespace, inner name) for every function inside a
+/// `namespace` tool: the seat sees the flat name, the client must get the
+/// call back as `name` + `namespace` or it cannot route it.
+fn namespaced_tool_names(tools: &[Value]) -> Vec<(String, String, String)> {
+    let mut v = Vec::new();
+    for t in tools {
+        if t.get("type").and_then(|x| x.as_str()) != Some("namespace") {
+            continue;
+        }
+        let ns = t.get("name").and_then(|x| x.as_str()).unwrap_or("");
+        for inner in t
+            .get("tools")
+            .and_then(|x| x.as_array())
+            .into_iter()
+            .flatten()
+        {
+            if let Some(n) = inner.get("name").and_then(|x| x.as_str()) {
+                v.push((ns_join(ns, n), ns.to_string(), n.to_string()));
+            }
+        }
+    }
+    v
 }
 
 /// Tool kinds the client declared, by name: `custom` tools (Codex's
@@ -481,10 +637,13 @@ pub(crate) fn responses_to_chat(body: &Value) -> Value {
                                 it.get("action").cloned().unwrap_or(json!({})).to_string(),
                             ),
                             _ => (
-                                it.get("name")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
+                                {
+                                    let n = it.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                    match it.get("namespace").and_then(|v| v.as_str()) {
+                                        Some(ns) if !ns.is_empty() => ns_join(ns, n),
+                                        _ => n.to_string(),
+                                    }
+                                },
                                 it.get("arguments")
                                     .map(|a| {
                                         a.as_str()
@@ -520,7 +679,10 @@ pub(crate) fn responses_to_chat(body: &Value) -> Value {
                         // part: keep it as an image, not as nothing.
                         if let Some(Value::Array(parts)) = it.get("output") {
                             if parts.iter().any(|p| {
-                                p.get("type").and_then(|t| t.as_str()) == Some("input_image")
+                                matches!(
+                                    p.get("type").and_then(|t| t.as_str()),
+                                    Some("input_image") | Some("input_file")
+                                )
                             }) {
                                 messages.push(json!({
                                     "role": "tool",
@@ -582,6 +744,30 @@ pub(crate) fn responses_to_chat(body: &Value) -> Value {
                         "parameters": {"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]},
                     }
                 })),
+                "namespace" => {
+                    let ns = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let ns_desc = t.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                    for inner in t.get("tools").and_then(|v| v.as_array()).into_iter().flatten() {
+                        let Some(n) = inner.get("name").and_then(|v| v.as_str()) else {
+                            continue;
+                        };
+                        let desc = inner.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                        let first = ns_desc.lines().next().unwrap_or("");
+                        let desc = if first.is_empty() {
+                            desc.to_string()
+                        } else {
+                            format!("{desc} [{ns}: {first}]")
+                        };
+                        let params = match inner.get("type").and_then(|v| v.as_str()) {
+                            Some("custom") => json!({"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]}),
+                            _ => inner.get("parameters").cloned().unwrap_or(json!({"type": "object", "properties": {}})),
+                        };
+                        tools.push(json!({
+                            "type": "function",
+                            "function": {"name": ns_join(ns, n), "description": desc, "parameters": params},
+                        }));
+                    }
+                }
                 "local_shell" => tools.push(json!({
                     "type": "function",
                     "function": {
@@ -596,7 +782,7 @@ pub(crate) fn responses_to_chat(body: &Value) -> Value {
     }
 
     let mut out = json!({
-        "model": body.get("model").cloned().unwrap_or(json!("openhuman-human")),
+        "model": body.get("model").cloned().unwrap_or(json!("openhuman")),
         "messages": messages,
         "stream": body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false),
     });
@@ -628,6 +814,7 @@ struct ResponsesBuilder {
     model: String,
     created: i64,
     custom: Vec<String>,
+    namespaced: Vec<(String, String, String)>,
     seq: u64,
     text_item: Option<(usize, String, String)>, // (output_index, item_id, text)
     reasoning_item: Option<(usize, String, String)>,
@@ -637,12 +824,13 @@ struct ResponsesBuilder {
 }
 
 impl ResponsesBuilder {
-    fn new(model: String, custom: Vec<String>) -> Self {
+    fn new(model: String, custom: Vec<String>, namespaced: Vec<(String, String, String)>) -> Self {
         Self {
             response_id: format!("resp_{}", Uuid::now_v7().simple()),
             model,
             created: chrono::Utc::now().timestamp(),
             custom,
+            namespaced,
             seq: 0,
             text_item: None,
             reasoning_item: None,
@@ -811,8 +999,18 @@ impl ResponsesBuilder {
             self.output.push(item);
         } else {
             let id = format!("fc_{}", Uuid::now_v7().simple());
-            let item = json!({"type": "function_call", "id": id, "call_id": call_id, "name": name, "arguments": args, "status": "completed"});
-            v.push(self.ev("response.output_item.added", json!({"output_index": idx, "item": {"type": "function_call", "id": id, "call_id": call_id, "name": name, "arguments": ""}})));
+            let mut item = json!({"type": "function_call", "id": id, "call_id": call_id, "name": name, "arguments": args, "status": "completed"});
+            let mut added = json!({"type": "function_call", "id": id, "call_id": call_id, "name": name, "arguments": ""});
+            if let Some((_, ns, inner)) = self.namespaced.iter().find(|(f, _, _)| f == name) {
+                for it in [&mut item, &mut added] {
+                    it["name"] = json!(inner);
+                    it["namespace"] = json!(ns);
+                }
+            }
+            v.push(self.ev(
+                "response.output_item.added",
+                json!({"output_index": idx, "item": added}),
+            ));
             v.push(self.ev(
                 "response.function_call_arguments.delta",
                 json!({"item_id": id, "output_index": idx, "delta": args}),
@@ -863,18 +1061,19 @@ pub async fn responses(
     let model = body
         .get("model")
         .and_then(|v| v.as_str())
-        .unwrap_or("openhuman-human")
+        .unwrap_or("openhuman")
         .to_string();
     let stream = body
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let custom = custom_tool_names(
-        body.get("tools")
-            .and_then(|t| t.as_array())
-            .map(|a| a.as_slice())
-            .unwrap_or(&[]),
-    );
+    let declared = body
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+    let custom = custom_tool_names(declared);
+    let namespaced = namespaced_tool_names(declared);
     let chat = match chat_request(responses_to_chat(&body)) {
         Ok(c) => c,
         Err(r) => return r,
@@ -898,7 +1097,7 @@ pub async fn responses(
         let Some(v) = body_json(resp).await else {
             return responses_error(StatusCode::BAD_GATEWAY, "unreadable completion");
         };
-        let mut b = ResponsesBuilder::new(model, custom);
+        let mut b = ResponsesBuilder::new(model, custom, namespaced);
         let msg = v
             .pointer("/choices/0/message")
             .cloned()
@@ -934,7 +1133,7 @@ pub async fn responses(
 
     let mut upstream = resp.into_body().into_data_stream();
     let out = async_stream::stream! {
-        let mut b = ResponsesBuilder::new(model, custom);
+        let mut b = ResponsesBuilder::new(model, custom, namespaced);
         let mut lines = SseLines::new();
         for f in b.start() { yield Ok::<Bytes, std::convert::Infallible>(f); }
         'outer: while let Some(chunk) = upstream.next().await {
@@ -987,11 +1186,116 @@ pub async fn responses(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn namespaced_tools_flatten_and_reassemble() {
+        let tools = vec![serde_json::json!({
+            "type": "namespace",
+            "name": "mcp__seat",
+            "tools": [{"name": "next"}, {"name": "reply"}]
+        })];
+        let v = namespaced_tool_names(&tools);
+        assert_eq!(
+            v,
+            vec![
+                ("mcp__seat__next".to_string(), "mcp__seat".to_string(), "next".to_string()),
+                ("mcp__seat__reply".to_string(), "mcp__seat".to_string(), "reply".to_string()),
+            ]
+        );
+        // A namespace whose name already ends in __ joins without another __.
+        let tools = vec![serde_json::json!({
+            "type": "namespace",
+            "name": "mcp__seat__",
+            "tools": [{"name": "next"}]
+        })];
+        assert_eq!(namespaced_tool_names(&tools)[0].0, "mcp__seat__next");
+        // Ordinary function tools are untouched.
+        let tools = vec![serde_json::json!({"type": "function", "name": "Bash"})];
+        assert!(namespaced_tool_names(&tools).is_empty());
+    }
+
     use super::*;
 
     #[test]
+    fn documents_reach_the_seat_as_named_files() {
+        let mut body = json!({
+            "model": "m", "max_tokens": 10,
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "read this"},
+                    {"type": "document", "title": "a b.pdf", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERg=="}}
+                ]},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [
+                    {"type": "document", "source": {"type": "text", "media_type": "text/plain", "data": "hi"}}
+                ]}]}
+            ]
+        });
+        fold_documents(&mut body);
+        let req: anyllm_translate::anthropic::MessageCreateRequest =
+            serde_json::from_value(body).unwrap();
+        let config = anyllm_translate::TranslationConfig::builder()
+            .passthrough_unknown_models(true)
+            .build();
+        let out =
+            serde_json::to_string(&anyllm_translate::translate_request(&req, &config).unwrap())
+                .unwrap();
+        assert!(
+            out.contains("data:application/pdf;name=a+b.pdf;base64,JVBERg=="),
+            "{out}"
+        );
+        assert!(
+            out.contains("data:text/plain;name=document.txt;base64,aGk="),
+            "{out}"
+        );
+        assert_eq!(
+            crate::openai_compat::data_url_name("data:application/pdf;name=a+b%2F.pdf;base64,x")
+                .as_deref(),
+            Some("a b/.pdf")
+        );
+    }
+
+    #[test]
+    fn uploaded_file_ids_resolve() {
+        let id = crate::api::files::put(crate::api::files::StoredFile {
+            owner: "a".into(),
+            filename: "n.bin".into(),
+            mime: "application/octet-stream".into(),
+            purpose: "user_data".into(),
+            bytes: vec![0, 255, 1],
+            created_at: 0,
+        });
+        let v = responses_content(&json!([{"type": "input_file", "file_id": id}]));
+        assert!(
+            v.to_string()
+                .contains("data:application/octet-stream;name=n.bin;base64,AP8B"),
+            "{v}"
+        );
+        let mut body = json!({"messages": [{"role": "user", "content": [
+            {"type": "document", "source": {"type": "file", "file_id": id}}
+        ]}]});
+        fold_documents(&mut body);
+        assert_eq!(
+            body.pointer("/messages/0/content/0/source/data")
+                .and_then(|v| v.as_str()),
+            Some("AP8B")
+        );
+    }
+
+    #[test]
+    fn responses_input_file_keeps_its_name() {
+        let v = responses_content(&json!([
+            {"type": "input_text", "text": "see"},
+            {"type": "input_file", "filename": "r.csv", "file_data": "data:text/csv;base64,YSxi"},
+            {"type": "input_file", "file_id": "file-1", "filename": "x.pdf"}
+        ]));
+        let s = v.to_string();
+        assert!(s.contains("data:text/csv;name=r.csv;base64,YSxi"), "{s}");
+        assert!(s.contains("only a file_id"), "{s}");
+    }
+
+    #[test]
     fn responses_usage_always_has_details() {
-        let b = ResponsesBuilder::new("m".into(), Vec::new());
+        let b = ResponsesBuilder::new("m".into(), Vec::new(), Vec::new());
         let u = &b.response_obj("completed")["usage"];
         assert_eq!(u["input_tokens_details"]["cached_tokens"], 0);
         assert_eq!(u["output_tokens_details"]["reasoning_tokens"], 0);
@@ -1074,12 +1378,54 @@ mod tests {
 
     #[test]
     fn custom_tools_are_answered_as_custom_calls() {
-        let mut b = ResponsesBuilder::new("m".into(), vec!["apply_patch".into()]);
+        let mut b = ResponsesBuilder::new("m".into(), vec!["apply_patch".into()], Vec::new());
         b.call("c1", "apply_patch", r#"{"input":"*** Begin Patch"}"#);
         assert_eq!(b.output[0]["type"], "custom_tool_call");
         assert_eq!(b.output[0]["input"], "*** Begin Patch");
         b.call("c2", "shell", r#"{"cmd":"ls"}"#);
         assert_eq!(b.output[1]["type"], "function_call");
+    }
+
+    #[test]
+    fn namespace_tools_flatten_and_calls_come_back_namespaced() {
+        // Codex groups each MCP server's tools in a `namespace`.
+        let body = json!({
+            "model": "m",
+            "input": [
+                {"type": "message", "role": "user", "content": "go"},
+                {"type": "function_call", "call_id": "c1", "namespace": "mcp__seat", "name": "next", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "nothing"}
+            ],
+            "tools": [
+                {"type": "function", "name": "exec_command", "parameters": {"type": "object"}},
+                {"type": "namespace", "name": "mcp__seat", "description": "Seat tools", "tools": [
+                    {"type": "function", "name": "next", "description": "wait", "parameters": {"type": "object", "properties": {"wait": {"type": "integer"}}}}
+                ]},
+                {"type": "namespace", "name": "mcp__web__", "tools": [{"type": "function", "name": "search"}]}
+            ]
+        });
+        let chat = responses_to_chat(&body);
+        let names: Vec<&str> = chat["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            ["exec_command", "mcp__seat__next", "mcp__web__search"]
+        );
+        assert_eq!(
+            chat["messages"][1]["tool_calls"][0]["function"]["name"],
+            "mcp__seat__next"
+        );
+        let ns = namespaced_tool_names(body["tools"].as_array().unwrap());
+        let mut b = ResponsesBuilder::new("m".into(), Vec::new(), ns);
+        b.call("c2", "mcp__seat__next", "{}");
+        assert_eq!(b.output[0]["name"], "next");
+        assert_eq!(b.output[0]["namespace"], "mcp__seat");
+        b.call("c3", "exec_command", "{}");
+        assert!(b.output[1].get("namespace").is_none());
     }
 
     #[test]

@@ -305,6 +305,19 @@ async fn test_in_memory_reply_registry() {
     assert!(!delivered, "Should return false after remove");
 }
 
+#[tokio::test]
+async fn resubmitted_turn_supersedes_the_open_one() {
+    let registry = InMemoryReplyRegistry::new();
+    let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel::<String>();
+    registry.register("cnv_retry", tx1).await;
+    registry.register("cnv_retry", tx2).await;
+    // The older request's channel is closed, so its handler exits.
+    assert!(rx1.recv().await.is_none());
+    assert!(registry.deliver("cnv_retry", "answer").await);
+    assert_eq!(rx2.recv().await.unwrap(), "answer");
+}
+
 // ── 5. Full chain: insert → list → verify (PG) ──
 
 #[tokio::test]

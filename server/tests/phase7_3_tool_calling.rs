@@ -20,12 +20,12 @@ use serde_json::json;
 #[test]
 fn test_tool_calls_response_serialization() {
     let args = json!({"command": "echo hello"});
-    let resp = ChatCompletionResponse::from_tool_call("Bash", &args);
+    let resp = ChatCompletionResponse::from_tool_call("Bash", &args, "openhuman");
     let j = serde_json::to_value(&resp).unwrap();
 
     // Top-level fields
     assert_eq!(j["object"], "chat.completion");
-    assert_eq!(j["model"], "openhuman-human");
+    assert_eq!(j["model"], "openhuman");
     assert!(j["id"].as_str().unwrap().starts_with("chatcmpl-"));
 
     // Choices
@@ -47,7 +47,7 @@ fn test_tool_calls_response_serialization() {
 
 #[test]
 fn test_text_reply_no_tool_calls_field() {
-    let resp = ChatCompletionResponse::from_human_reply("Hello!");
+    let resp = ChatCompletionResponse::from_human_reply("Hello!", "openhuman");
     let j = serde_json::to_value(&resp).unwrap();
     // tool_calls should be absent (skip_serializing_if = "Option::is_none")
     assert!(j["choices"][0]["message"].get("tool_calls").is_none());
@@ -64,7 +64,7 @@ fn test_role_tool_message_full_round_trip() {
 
     // Step 2: tool_calls response
     let args = json!({"file_path": "/tmp/test.txt"});
-    let resp = ChatCompletionResponse::from_tool_call("Read", &args);
+    let resp = ChatCompletionResponse::from_tool_call("Read", &args, "openhuman");
     let resp_json = serde_json::to_value(&resp).unwrap();
     let call_id = resp_json["choices"][0]["message"]["tool_calls"][0]["id"]
         .as_str()
@@ -147,6 +147,7 @@ fn test_tool_call_delta_chunk_serialization() {
         "call_abc",
         "Bash",
         r#"{"command":"ls"}"#,
+        "openhuman",
     );
     let j = serde_json::to_value(&chunk).unwrap();
 
@@ -169,7 +170,7 @@ fn test_tool_call_delta_chunk_serialization() {
 
 #[test]
 fn test_finish_tool_calls_chunk() {
-    let chunk = ChatCompletionChunk::finish_tool_calls("chatcmpl-test");
+    let chunk = ChatCompletionChunk::finish_tool_calls("chatcmpl-test", "openhuman");
     let j = serde_json::to_value(&chunk).unwrap();
 
     assert_eq!(j["choices"][0]["finish_reason"], "tool_calls");
@@ -180,7 +181,7 @@ fn test_finish_tool_calls_chunk() {
 
 #[test]
 fn test_normal_finish_chunk_still_works() {
-    let chunk = ChatCompletionChunk::finish("chatcmpl-test");
+    let chunk = ChatCompletionChunk::finish("chatcmpl-test", "openhuman");
     let j = serde_json::to_value(&chunk).unwrap();
     assert_eq!(j["choices"][0]["finish_reason"], "stop");
 }
@@ -247,7 +248,7 @@ mod integration {
                     .post(&url)
                     .header("Authorization", format!("Bearer {}", DEMO_KEY))
                     .json(&json!({
-                        "model": "openhuman-human",
+                        "model": "openhuman",
                         "messages": [{"role": "user", "content": "list files"}],
                         "stream": false,
                         "tools": [{
@@ -325,7 +326,7 @@ mod integration {
                     .post(&url)
                     .header("Authorization", format!("Bearer {}", DEMO_KEY))
                     .json(&json!({
-                        "model": "openhuman-human",
+                        "model": "openhuman",
                         "messages": [{"role": "user", "content": "list files"}],
                         "stream": true,
                         "tools": [{
@@ -420,8 +421,14 @@ fn test_parallel_tool_call_deltas_carry_their_index() {
     // Clients accumulate streamed tool calls by index: every call at index 0
     // folds three parallel calls into one.
     for i in 0..3u32 {
-        let chunk =
-            ChatCompletionChunk::tool_call_delta_at("c", i, &format!("call_{i}"), "read", "{}");
+        let chunk = ChatCompletionChunk::tool_call_delta_at(
+            "c",
+            i,
+            &format!("call_{i}"),
+            "read",
+            "{}",
+            "openhuman",
+        );
         let j = serde_json::to_value(&chunk).unwrap();
         assert_eq!(j["choices"][0]["delta"]["tool_calls"][0]["index"], i);
     }

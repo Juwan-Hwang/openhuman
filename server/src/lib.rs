@@ -83,6 +83,17 @@ pub fn build_router(state: AppState) -> Router {
             post(api::adapters::count_tokens),
         )
         .route("/v1/responses", post(api::adapters::responses))
+        .route(
+            "/v1/files",
+            post(api::files::upload)
+                .get(api::files::list)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/files/:file_id",
+            get(api::files::get_meta).delete(api::files::delete),
+        )
+        .route("/v1/files/:file_id/content", get(api::files::content))
         .route("/v1/models", get(list_models))
         .route("/v1/models/:model_id", get(get_model))
         // A base URL configured as `.../v1` by a client that appends `/v1`
@@ -144,6 +155,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/seat/capabilities", get(seat::capabilities))
         .route("/v1/seat/history", get(seat::history))
         .route("/v1/seat/save", post(seat::save))
+        .route(
+            "/v1/seat/model-name",
+            post(seat::model_name).get(seat::model_name_get),
+        )
         // Observation runs *inside* auth: only authenticated requests are
         // captured, so an anonymous caller cannot fill the disk.
         .layer(axum::middleware::from_fn(observation::observe_request))
@@ -200,7 +215,8 @@ async fn health() -> &'static str {
 /// `capabilities` object. The responder is a person or an agent, so the
 /// limits are generous defaults, overridable with
 /// `OPENHUMAN_MODEL_CONTEXT_WINDOW` and `OPENHUMAN_MODEL_MAX_OUTPUT`.
-fn model_object() -> serde_json::Value {
+/// The model's name is the seat's to choose (see `storage::ModelName`).
+fn model_object(app: &AppState) -> serde_json::Value {
     fn env_u64(name: &str, default: u64) -> u64 {
         std::env::var(name)
             .ok()
@@ -210,16 +226,17 @@ fn model_object() -> serde_json::Value {
     }
     let context = env_u64("OPENHUMAN_MODEL_CONTEXT_WINDOW", 1_000_000);
     let output = env_u64("OPENHUMAN_MODEL_MAX_OUTPUT", 131_072);
+    let name = app.model.get();
     serde_json::json!({
-        "id": "openhuman-human",
+        "id": name,
         "object": "model",
         // Anthropic's model object.
         "type": "model",
-        "display_name": "OpenHuman",
+        "display_name": name,
         "created_at": "2023-11-14T22:13:20Z",
         "created": 1700000000,
         "owned_by": "openhuman",
-        "name": "OpenHuman",
+        "name": name,
         "context_window": context,
         "context_length": context,
         "max_output_tokens": output,
@@ -239,22 +256,26 @@ fn model_object() -> serde_json::Value {
     })
 }
 
-async fn list_models() -> axum::Json<serde_json::Value> {
+async fn list_models(
+    axum::extract::State(app): axum::extract::State<AppState>,
+) -> axum::Json<serde_json::Value> {
+    let name = app.model.get();
     axum::Json(serde_json::json!({
         "object": "list",
-        "data": [model_object()],
+        "data": [model_object(&app)],
         "has_more": false,
-        "first_id": "openhuman-human",
-        "last_id": "openhuman-human",
+        "first_id": name,
+        "last_id": name,
     }))
 }
 
 /// `GET /v1/models/:id` — every model name reaches the same responder, so
 /// whatever id a client checks for exists (it is reported back as asked).
 async fn get_model(
+    axum::extract::State(app): axum::extract::State<AppState>,
     axum::extract::Path(model_id): axum::extract::Path<String>,
 ) -> axum::Json<serde_json::Value> {
-    let mut m = model_object();
+    let mut m = model_object(&app);
     m["id"] = serde_json::Value::String(model_id);
     axum::Json(m)
 }

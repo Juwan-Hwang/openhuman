@@ -21,8 +21,9 @@ use serde_json::Value;
 /// is preserved separately by the observation middleware).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionRequest {
-    /// The model name requested by the agent.
-    /// OpenHuman always responds as "openhuman-human" regardless.
+    /// The model name requested by the agent. Responses carry the
+    /// instance's own model name (see `storage::ModelName`), whatever
+    /// was requested.
     pub model: Option<String>,
     pub messages: Vec<ChatMessage>,
     /// If true, response is SSE stream; otherwise, blocking JSON.
@@ -161,6 +162,155 @@ pub struct ContentPart {
     pub part_type: String,
     pub text: Option<String>,
     pub image_url: Option<ImageUrl>,
+    /// OpenAI `file` part: `{filename, file_data (data URL), file_id}`.
+    #[serde(default)]
+    pub file: Option<serde_json::Value>,
+}
+
+/// A data URL for an attached file, its name carried as a parameter
+/// (`data:application/pdf;name=report.pdf;base64,...`, RFC 2397) so the
+/// file rides every path images already take and keeps its name.
+pub fn named_data_url(mime: &str, name: Option<&str>, b64: &str) -> String {
+    let mime = if mime.trim().is_empty() {
+        "application/octet-stream"
+    } else {
+        mime.trim()
+    };
+    match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => format!("data:{mime};name={};base64,{b64}", encode_param(n)),
+        None => format!("data:{mime};base64,{b64}"),
+    }
+}
+
+fn encode_param(s: &str) -> String {
+    let mut o = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.~ ".contains(&b) {
+            o.push(if b == b' ' { '+' } else { b as char });
+        } else {
+            o.push_str(&format!("%{b:02X}"));
+        }
+    }
+    o
+}
+
+/// The `name=` parameter of a data URL, decoded.
+pub fn data_url_name(url: &str) -> Option<String> {
+    let meta = url.strip_prefix("data:")?.split(',').next()?;
+    let raw = meta.split(';').find_map(|p| p.strip_prefix("name="))?;
+    let mut out = Vec::new();
+    let b = raw.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() => {
+                let h = std::str::from_utf8(&b[i + 1..i + 3]).ok();
+                match h.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                    Some(v) => {
+                        out.push(v);
+                        i += 3;
+                        continue;
+                    }
+                    None => out.push(b'%'),
+                }
+            }
+            b'+' => out.push(b' '),
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8(out).ok().filter(|n| !n.is_empty())
+}
+
+/// OpenAI `file` part / Responses `input_file` as a URL: a named data URL,
+/// a link, or (an id this server cannot fetch) None.
+pub fn file_part_url(f: &serde_json::Value) -> Option<String> {
+    let name = f.get("filename").and_then(|v| v.as_str());
+    if let Some(d) = f.get("file_data").and_then(|v| v.as_str()) {
+        let d = d.trim();
+        if let Some(rest) = d.strip_prefix("data:") {
+            let (meta, b64) = rest.split_once(',')?;
+            let mime = meta.split(';').next().unwrap_or("");
+            let mime = if mime.is_empty() {
+                guess_mime(name.unwrap_or(""))
+            } else {
+                mime
+            };
+            return Some(named_data_url(mime, name, b64));
+        }
+        // Bare base64 (some SDKs send it without the data: prefix).
+        return Some(named_data_url(guess_mime(name.unwrap_or("")), name, d));
+    }
+    if let Some(u) = f
+        .get("file_id")
+        .and_then(|v| v.as_str())
+        .and_then(crate::api::files::data_url)
+    {
+        return Some(u);
+    }
+    f.get("file_url")
+        .and_then(|v| v.as_str())
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+}
+
+pub fn b64_encode(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut o = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
+        o.push(T[(n >> 18) as usize & 63] as char);
+        o.push(T[(n >> 12) as usize & 63] as char);
+        o.push(if c.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        o.push(if c.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    o
+}
+
+/// A mime type from a file name, for parts that send none.
+pub fn guess_mime(name: &str) -> &'static str {
+    let l = name.to_lowercase();
+    let ext = l.rsplit('.').next().unwrap_or("");
+    match ext {
+        "pdf" => "application/pdf",
+        "txt" | "log" => "text/plain",
+        "md" => "text/markdown",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "html" | "htm" => "text/html",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "zip" => "application/zip",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        _ => "application/octet-stream",
+    }
+}
+
+const MISSING_FILE_TAIL: &str = ": only a file_id was sent, its content is not available here]";
+
+/// The note standing in for a file the caller referenced by an id this
+/// server does not hold.
+pub fn missing_file_note(name: &str) -> String {
+    let sep = if name.is_empty() { "" } else { " " };
+    format!("[file{sep}{name}{MISSING_FILE_TAIL}")
+}
+
+pub fn is_missing_file_note(text: &str) -> bool {
+    let t = text.trim();
+    t.starts_with("[file") && t.ends_with(MISSING_FILE_TAIL)
 }
 
 /// The `image_url` object inside an image content part.
@@ -184,7 +334,28 @@ impl ChatContent {
                 .iter()
                 .filter_map(|p| match p.part_type.as_str() {
                     "text" => p.text.clone(),
-                    "image_url" => Some("[图片]".to_string()),
+                    "image_url" => Some(match p.image_url.as_ref().map(|u| u.url.as_str()) {
+                        Some(u) if u.starts_with("data:") && !u.starts_with("data:image/") => {
+                            match data_url_name(u) {
+                                Some(n) => format!("[文件 {n}]"),
+                                None => "[文件]".to_string(),
+                            }
+                        }
+                        _ => "[图片]".to_string(),
+                    }),
+                    "file" => {
+                        let f = p.file.as_ref();
+                        let n = f
+                            .and_then(|f| f.get("filename"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let sep = if n.is_empty() { "" } else { " " };
+                        Some(if f.and_then(file_part_url).is_some() {
+                            format!("[文件{sep}{n}]")
+                        } else {
+                            missing_file_note(n)
+                        })
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -200,12 +371,15 @@ impl ChatContent {
         match self {
             ChatContent::Parts(parts) => parts
                 .iter()
-                .filter(|p| p.part_type == "image_url")
-                .filter_map(|p| {
-                    p.image_url
+                .filter_map(|p| match p.part_type.as_str() {
+                    "image_url" => p
+                        .image_url
                         .as_ref()
                         .map(|i| i.url.trim().to_string())
-                        .filter(|u| !u.is_empty())
+                        .filter(|u| !u.is_empty()),
+                    // Files ride with images as named data URLs.
+                    "file" => p.file.as_ref().and_then(file_part_url),
+                    _ => None,
                 })
                 .collect(),
             _ => Vec::new(),
@@ -229,19 +403,19 @@ pub struct ChatCompletionResponse {
     pub id: String,
     pub object: &'static str,
     pub created: i64,
-    pub model: &'static str,
+    pub model: String,
     pub choices: Vec<CompletionChoice>,
     pub usage: Usage,
 }
 
 impl ChatCompletionResponse {
     /// Build a response from a human text reply.
-    pub fn from_human_reply(reply_text: &str) -> Self {
+    pub fn from_human_reply(reply_text: &str, model: &str) -> Self {
         Self {
             id: format!("chatcmpl-{}", uuid::Uuid::now_v7().simple()),
             object: "chat.completion",
             created: Utc::now().timestamp(),
-            model: "openhuman-human",
+            model: model.to_string(),
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ResponseMessage::text_reply(reply_text),
@@ -260,8 +434,8 @@ impl ChatCompletionResponse {
     /// **Phase 7.3**: Now wired into the request flow via the WS
     /// `reply.send` handler — if the human sends a `tool_call` payload,
     /// it is delivered as a standard OpenAI `tool_calls` response.
-    pub fn from_tool_call(tool_name: &str, arguments: &Value) -> Self {
-        Self::from_tool_call_with_id(None, tool_name, arguments, None)
+    pub fn from_tool_call(tool_name: &str, arguments: &Value, model: &str) -> Self {
+        Self::from_tool_call_with_id(None, tool_name, arguments, None, model)
     }
 
     /// Build a response carrying several tool calls at once.
@@ -270,12 +444,12 @@ impl ChatCompletionResponse {
     /// models one assistant message with an array of calls, so merging them
     /// is what lets a standard client run them in parallel instead of
     /// forcing a round trip per tool.
-    pub fn from_tool_calls(calls: Vec<ToolCallSpec>, content: Option<String>) -> Self {
+    pub fn from_tool_calls(calls: Vec<ToolCallSpec>, content: Option<String>, model: &str) -> Self {
         Self {
             id: format!("chatcmpl-{}", uuid::Uuid::now_v7().simple()),
             object: "chat.completion",
             created: Utc::now().timestamp(),
-            model: "openhuman-human",
+            model: model.to_string(),
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ResponseMessage::tool_calls(calls, content),
@@ -300,12 +474,13 @@ impl ChatCompletionResponse {
         tool_name: &str,
         arguments: &Value,
         content: Option<String>,
+        model: &str,
     ) -> Self {
         Self {
             id: format!("chatcmpl-{}", uuid::Uuid::now_v7().simple()),
             object: "chat.completion",
             created: Utc::now().timestamp(),
-            model: "openhuman-human",
+            model: model.to_string(),
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ResponseMessage::tool_call_with_id(call_id, tool_name, arguments, content),
@@ -456,7 +631,7 @@ pub struct ChatCompletionChunk {
     pub id: String,
     pub object: &'static str,
     pub created: i64,
-    pub model: &'static str,
+    pub model: String,
     pub choices: Vec<ChunkChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
@@ -464,12 +639,12 @@ pub struct ChatCompletionChunk {
 
 impl ChatCompletionChunk {
     /// First chunk — carries the `role` delta, no content.
-    pub fn role_header(id: &str) -> Self {
+    pub fn role_header(id: &str, model: &str) -> Self {
         Self {
             id: id.to_string(),
             object: "chat.completion.chunk",
             created: Utc::now().timestamp(),
-            model: "openhuman-human",
+            model: model.to_string(),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
@@ -485,12 +660,12 @@ impl ChatCompletionChunk {
     }
 
     /// Content chunk — carries a text fragment.
-    pub fn content_delta(id: &str, text: &str) -> Self {
+    pub fn content_delta(id: &str, text: &str, model: &str) -> Self {
         Self {
             id: id.to_string(),
             object: "chat.completion.chunk",
             created: Utc::now().timestamp(),
-            model: "openhuman-human",
+            model: model.to_string(),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
@@ -506,12 +681,12 @@ impl ChatCompletionChunk {
     }
 
     /// Final chunk — carries `finish_reason: stop`, no content.
-    pub fn finish(id: &str) -> Self {
+    pub fn finish(id: &str, model: &str) -> Self {
         Self {
             id: id.to_string(),
             object: "chat.completion.chunk",
             created: Utc::now().timestamp(),
-            model: "openhuman-human",
+            model: model.to_string(),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
@@ -531,12 +706,12 @@ impl ChatCompletionChunk {
     /// Sent as a `data:` line during the keepalive phase to keep the
     /// SSE connection alive. OpenAI SDK ignores SSE comment lines
     /// (`: ...`), so we must send actual `data:` lines.
-    pub fn heartbeat(id: &str) -> Self {
+    pub fn heartbeat(id: &str, model: &str) -> Self {
         Self {
             id: id.to_string(),
             object: "chat.completion.chunk",
             created: Utc::now().timestamp(),
-            model: "openhuman-human",
+            model: model.to_string(),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
@@ -552,12 +727,12 @@ impl ChatCompletionChunk {
     }
 
     /// Reasoning delta — the responder's thinking, streamed before content.
-    pub fn reasoning_delta(id: &str, text: &str) -> Self {
+    pub fn reasoning_delta(id: &str, text: &str, model: &str) -> Self {
         Self {
             id: id.to_string(),
             object: "chat.completion.chunk",
             created: Utc::now().timestamp(),
-            model: "openhuman-human",
+            model: model.to_string(),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
@@ -573,8 +748,8 @@ impl ChatCompletionChunk {
     }
 
     /// Usage chunk carrying counted tokens.
-    pub fn usage_chunk_with(id: &str, usage: Usage) -> Self {
-        let mut c = Self::usage_chunk(id);
+    pub fn usage_chunk_with(id: &str, usage: Usage, model: &str) -> Self {
+        let mut c = Self::usage_chunk(id, model);
         c.usage = Some(usage);
         c
     }
@@ -583,12 +758,12 @@ impl ChatCompletionChunk {
     /// requests `stream_options: { include_usage: true }`.
     ///
     /// Per OpenAI spec: choices is empty, usage is populated.
-    pub fn usage_chunk(id: &str) -> Self {
+    pub fn usage_chunk(id: &str, model: &str) -> Self {
         Self {
             id: id.to_string(),
             object: "chat.completion.chunk",
             created: Utc::now().timestamp(),
-            model: "openhuman-human",
+            model: model.to_string(),
             choices: vec![],
             usage: Some(Usage::default()),
         }
@@ -598,8 +773,14 @@ impl ChatCompletionChunk {
     ///
     /// Sent as a single chunk in streaming mode so the agent receives
     /// the complete tool call without fragmentation.
-    pub fn tool_call_delta(id: &str, call_id: &str, tool_name: &str, arguments: &str) -> Self {
-        Self::tool_call_delta_at(id, 0, call_id, tool_name, arguments)
+    pub fn tool_call_delta(
+        id: &str,
+        call_id: &str,
+        tool_name: &str,
+        arguments: &str,
+        model: &str,
+    ) -> Self {
+        Self::tool_call_delta_at(id, 0, call_id, tool_name, arguments, model)
     }
 
     /// One tool call of several in a streamed message. `index` is the
@@ -612,12 +793,13 @@ impl ChatCompletionChunk {
         call_id: &str,
         tool_name: &str,
         arguments: &str,
+        model: &str,
     ) -> Self {
         Self {
             id: id.to_string(),
             object: "chat.completion.chunk",
             created: Utc::now().timestamp(),
-            model: "openhuman-human",
+            model: model.to_string(),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
@@ -641,12 +823,12 @@ impl ChatCompletionChunk {
     }
 
     /// Finish chunk for tool calls — `finish_reason: tool_calls`.
-    pub fn finish_tool_calls(id: &str) -> Self {
+    pub fn finish_tool_calls(id: &str, model: &str) -> Self {
         Self {
             id: id.to_string(),
             object: "chat.completion.chunk",
             created: Utc::now().timestamp(),
-            model: "openhuman-human",
+            model: model.to_string(),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
@@ -712,7 +894,7 @@ mod tests {
 
     #[test]
     fn test_text_reply_response() {
-        let resp = ChatCompletionResponse::from_human_reply("Hello!");
+        let resp = ChatCompletionResponse::from_human_reply("Hello!", "openhuman");
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["choices"][0]["message"]["content"], "Hello!");
         assert_eq!(json["choices"][0]["message"]["role"], "assistant");
@@ -722,7 +904,7 @@ mod tests {
     #[test]
     fn test_tool_call_response() {
         let args = serde_json::json!({"command": "ls -la"});
-        let resp = ChatCompletionResponse::from_tool_call("Bash", &args);
+        let resp = ChatCompletionResponse::from_tool_call("Bash", &args, "openhuman");
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["choices"][0]["finish_reason"], "tool_calls");
         assert!(json["choices"][0]["message"]["content"].is_null());
@@ -772,7 +954,7 @@ mod tests {
     #[test]
     fn test_deserialize_request_with_all_fields() {
         let json = r#"{
-            "model": "openhuman-human",
+            "model": "openhuman",
             "messages": [{"role": "user", "content": "hello"}],
             "stream": true,
             "max_tokens": 32000,
@@ -783,7 +965,7 @@ mod tests {
             "reasoning_effort": "high"
         }"#;
         let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.model, Some("openhuman-human".into()));
+        assert_eq!(req.model, Some("openhuman".into()));
         assert_eq!(req.tool_choice, Some(serde_json::json!("auto")));
         assert_eq!(
             req.stream_options,

@@ -680,6 +680,62 @@ pub async fn history(
     .into_response()
 }
 
+// ── POST /v1/seat/model-name ──
+
+#[derive(Debug, Deserialize)]
+pub struct ModelNameBody {
+    name: String,
+}
+
+/// The seat names the model it sits behind. Callers see this name in
+/// `/v1/models` and use it as the `model` in their requests. A name the
+/// user pinned (`OPENHUMAN_MODEL`) cannot be
+/// overridden — that refusal is the answer, not an error to retry.
+pub async fn model_name(
+    State(app): State<AppState>,
+    principal: AuthPrincipal,
+    Json(b): Json<ModelNameBody>,
+) -> Response {
+    if !principal.api_key.scope.may_respond() {
+        return err(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Only the seat may name the model.",
+        );
+    }
+    let name = b.name.trim();
+    match app.model.set_seat(name) {
+        Ok(()) => Json(json!({ "ok": true, "model": app.model.get() })).into_response(),
+        Err(crate::storage::SeatNameError::Invalid) => err(
+            StatusCode::BAD_REQUEST,
+            "invalid_model_name",
+            "A model name is 1–64 characters with no whitespace or control characters.",
+        ),
+        Err(crate::storage::SeatNameError::Locked) => err(
+            StatusCode::CONFLICT,
+            "model_name_locked",
+            "The user pinned this instance's model name; it cannot be changed from the seat.",
+        ),
+    }
+}
+
+/// `GET /v1/seat/model-name` — the current name and whether the user
+/// pinned it (a pinned name cannot be changed from the seat).
+pub async fn model_name_get(State(app): State<AppState>, principal: AuthPrincipal) -> Response {
+    if !principal.api_key.scope.may_respond() {
+        return err(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Only the seat may read the model name.",
+        );
+    }
+    Json(json!({
+        "model": app.model.get(),
+        "locked": app.model.is_locked(),
+    }))
+    .into_response()
+}
+
 // ── POST /v1/seat/save ──
 
 #[derive(Debug, Deserialize)]

@@ -67,6 +67,76 @@ pub struct AppState {
     /// default with PostgreSQL); `None` when every message is already in
     /// the database or the whole backend is in memory.
     pub ephemeral: Option<Arc<ephemeral::EphemeralMessages>>,
+    /// The model name callers see in `/v1/models` — see [`ModelName`].
+    pub model: Arc<ModelName>,
+}
+
+/// The name this instance answers to as a "model".
+///
+/// Priority: a name the user pinned (
+/// `OPENHUMAN_MODEL`) beats everything and locks the name; otherwise the
+/// seat may choose its own name (`oh-seat name …`); until either happens
+/// the neutral default `openhuman` is served.
+pub struct ModelName {
+    name: std::sync::RwLock<String>,
+    locked: std::sync::RwLock<bool>,
+}
+
+impl ModelName {
+    /// From the environment: `OPENHUMAN_MODEL` counts as user-pinned.
+    pub fn from_env() -> Self {
+        match std::env::var("OPENHUMAN_MODEL") {
+            Ok(v) if is_valid_model_name(v.trim()) => Self {
+                name: std::sync::RwLock::new(v.trim().to_string()),
+                locked: std::sync::RwLock::new(true),
+            },
+            _ => Self {
+                name: std::sync::RwLock::new("openhuman-human".to_string()),
+                locked: std::sync::RwLock::new(false),
+            },
+        }
+    }
+
+    pub fn get(&self) -> String {
+        self.name.read().unwrap().clone()
+    }
+
+    pub fn is_locked(&self) -> bool {
+        *self.locked.read().unwrap()
+    }
+
+    /// Pin a user-chosen name (wins over the seat's, and locks).
+    pub fn set_user(&self, name: &str) {
+        *self.name.write().unwrap() = name.to_string();
+        *self.locked.write().unwrap() = true;
+    }
+
+    /// Set the seat's own chosen name. Fails when the user pinned one.
+    pub fn set_seat(&self, name: &str) -> Result<(), SeatNameError> {
+        if !is_valid_model_name(name) {
+            return Err(SeatNameError::Invalid);
+        }
+        if self.is_locked() {
+            return Err(SeatNameError::Locked);
+        }
+        *self.name.write().unwrap() = name.to_string();
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub enum SeatNameError {
+    /// Not a usable model id (empty, too long, or has whitespace/control).
+    Invalid,
+    /// The user pinned a model name; the seat cannot override it.
+    Locked,
+}
+
+/// A usable model id: 1–64 chars, no whitespace or control characters.
+pub fn is_valid_model_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().count() <= 64
+        && name.chars().all(|c| !c.is_whitespace() && !c.is_control())
 }
 
 impl AppState {
@@ -95,6 +165,7 @@ impl AppState {
             async_reply: crate::async_reply::AsyncReplyRegistry::new(),
             outbound: crate::async_reply::OutboundQueue::new(),
             ephemeral: None,
+            model: Arc::new(ModelName::from_env()),
         }
     }
 
@@ -133,6 +204,7 @@ impl AppState {
             async_reply: crate::async_reply::AsyncReplyRegistry::new(),
             outbound: crate::async_reply::OutboundQueue::new(),
             ephemeral,
+            model: Arc::new(ModelName::from_env()),
         }
     }
 }

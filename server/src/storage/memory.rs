@@ -476,18 +476,18 @@ impl ContextRepository for MemoryStore {
 impl ReplyRegistry for MemoryStore {
     async fn register(&self, conversation_id: &str, tx: mpsc::UnboundedSender<String>) {
         let mut data = self.data.lock().await;
-        data.pending
-            .entry(conversation_id.to_string())
-            .or_default()
-            .push(tx);
+        // The newest request on a conversation supersedes any older one: an
+        // older one still open is a caller that resubmitted (a retry, or a
+        // proxy replaying the request). Dropping its sender ends that
+        // handler quietly instead of refusing the new request with 409.
+        data.pending.insert(conversation_id.to_string(), vec![tx]);
     }
 
     async fn remove(&self, conversation_id: &str) {
         let mut data = self.data.lock().await;
-        // Remove all pending channels for this conversation.
-        // (A more granular approach would remove only the last one,
-        // but when the active SSE handler exits, all stale ones
-        // should be gone too.)
+        // A superseded handler sees its channel closed and exits without
+        // calling this, so removing everything here only ends the turn
+        // that actually finished.
         data.pending.remove(conversation_id);
     }
 

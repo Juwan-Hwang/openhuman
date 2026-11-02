@@ -125,7 +125,7 @@ openhuman/
 | API keys hashed with SHA-256 (no plaintext at rest) | ✅ |
 | Per-agent normalization (WorkBuddy / Trae / Claude Code) | ✅ envelope-aware, newest-turn-wins |
 | Mock harness disabled by default | ✅ `mock_endpoints` feature or `OPENHUMAN_MOCK_ENDPOINTS=1` |
-| Concurrent-turn protection | ✅ second turn on one conversation gets `409` |
+| Resubmit tolerance | ✅ a resubmitted turn supersedes the open one (no `409`; the reply goes to the connection still listening) |
 | Kubernetes Helm production manifests | 🔜 |
 
 Test suites: **91** Dart SDK tests, **27** Flutter widget tests, Rust server tests (unit + integration; PostgreSQL cases need `DATABASE_URL`) — all passing.
@@ -253,7 +253,10 @@ curl -N http://localhost:8080/v1/chat/completions \
 |---|---|---|
 | `POST /v1/chat/completions` | Bearer key | OpenAI-compatible ingress; SSE when `stream: true` |
 | `GET /v1/replies/{invocation_id}` | Bearer key | Long-poll an async reply (`?wait=<secs>`, max 300) |
-| `GET /v1/models` | Bearer key | Lists the `openhuman-human` model |
+| `GET /v1/models` | Bearer key | Lists the current model (default `openhuman-human`; the seat or `OPENHUMAN_MODEL` may rename it) |
+| `POST /v1/seat/model-name` | Bearer key (seat) | The seat names the model callers see; refused when the user pinned one |
+| `POST /v1/files` | Bearer key | OpenAI/Anthropic Files upload (multipart) for callers that attach files |
+| `GET/DELETE /v1/files/{id}`, `GET /v1/files/{id}/content` | Bearer key | File metadata, content, removal |
 | `GET /health` | public | Liveness probe |
 | `GET /ws` | `Authorization: Bearer` (or `?api_key=`) | Human WebSocket gateway |
 

@@ -22,6 +22,12 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Piped output (`openhuman-server ... | head`, log shippers) must not
+    // panic with "Broken pipe".
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let _ = dotenvy::dotenv();
 
     tracing_subscriber::fmt()
@@ -34,6 +40,25 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|s| s.as_str()) == Some("issue-key") {
         return issue_key(&args[2..]).await;
+    }
+    // An unrecognized first argument must never fall through to starting
+    // the server: `openhuman-server --version` (a read-only probe) used to
+    // bind the port, and a typo'd subcommand quietly became a server
+    // nobody asked for.
+    match args.get(1).map(|s| s.as_str()) {
+        None | Some("serve") => {}
+        Some("--version" | "-V" | "version") => {
+            println!("openhuman-server {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some("help" | "-h" | "--help") => {
+            println!("openhuman-server: run with no arguments to serve; `issue-key` mints an API key.");
+            return Ok(());
+        }
+        Some(other) => {
+            eprintln!("openhuman-server: unknown command '{other}' - nothing was started.");
+            std::process::exit(2);
+        }
     }
 
     // Only tokenizers that load can be chosen; a default naming anything

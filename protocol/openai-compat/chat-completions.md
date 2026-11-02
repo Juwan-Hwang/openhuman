@@ -288,7 +288,8 @@ Reference: `server/src/api/openai.rs`, `server/src/normalize.rs`.
 - WorkBuddy `x-agent-purpose != conversation` requests are meta-requests,
   auto-answered, never forwarded to the human.
 - One conversation holds at most one open turn; a second concurrent
-  request gets `409 turn_already_open`.
+  request supersedes the open one: the older request's channel is dropped
+  and the reply goes to the connection still listening.
 - `stream: false` pads with `\n` keepalives and hands off to async mode on
   timeout instead of dropping. `X-OpenHuman-Mode: async` returns `202` +
   `invocation_id`; the agent polls `GET /v1/replies/{id}`.

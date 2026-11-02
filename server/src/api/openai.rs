@@ -1099,7 +1099,8 @@ fn process_inbound_messages(
                 .enumerate()
                 .map(|(i, url)| crate::model::content::Attachment {
                     id: format!("att_{}_{}", i, Uuid::now_v7().simple()),
-                    filename: format!("image-{}.png", i + 1),
+                    filename: crate::openai_compat::data_url_name(url)
+                        .unwrap_or_else(|| format!("image-{}.png", i + 1)),
                     content_type: guess_image_type(url),
                     size_bytes: url.len() as u64,
                     url: url.clone(),
@@ -1638,26 +1639,16 @@ pub async fn chat_completions(
 
     // 6. Branch: streaming vs non-streaming vs async.
     //
-    // A second concurrent turn on one conversation is refused outright:
+    // A second concurrent turn on one conversation supersedes the first:
     // replies route per conversation, so two open requests would race for
-    // the same answer and one of them would hang until timeout. The caller
-    // retries after the first turn closes.
+    // the same answer. The newer request takes over; the older one's
+    // channel is dropped and its handler exits quietly.
     if !is_async_mode(&headers) && app.reply.has_waiter(&conversation_id).await {
-        // The new message still reaches the human — refusing the turn must
-        // not swallow what the agent just said.
-        push_messages_to_human(&app, inbound_messages, human_id);
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": {
-                    "message": "Another turn is already open on this conversation. Wait for it to finish, then resubmit.",
-                    "type": "conflict",
-                    "code": "turn_already_open",
-                    "conversation_id": conversation_id,
-                }
-            })),
-        )
-            .into_response();
+        // A second request while a turn is open is the same caller
+        // resubmitting (fast client retry, or a tunnel replaying it). The
+        // newest request takes over the turn: register() drops the older
+        // one's channel, so the reply goes to the connection still listening.
+        tracing::info!(conversation_id = %conversation_id, "resubmitted turn supersedes the open one");
     }
 
     if req.stream {
@@ -1764,12 +1755,12 @@ fn sse_heartbeat_secs() -> u64 {
 
 /// Heartbeat frame: an SSE comment by default (ignored by every SSE
 /// parser), or an empty-delta chunk with `OPENHUMAN_SSE_HEARTBEAT=chunk`.
-fn heartbeat_event(completion_id: &str) -> SseEvent {
+fn heartbeat_event(completion_id: &str, model: &str) -> SseEvent {
     if matches!(
         std::env::var("OPENHUMAN_SSE_HEARTBEAT").as_deref(),
         Ok("chunk")
     ) {
-        let chunk = ChatCompletionChunk::heartbeat(completion_id);
+        let chunk = ChatCompletionChunk::heartbeat(completion_id, model);
         SseEvent::default().data(serde_json::to_string(&chunk).unwrap())
     } else {
         SseEvent::default().comment("keepalive")
@@ -1785,6 +1776,7 @@ async fn handle_backlog(
     include_usage: bool,
     turn: TurnCtx,
 ) -> Response {
+    let model_name = app.model.get();
     if async_mode {
         // Short-circuit: create and complete in one step so the caller's
         // first poll already has the answer.
@@ -1819,7 +1811,7 @@ async fn handle_backlog(
     let reply = parse_reply(&payload);
 
     let sse = async_stream::stream! {
-        let role_chunk = ChatCompletionChunk::role_header(&completion_id);
+        let role_chunk = ChatCompletionChunk::role_header(&completion_id, &model_name);
         yield Ok::<SseEvent, std::convert::Infallible>(
             SseEvent::default().data(serde_json::to_string(&role_chunk).unwrap())
         );
@@ -1828,23 +1820,23 @@ async fn handle_backlog(
         match reply {
             HumanReply::Text { text, .. } => {
                 if let Some(r) = crate::session::take_reasoning(&conv) {
-                    let chunk = ChatCompletionChunk::reasoning_delta(&completion_id, &r);
+                    let chunk = ChatCompletionChunk::reasoning_delta(&completion_id, &r, &model_name);
                     yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                 }
                 for word in text.split_inclusive(char::is_whitespace) {
-                    let chunk = ChatCompletionChunk::content_delta(&completion_id, word);
+                    let chunk = ChatCompletionChunk::content_delta(&completion_id, word, &model_name);
                     yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                 }
                 sent_text.push_str(&text);
                 turn.record(&conv, &text, &[]);
                 app_c.reply.remove(&conv).await;
-                let chunk = ChatCompletionChunk::finish(&completion_id);
+                let chunk = ChatCompletionChunk::finish(&completion_id, &model_name);
                 yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
             }
             HumanReply::ToolCalls { calls, text } => {
                 let prose = text.filter(|t| !t.trim().is_empty()).unwrap_or_default();
                 for word in prose.split_inclusive(char::is_whitespace) {
-                    let chunk = ChatCompletionChunk::content_delta(&completion_id, word);
+                    let chunk = ChatCompletionChunk::content_delta(&completion_id, word, &model_name);
                     yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                 }
                 sent_text.push_str(&prose);
@@ -1862,6 +1854,7 @@ async fn handle_backlog(
                         &call_id,
                         &call.tool_name,
                         &call.arguments.to_string(),
+                        &model_name,
                     );
                     yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                     sent_text.push_str(&call.arguments.to_string());
@@ -1870,18 +1863,18 @@ async fn handle_backlog(
                 turn.record(&conv, &prose, &recorded);
 
                 app_c.reply.remove(&conv).await;
-                let chunk = ChatCompletionChunk::finish_tool_calls(&completion_id);
+                let chunk = ChatCompletionChunk::finish_tool_calls(&completion_id, &model_name);
                 yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
             }
             HumanReply::EndTurn => {
                 app_c.reply.remove(&conv).await;
-                let chunk = ChatCompletionChunk::finish(&completion_id);
+                let chunk = ChatCompletionChunk::finish(&completion_id, &model_name);
                 yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
             }
         }
 
         if include_usage {
-            let chunk = ChatCompletionChunk::usage_chunk_with(&completion_id, turn.usage(&sent_text));
+            let chunk = ChatCompletionChunk::usage_chunk_with(&completion_id, turn.usage(&sent_text), &model_name);
             yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
         }
 
@@ -1997,6 +1990,9 @@ async fn handle_async(
 /// session titles, intent classifications, etc. We auto-respond with
 /// a minimal reply so WorkBuddy doesn't block waiting for human input.
 fn handle_meta_request(req: ChatCompletionRequest, purpose: &str) -> Response {
+    // Meta answers are synthesized on the spot; echo the caller's own
+    // model name back, as a real model endpoint would.
+    let model_name = req.model.clone().unwrap_or_else(|| "openhuman".to_string());
     // Generate a minimal response based on the purpose.
     let reply = match purpose {
         "conversation_topic" => {
@@ -2029,27 +2025,31 @@ fn handle_meta_request(req: ChatCompletionRequest, purpose: &str) -> Response {
         // For streaming meta-requests, send the reply as SSE chunks.
         let completion_id = format!("chatcmpl-{}", Uuid::now_v7().simple());
         let stream = async_stream::stream! {
-            let role_chunk = ChatCompletionChunk::role_header(&completion_id);
+            let role_chunk = ChatCompletionChunk::role_header(&completion_id, &model_name);
             yield Ok::<SseEvent, std::convert::Infallible>(
                 SseEvent::default().data(serde_json::to_string(&role_chunk).unwrap())
             );
 
             for word in reply.split_inclusive(char::is_whitespace) {
-                let chunk = ChatCompletionChunk::content_delta(&completion_id, word);
+                let chunk = ChatCompletionChunk::content_delta(&completion_id, word, &model_name);
                 yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
             }
 
-            let chunk = ChatCompletionChunk::finish(&completion_id);
+            let chunk = ChatCompletionChunk::finish(&completion_id, &model_name);
             yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
 
-            let chunk = ChatCompletionChunk::usage_chunk(&completion_id);
+            let chunk = ChatCompletionChunk::usage_chunk(&completion_id, &model_name);
             yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
 
             yield Ok(SseEvent::default().data("[DONE]"));
         };
         Sse::new(stream).into_response()
     } else {
-        Json(ChatCompletionResponse::from_human_reply(&reply)).into_response()
+        Json(ChatCompletionResponse::from_human_reply(
+            &reply,
+            &model_name,
+        ))
+        .into_response()
     }
 }
 
@@ -2196,6 +2196,7 @@ async fn build_nonstreaming_json_from_reply(
     reply: HumanReply,
     turn: &TurnCtx,
 ) -> String {
+    let model_name = app.model.get();
     let now = Utc::now();
     let conversation = app.conversation.get(conversation_id).await;
     let human_id = conversation
@@ -2217,7 +2218,7 @@ async fn build_nonstreaming_json_from_reply(
                 reply_len = text.len(),
                 "Human text reply received"
             );
-            let mut resp = ChatCompletionResponse::from_human_reply(&text);
+            let mut resp = ChatCompletionResponse::from_human_reply(&text, &model_name);
             resp.usage = turn.usage(&text);
             turn.record(conversation_id, &text, &[]);
             (resp, text)
@@ -2262,7 +2263,8 @@ async fn build_nonstreaming_json_from_reply(
 
             // `content` and `tool_calls` coexist: the human's words ride
             // along with the call instead of being discarded.
-            let mut resp = ChatCompletionResponse::from_tool_calls(specs.clone(), text.clone());
+            let mut resp =
+                ChatCompletionResponse::from_tool_calls(specs.clone(), text.clone(), &model_name);
             let prose = text.clone().unwrap_or_default();
             let mut counted = prose.clone();
             let recorded: Vec<(String, String, Value)> = specs
@@ -2292,7 +2294,7 @@ async fn build_nonstreaming_json_from_reply(
                 conversation_id = %conversation_id,
                 "Human ended the turn (non-streaming)"
             );
-            let resp = ChatCompletionResponse::from_human_reply("(turn ended)");
+            let resp = ChatCompletionResponse::from_human_reply("(turn ended)", &model_name);
             (resp, "(turn ended)".to_string())
         }
     };
@@ -2389,6 +2391,7 @@ async fn handle_streaming(
 ) -> Response {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
+    let model_name = app.model.get();
     let is_online = app.connections.is_online(&human_id).await;
     // The presence notice is for a person on the other end. When the only
     // responder online is an agent seat, it would just be written into the
@@ -2425,7 +2428,7 @@ async fn handle_streaming(
         // Open the stream with the role header at once: a client then has a
         // well-formed first chunk instead of an empty body while the
         // responder thinks.
-        let role_chunk = ChatCompletionChunk::role_header(&completion_id);
+        let role_chunk = ChatCompletionChunk::role_header(&completion_id, &model_name);
         yield Ok::<SseEvent, std::convert::Infallible>(
             SseEvent::default().data(serde_json::to_string(&role_chunk).unwrap())
         );
@@ -2442,7 +2445,7 @@ async fn handle_streaming(
         let notice = if seat_only { None } else { status_notice(is_online) };
         if let Some(notice) = notice {
             for word in notice.split_inclusive(char::is_whitespace) {
-                let chunk = ChatCompletionChunk::content_delta(&completion_id, word);
+                let chunk = ChatCompletionChunk::content_delta(&completion_id, word, &model_name);
                 yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
             }
             sent_text.push_str(&notice);
@@ -2452,7 +2455,7 @@ async fn handle_streaming(
         let result: HumanReply = loop {
             let msg = tokio::select! {
                 _ = keepalive.tick() => {
-                    yield Ok::<SseEvent, std::convert::Infallible>(heartbeat_event(&completion_id));
+                    yield Ok::<SseEvent, std::convert::Infallible>(heartbeat_event(&completion_id, &model_name));
                     continue;
                 }
                 msg = rx.recv() => {
@@ -2500,7 +2503,7 @@ async fn handle_streaming(
                     }).await;
 
                     if let Some(r) = crate::session::take_reasoning(&conv_id) {
-                        let chunk = ChatCompletionChunk::reasoning_delta(&completion_id, &r);
+                        let chunk = ChatCompletionChunk::reasoning_delta(&completion_id, &r, &model_name);
                         yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                     }
 
@@ -2514,7 +2517,7 @@ async fn handle_streaming(
                         text.clone()
                     };
                     for word in payload.split_inclusive(char::is_whitespace) {
-                        let chunk = ChatCompletionChunk::content_delta(&completion_id, word);
+                        let chunk = ChatCompletionChunk::content_delta(&completion_id, word, &model_name);
                         yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                     }
                     sent_text.push_str(&payload);
@@ -2551,7 +2554,7 @@ async fn handle_streaming(
                     "Human ended the turn (streaming)"
                 );
                 turn.record(&conv_for_cleanup, &sent_text, &[]);
-                let chunk = ChatCompletionChunk::finish(&completion_id);
+                let chunk = ChatCompletionChunk::finish(&completion_id, &model_name);
                 yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
             }
             HumanReply::ToolCalls { calls, text } => {
@@ -2565,7 +2568,7 @@ async fn handle_streaming(
                 );
 
                 if let Some(r) = crate::session::take_reasoning(&conv_for_cleanup) {
-                    let chunk = ChatCompletionChunk::reasoning_delta(&completion_id, &r);
+                    let chunk = ChatCompletionChunk::reasoning_delta(&completion_id, &r, &model_name);
                     yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                 }
 
@@ -2578,7 +2581,7 @@ async fn handle_streaming(
                         prose.to_string()
                     };
                     for word in payload.split_inclusive(char::is_whitespace) {
-                        let chunk = ChatCompletionChunk::content_delta(&completion_id, word);
+                        let chunk = ChatCompletionChunk::content_delta(&completion_id, word, &model_name);
                         yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                     }
                     sent_text.push_str(&payload);
@@ -2634,6 +2637,7 @@ async fn handle_streaming(
                         &call_id,
                         &call.tool_name,
                         &args,
+                        &model_name,
                     );
                     yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
                     call_text.push_str(&call.tool_name);
@@ -2644,7 +2648,7 @@ async fn handle_streaming(
                 sent_text.push_str(&call_text);
 
                 // Finish chunk with finish_reason: tool_calls.
-                let chunk = ChatCompletionChunk::finish_tool_calls(&completion_id);
+                let chunk = ChatCompletionChunk::finish_tool_calls(&completion_id, &model_name);
                 yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
             }
             HumanReply::Text { .. } => {
@@ -2655,7 +2659,7 @@ async fn handle_streaming(
         // Usage chunk (if stream_options.include_usage was requested):
         // counted by the server, whoever answered.
         if include_usage {
-            let chunk = ChatCompletionChunk::usage_chunk_with(&completion_id, turn.usage(&sent_text));
+            let chunk = ChatCompletionChunk::usage_chunk_with(&completion_id, turn.usage(&sent_text), &model_name);
             yield Ok(SseEvent::default().data(serde_json::to_string(&chunk).unwrap()));
         }
 
@@ -2958,7 +2962,7 @@ mod tests {
     }
 
     fn body() -> serde_json::Value {
-        json!({"model": "openhuman-human", "messages": []})
+        json!({"model": "openhuman", "messages": []})
     }
 
     #[test]
@@ -3110,7 +3114,7 @@ mod tests {
     #[test]
     fn developer_role_is_accepted_as_system() {
         let req = request(json!({
-            "model": "openhuman-human",
+            "model": "openhuman",
             "messages": [
                 {"role": "developer", "content": "be brief"},
                 {"role": "user", "content": "hi"}

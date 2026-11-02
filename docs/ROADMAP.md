@@ -55,7 +55,7 @@ Not started in any meaningful sense:
 - [ ] ❌ **Kubernetes production manifests (Helm)** — `deploy/k8s/` contains a single `namespace.yaml`; `deploy/docker/` has Compose + Dockerfiles
 - [x] **API key hashing** — SHA-256 at rest, lookup by hash, `raw_key` column dropped (migration `003_api_key_hashing.sql`)
 - [x] **Mock harness gated** — `/v1/mock/*` routes exist only with cargo feature `mock_endpoints` or `OPENHUMAN_MOCK_ENDPOINTS=1`
-- [x] **Backpressure** — request body cap (8 MiB default, `OPENHUMAN_MAX_BODY_BYTES`) + concurrency limit (256 default, `OPENHUMAN_MAX_CONCURRENCY`) + one open turn per conversation (`409 turn_already_open`)
+- [x] **Backpressure** — request body cap (8 MiB default, `OPENHUMAN_MAX_BODY_BYTES`) + concurrency limit (256 default, `OPENHUMAN_MAX_CONCURRENCY`) + one open turn per conversation (a resubmitted turn supersedes the open one)
 - [x] **History ownership** — `list_messages` checks conversation ownership like all other history endpoints
 - [ ] ⚠️ **Security hardening (remaining)** — WS query-param auth kept as fallback; prefer `Authorization: Bearer`; no per-key rate quotas yet
 - [ ] ❌ **Audit logging** — no audit trail beyond ordinary message history

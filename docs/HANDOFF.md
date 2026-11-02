@@ -25,7 +25,7 @@ OpenHuman's caller side stays 100% standard (OpenAI Chat Completions, plus adapt
 - `cargo test` (all suites) green in a throwaway `rust:bookworm` container.
 - Production end-to-end, 2026-10-21 12:40 CST, one full tool round-trip each: **Claude Code** (`/v1/messages`, Bash), **Codex** (`/v1/responses`, exec_command), **pi** and **opencode** (Chat Completions, bash). opencode's title request lands in its own conversation.
 - Earlier rounds (live, with Hark in the seat): WorkBuddy, Qoder, Trae, DeepSeek Harness — see `docs/agent-seat-findings-2026-10-21.md`.
-- A disconnected client does not lock its session: the next request gets 200. A 409 `turn_already_open` means a request is genuinely still open.
+- A disconnected client does not lock its session: the next request gets 200. A resubmitted turn supersedes the open one (ported from omni2api): the older request's channel is dropped and the reply goes to the connection still listening; there is no more `409 turn_already_open`.
 
 ## 3. Honest state of the seat experience (from the agent sitting in it)
 
