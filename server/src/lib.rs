@@ -151,6 +151,61 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/vector_stores/:store_id/search",
             post(api::vector_stores::search),
         )
+        .route(
+            "/v1/assistants",
+            post(api::assistants::create_assistant).get(api::assistants::list_assistants),
+        )
+        .route(
+            "/v1/assistants/:id",
+            get(api::assistants::get_assistant)
+                .post(api::assistants::update_assistant)
+                .delete(api::assistants::delete_assistant),
+        )
+        .route("/v1/threads", post(api::assistants::create_thread))
+        .route(
+            "/v1/threads/runs",
+            post(api::assistants::create_thread_and_run),
+        )
+        .route(
+            "/v1/threads/:id",
+            get(api::assistants::get_thread)
+                .post(api::assistants::update_thread)
+                .delete(api::assistants::delete_thread),
+        )
+        .route(
+            "/v1/threads/:id/messages",
+            post(api::assistants::create_message).get(api::assistants::list_messages),
+        )
+        .route(
+            "/v1/threads/:id/messages/:message_id",
+            get(api::assistants::get_message)
+                .post(api::assistants::update_message)
+                .delete(api::assistants::delete_message),
+        )
+        .route(
+            "/v1/threads/:id/runs",
+            post(api::assistants::create_run).get(api::assistants::list_runs),
+        )
+        .route(
+            "/v1/threads/:id/runs/:run_id",
+            get(api::assistants::get_run_route).post(api::assistants::update_run),
+        )
+        .route(
+            "/v1/threads/:id/runs/:run_id/cancel",
+            post(api::assistants::cancel_run),
+        )
+        .route(
+            "/v1/threads/:id/runs/:run_id/submit_tool_outputs",
+            post(api::assistants::submit_tool_outputs),
+        )
+        .route(
+            "/v1/threads/:id/runs/:run_id/steps",
+            get(api::assistants::list_steps),
+        )
+        .route(
+            "/v1/threads/:id/runs/:run_id/steps/:step_id",
+            get(api::assistants::get_step),
+        )
         .route("/v1/models", get(list_models))
         .route("/v1/models/:model_id", get(get_model))
         // A base URL configured as `.../v1` by a client that appends `/v1`

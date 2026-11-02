@@ -88,6 +88,10 @@ pub async fn require_api_key(
         || path.starts_with("/v1/batches/")
         || path == "/v1/vector_stores"
         || path.starts_with("/v1/vector_stores/")
+        || path == "/v1/assistants"
+        || path.starts_with("/v1/assistants/")
+        || path == "/v1/threads"
+        || path.starts_with("/v1/threads/")
         || path.starts_with("/v1/replies");
     // Room ingress: `/rooms/<id>/v1/...` (including the `/v1/v1` alias).
     // Only the caller key bound to THIS room passes — an unbound key is
