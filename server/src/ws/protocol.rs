@@ -128,6 +128,36 @@ pub fn message_received_with_images(
     )
 }
 
+/// Build a `room.member_joined` event.
+pub fn room_member_joined(room_id: &str, participant_id: &str, display_name: &str) -> Event {
+    Event::new(
+        "room.member_joined",
+        room_id,
+        serde_json::json!({
+            "participant_id": participant_id,
+            "display_name": display_name,
+        }),
+    )
+}
+
+/// Build a `room.member_left` event (leave or kick — `reason` says which).
+pub fn room_member_left(
+    room_id: &str,
+    participant_id: &str,
+    display_name: &str,
+    reason: &str,
+) -> Event {
+    Event::new(
+        "room.member_left",
+        room_id,
+        serde_json::json!({
+            "participant_id": participant_id,
+            "display_name": display_name,
+            "reason": reason,
+        }),
+    )
+}
+
 /// Build an `async.invocation.created` event.
 ///
 /// Sent to the human's WS client when an agent submits a turn in

@@ -492,6 +492,58 @@ async fn handle_reply_send(
     // stream stays open so the human can send more replies. The channel
     // is removed by the SSE handler itself when it receives the
     // end-of-turn signal (or a tool call).
+    // Room path: a reply to a group conversation is a room message. It
+    // enters the log through the single ingest point with the REAL sender
+    // (never the hardcoded "You"), and the hub + fanout deliver it —
+    // nothing here is parked, staged, or pushed down the 1:1 reply channel.
+    if crate::rooms::is_room(app, conversation_id).await {
+        if crate::rooms::role_of(app, conversation_id, human_id)
+            .await
+            .is_none()
+        {
+            let event = protocol::error_event(
+                conversation_id,
+                "not_a_member",
+                "You are not a member of this room.",
+            );
+            let json = protocol::event_to_json(&event);
+            app.connections.send_to_human(human_id, &json).await;
+            return;
+        }
+        let display = app
+            .identity
+            .get_human(human_id)
+            .await
+            .map(|h| h.display_name)
+            .unwrap_or_else(|| human_id.to_string());
+        let sender = ParticipantRef::human_named(human_id, &display);
+        let stored = crate::rooms::append_and_broadcast(
+            app,
+            conversation_id,
+            sender,
+            text,
+            std::collections::HashMap::new(),
+        )
+        .await;
+        if stored.is_some() {
+            // The idle-release clock counts from member speech.
+            let meta = app
+                .conversation
+                .get(conversation_id)
+                .await
+                .map(|c| c.metadata)
+                .unwrap_or_default();
+            let idle = crate::rooms::idle_secs(&meta);
+            app.rooms
+                .note_member_speech(conversation_id, app, idle)
+                .await;
+        }
+        let ack = protocol::reply_delivered(conversation_id, stored.is_some());
+        let ack_json = protocol::event_to_json(&ack);
+        app.connections.send_to_human(human_id, &ack_json).await;
+        return;
+    }
+
     let channel_delivered = app.reply.deliver(conversation_id, text).await;
     let mut delivered = channel_delivered || async_completed;
 
@@ -579,6 +631,33 @@ async fn handle_reply_send(
 /// (agent idle), this is a no-op.
 async fn handle_end_turn(app: &AppState, conversation_id: &str, human_id: &str) {
     tracing::info!("End turn requested: conversation_id={}", conversation_id);
+
+    // Room path: only the owner may end a turn. A member's end.turn gets an
+    // error event and changes nothing about the stream.
+    if crate::rooms::is_room(app, conversation_id).await {
+        match crate::rooms::role_of(app, conversation_id, human_id).await {
+            Some(crate::model::conversation::ParticipantRole::Owner) => {
+                app.rooms
+                    .end_turn(conversation_id, crate::rooms::EndReason::Owner)
+                    .await;
+                // Legacy channel too: any 1:1-style waiter on this id stops.
+                let _ = app.reply.deliver(conversation_id, "__END_TURN__").await;
+                let ack = protocol::reply_delivered(conversation_id, true);
+                let ack_json = protocol::event_to_json(&ack);
+                app.connections.send_to_human(human_id, &ack_json).await;
+            }
+            _ => {
+                let event = protocol::error_event(
+                    conversation_id,
+                    "owner_only",
+                    "Only the room owner can end a turn.",
+                );
+                let json = protocol::event_to_json(&event);
+                app.connections.send_to_human(human_id, &json).await;
+            }
+        }
+        return;
+    }
 
     let delivered = app.reply.deliver(conversation_id, "__END_TURN__").await;
 
@@ -682,6 +761,69 @@ async fn handle_tool_invoke(
     human_id: &str,
     agent_id: &str,
 ) {
+    // Room path: owner-only, ends the current segment with real tool_calls.
+    if crate::rooms::is_room(app, conversation_id).await {
+        match crate::rooms::role_of(app, conversation_id, human_id).await {
+            Some(crate::model::conversation::ParticipantRole::Owner) => {}
+            _ => {
+                let event = protocol::error_event(
+                    conversation_id,
+                    "owner_only",
+                    "Only the room owner can invoke tools.",
+                );
+                let json = protocol::event_to_json(&event);
+                app.connections.send_to_human(human_id, &json).await;
+                return;
+            }
+        }
+        // The call itself is a room message (visible to all members).
+        let display = app
+            .identity
+            .get_human(human_id)
+            .await
+            .map(|h| h.display_name)
+            .unwrap_or_else(|| human_id.to_string());
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(
+            "tool_call_id".to_string(),
+            serde_json::Value::String(invocation_id.to_string()),
+        );
+        meta.insert(
+            "tool_id".to_string(),
+            serde_json::Value::String(tool_id.to_string()),
+        );
+        let call_text = serde_json::json!({
+            "type": "tool.invoke",
+            "invocation_id": invocation_id,
+            "tool_id": tool_id,
+            "input": input,
+        })
+        .to_string();
+        let _ = crate::rooms::append_and_broadcast(
+            app,
+            conversation_id,
+            ParticipantRef::human_named(human_id, &display),
+            text.as_deref().unwrap_or(&call_text),
+            meta,
+        )
+        .await;
+        app.rooms
+            .publish(
+                conversation_id,
+                crate::rooms::RoomSignal::ToolInvoke {
+                    invocation_id: invocation_id.to_string(),
+                    tool_id: tool_id.to_string(),
+                    input,
+                    text,
+                },
+            )
+            .await;
+        let ack = protocol::reply_delivered(conversation_id, true);
+        let ack_json = protocol::event_to_json(&ack);
+        app.connections.send_to_human(human_id, &ack_json).await;
+        return;
+    }
+
     // 1. Validate the tool exists. The tools that count are the ones the
     //    caller declared in this conversation's own last request: the
     //    responder's key belongs to a different agent than the caller's, so

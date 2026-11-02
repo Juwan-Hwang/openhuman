@@ -153,6 +153,27 @@ impl ConnectionRegistry {
         delivered_count > 0
     }
 
+    /// Send a JSON event to every member of a room.
+    ///
+    /// The member list is resolved by the caller at send time, so a kicked
+    /// member stops receiving the moment their membership row is gone —
+    /// there is no per-room subscription to clean up. Other rooms and 1:1
+    /// conversations of the same humans are unaffected.
+    pub async fn send_to_room(
+        &self,
+        _room_id: &str,
+        member_ids: &[String],
+        event_json: &str,
+    ) -> usize {
+        let mut delivered = 0;
+        for id in member_ids {
+            if self.send_to_human(id, event_json).await {
+                delivered += 1;
+            }
+        }
+        delivered
+    }
+
     /// Check if a human has any active connections (is online).
     pub async fn is_online(&self, human_id: &str) -> bool {
         let inner = self.inner.lock().await;

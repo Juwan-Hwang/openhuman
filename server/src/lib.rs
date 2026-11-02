@@ -13,6 +13,7 @@ pub mod notification;
 pub mod observation;
 pub mod openai_compat;
 pub mod profile;
+pub mod rooms;
 pub mod seat;
 pub mod session;
 pub mod state;

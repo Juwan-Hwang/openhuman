@@ -72,6 +72,8 @@ pub struct AppState {
     /// Group-room storage (migration 007). Same backend as the rest;
     /// with the memory backend every room evaporates on restart.
     pub room: Arc<dyn RoomRepository>,
+    /// Room runtime: live signal channels + idle-release timers.
+    pub rooms: crate::rooms::RoomHub,
 }
 
 /// The name this instance answers to as a "model".
@@ -171,6 +173,7 @@ impl AppState {
             ephemeral: None,
             model: Arc::new(ModelName::from_env()),
             room: store,
+            rooms: crate::rooms::RoomHub::new(),
         }
     }
 
@@ -212,6 +215,7 @@ impl AppState {
             ephemeral,
             model: Arc::new(ModelName::from_env()),
             room,
+            rooms: crate::rooms::RoomHub::new(),
         }
     }
 }
