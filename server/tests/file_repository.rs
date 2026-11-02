@@ -63,17 +63,23 @@ async fn list_is_owner_scoped_and_newest_first(repo: &dyn FileRepository) {
 
 async fn find_output_by_bytes_only_matches_outputs(repo: &dyn FileRepository) {
     let owner = "agt_files_out";
-    repo.put_file("file-u1", file(owner, "in.bin", "user_data", b"same", 1))
+    // Unique payloads keep the shared postgres database from leaking
+    // between runs (the table persists across test runs).
+    let tag = uuid::Uuid::now_v7().simple().to_string();
+    let uid = format!("file-u{tag}");
+    let oid = format!("file-o{tag}");
+    let payload = format!("payload-{tag}").into_bytes();
+    repo.put_file(&uid, file(owner, "in.bin", "user_data", &payload, 1))
         .await;
-    assert!(repo.find_output_by_bytes(b"same").await.is_none());
-    repo.put_file("file-o1", file(owner, "out.png", "output", b"same", 2))
+    assert!(repo.find_output_by_bytes(&payload).await.is_none());
+    repo.put_file(&oid, file(owner, "out.png", "output", &payload, 2))
         .await;
     let (id, _) = repo
-        .find_output_by_bytes(b"same")
+        .find_output_by_bytes(&payload)
         .await
         .expect("output hit");
-    assert_eq!(id, "file-o1");
-    assert!(repo.find_output_by_bytes(b"different").await.is_none());
+    assert_eq!(id, oid);
+    assert!(repo.find_output_by_bytes(b"never-stored").await.is_none());
 }
 
 #[tokio::test]

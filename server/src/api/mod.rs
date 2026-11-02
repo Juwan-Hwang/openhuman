@@ -6,6 +6,7 @@
 
 pub mod adapters;
 pub mod audio;
+pub mod batches;
 pub mod completions;
 pub mod files;
 pub mod history;
@@ -18,4 +19,5 @@ pub mod room_ingress;
 pub mod rooms;
 pub mod stored;
 pub mod task;
+pub mod uploads;
 pub mod webhooks;
