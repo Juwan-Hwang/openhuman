@@ -238,6 +238,59 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/v1/webhook_endpoints/:id/test", post(api::webhooks::test))
         .route("/v1/webhook_event_types", get(api::webhooks::event_types))
+        .route("/v1/chatkit/sessions", post(api::chatkit::create_session))
+        .route(
+            "/v1/chatkit/sessions/:id/cancel",
+            post(api::chatkit::cancel_session),
+        )
+        .route("/v1/chatkit/threads", get(api::chatkit::list_threads))
+        .route(
+            "/v1/chatkit/threads/:id",
+            get(api::chatkit::get_thread).delete(api::chatkit::delete_thread),
+        )
+        .route(
+            "/v1/chatkit/threads/:id/items",
+            get(api::chatkit::list_items),
+        )
+        .route("/v1/chatkit", post(api::chatkit::protocol))
+        .route(
+            "/v1/fine_tuning/alpha/graders/run",
+            post(api::evals::graders_run),
+        )
+        .route(
+            "/v1/fine_tuning/alpha/graders/validate",
+            post(api::evals::graders_validate),
+        )
+        .route(
+            "/v1/evals",
+            post(api::evals::create_eval).get(api::evals::list_evals),
+        )
+        .route(
+            "/v1/evals/:id",
+            get(api::evals::get_eval_route)
+                .post(api::evals::update_eval)
+                .delete(api::evals::delete_eval),
+        )
+        .route(
+            "/v1/evals/:id/runs",
+            post(api::evals::create_run).get(api::evals::list_runs),
+        )
+        .route(
+            "/v1/evals/:id/runs/:run",
+            get(api::evals::get_run_route).delete(api::evals::delete_run),
+        )
+        .route(
+            "/v1/evals/:id/runs/:run/cancel",
+            post(api::evals::cancel_run),
+        )
+        .route(
+            "/v1/evals/:id/runs/:run/output_items",
+            get(api::evals::list_output_items),
+        )
+        .route(
+            "/v1/evals/:id/runs/:run/output_items/:item",
+            get(api::evals::get_output_item),
+        )
         .route("/v1/models", get(list_models))
         .route("/v1/models/:model_id", get(get_model))
         // A base URL configured as `.../v1` by a client that appends `/v1`

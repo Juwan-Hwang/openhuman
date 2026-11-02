@@ -95,6 +95,11 @@ pub async fn require_api_key(
         || path == "/v1/webhook_endpoints"
         || path.starts_with("/v1/webhook_endpoints/")
         || path == "/v1/webhook_event_types"
+        || path == "/v1/chatkit"
+        || path.starts_with("/v1/chatkit/")
+        || path == "/v1/evals"
+        || path.starts_with("/v1/evals/")
+        || path.starts_with("/v1/fine_tuning/alpha/graders/")
         || path == "/v1/moderations"
         || path == "/v1/decisions"
         || path == "/v1/assistants"
