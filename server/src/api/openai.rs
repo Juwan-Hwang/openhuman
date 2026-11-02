@@ -106,7 +106,7 @@ const END_TURN_SIGNAL: &str = "__END_TURN__";
 /// The `end.turn` is kept in the returned payloads rather than discarded:
 /// it closes the collection window *and* closes the turn, and dropping it
 /// would leave the turn waiting forever for an end that already arrived.
-async fn collect_rest(
+pub(crate) async fn collect_rest(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
     window: Duration,
 ) -> Vec<String> {
@@ -348,7 +348,7 @@ pub(crate) fn parse_reply(payload: &str) -> HumanReply {
 ///
 /// Each source is namespaced with a prefix so an agent's `user` value can
 /// never collide with a header-derived id of the same string.
-fn resolve_session_key(
+pub(crate) fn resolve_session_key(
     headers: &HeaderMap,
     req: &ChatCompletionRequest,
     system_prompt: Option<&str>,
@@ -607,7 +607,7 @@ fn forced_tool(req: &ChatCompletionRequest) -> Option<(String, Vec<String>)> {
 ///
 /// A token cap alone is not enough: plenty of plain chat clients send
 /// `max_tokens` on every request (opencode sends 32000 on its main chat).
-fn is_auxiliary_request(req: &ChatCompletionRequest) -> bool {
+pub(crate) fn is_auxiliary_request(req: &ChatCompletionRequest) -> bool {
     use crate::openai_compat::ChatRole;
     let has_tools = req
         .tools
@@ -908,7 +908,7 @@ fn prompt_fingerprint(prompt: &str) -> String {
 /// `user` messages as `Message{sender=AgentIdentity}`.
 /// `assistant` messages are treated as context replay (skipped).
 /// `tool` messages are stored with `tool_call_id` metadata.
-fn process_inbound_messages(
+pub(crate) fn process_inbound_messages(
     req: &ChatCompletionRequest,
     principal: &AuthPrincipal,
     conversation_id: &str,
@@ -1747,7 +1747,7 @@ impl TurnCtx {
 /// Seconds between SSE heartbeats while a turn waits for its responder.
 /// Short by default: some clients give up on a silent stream within
 /// seconds (Trae retried every ~5 s).
-fn sse_heartbeat_secs() -> u64 {
+pub(crate) fn sse_heartbeat_secs() -> u64 {
     std::env::var("OPENHUMAN_SSE_HEARTBEAT_SECS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
@@ -1757,7 +1757,7 @@ fn sse_heartbeat_secs() -> u64 {
 
 /// Heartbeat frame: an SSE comment by default (ignored by every SSE
 /// parser), or an empty-delta chunk with `OPENHUMAN_SSE_HEARTBEAT=chunk`.
-fn heartbeat_event(completion_id: &str, model: &str) -> SseEvent {
+pub(crate) fn heartbeat_event(completion_id: &str, model: &str) -> SseEvent {
     if matches!(
         std::env::var("OPENHUMAN_SSE_HEARTBEAT").as_deref(),
         Ok("chunk")
@@ -1991,7 +1991,7 @@ async fn handle_async(
 /// These requests are internal to WorkBuddy's workflow — they generate
 /// session titles, intent classifications, etc. We auto-respond with
 /// a minimal reply so WorkBuddy doesn't block waiting for human input.
-fn handle_meta_request(req: ChatCompletionRequest, purpose: &str) -> Response {
+pub(crate) fn handle_meta_request(req: ChatCompletionRequest, purpose: &str) -> Response {
     // Meta answers are synthesized on the spot; echo the caller's own
     // model name back, as a real model endpoint would.
     let model_name = req.model.clone().unwrap_or_else(|| "openhuman".to_string());

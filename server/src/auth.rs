@@ -83,7 +83,45 @@ pub async fn require_api_key(
         || path == "/v1/files"
         || path.starts_with("/v1/files/")
         || path.starts_with("/v1/replies");
-    let allowed = if caller_route {
+    // Room ingress: `/rooms/<id>/v1/...` (including the `/v1/v1` alias).
+    // Only the caller key bound to THIS room passes — an unbound key is
+    // refused, and so is a key bound to a different room.
+    let room_prefix = raw_path
+        .strip_prefix("/rooms/")
+        .and_then(|rest| rest.split('/').next())
+        .filter(|rid| {
+            raw_path
+                .strip_prefix(&format!("/rooms/{}/", rid))
+                .map(|tail| tail.starts_with("v1/") || tail == "v1")
+                .unwrap_or(false)
+        })
+        .map(|rid| rid.to_string());
+
+    if let Some(rid) = room_prefix.as_deref() {
+        if !principal.api_key.scope.may_call() {
+            return auth_error(
+                StatusCode::FORBIDDEN,
+                "wrong_key_scope",
+                "Room ingress needs a caller-scoped key.",
+            );
+        }
+        if principal.api_key.room_id.as_deref() != Some(rid) {
+            return auth_error(
+                StatusCode::FORBIDDEN,
+                "key_not_bound_to_room",
+                "This key is not bound to this room.",
+            );
+        }
+    } else if caller_route && principal.api_key.room_id.is_some() {
+        // A room-bound key never works on the plain 1:1 ingress.
+        return auth_error(
+            StatusCode::FORBIDDEN,
+            "room_key_on_plain_ingress",
+            "This key is bound to a room; use its /rooms/<id>/v1 base URL.",
+        );
+    }
+
+    let allowed = if room_prefix.is_some() || caller_route {
         principal.api_key.scope.may_call()
     } else {
         principal.api_key.scope.may_respond()

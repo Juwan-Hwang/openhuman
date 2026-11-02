@@ -10,4 +10,5 @@ pub mod history;
 pub mod mock;
 pub mod openai;
 pub mod replies;
+pub mod room_ingress;
 pub mod rooms;

@@ -149,6 +149,34 @@ struct TurnState {
 pub struct RoomHub {
     channels: Arc<Mutex<HashMap<String, broadcast::Sender<RoomSignal>>>>,
     turns: Arc<Mutex<HashMap<String, TurnState>>>,
+    /// Live caller streams per (room, key, session): a new request on the
+    /// same triple aborts the previous one (§6.7 resubmit-supersedes).
+    streams: Arc<Mutex<HashMap<(String, String, String), (u64, AbortHandle)>>>,
+    /// Consecutive empty segments per triple, driving the 20→40→60s
+    /// progressive no-content segment length (§6.3).
+    empty_streaks: Arc<Mutex<HashMap<(String, String, String), u32>>>,
+}
+
+/// Aborts the replaced stream when a newer request on its triple lands,
+/// and unregisters itself when dropped at the end of a request.
+pub struct StreamGuard {
+    hub: RoomHub,
+    key: (String, String, String),
+    generation: u64,
+}
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        let hub = self.hub.clone();
+        let key = self.key.clone();
+        let generation = self.generation;
+        tokio::spawn(async move {
+            let mut streams = hub.streams.lock().await;
+            if streams.get(&key).map(|(g, _)| *g) == Some(generation) {
+                streams.remove(&key);
+            }
+        });
+    }
 }
 
 impl RoomHub {
@@ -228,6 +256,87 @@ impl RoomHub {
             }
         }
         self.publish(room_id, RoomSignal::EndTurn { reason }).await;
+    }
+
+    /// Abort any live stream on this triple — the new request supersedes.
+    pub async fn stream_supersede(&self, room_id: &str, key_id: &str, session_key: &str) {
+        let key = (
+            room_id.to_string(),
+            key_id.to_string(),
+            session_key.to_string(),
+        );
+        let mut streams = self.streams.lock().await;
+        if let Some((_, prev)) = streams.remove(&key) {
+            prev.abort();
+        }
+    }
+
+    /// Register a pump task as the triple's live stream. Supersede first;
+    /// the guard removes the entry on drop only if nobody newer replaced it.
+    pub async fn stream_register(
+        &self,
+        room_id: &str,
+        key_id: &str,
+        session_key: &str,
+        handle: AbortHandle,
+    ) -> StreamGuard {
+        let key = (
+            room_id.to_string(),
+            key_id.to_string(),
+            session_key.to_string(),
+        );
+        let generation = {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static GEN: AtomicU64 = AtomicU64::new(1);
+            GEN.fetch_add(1, Ordering::Relaxed)
+        };
+        let mut streams = self.streams.lock().await;
+        streams.insert(key.clone(), (generation, handle));
+        StreamGuard {
+            hub: self.clone(),
+            key,
+            generation,
+        }
+    }
+
+    /// How many consecutive segments of this triple closed with no content.
+    pub async fn segment_empty_streak(
+        &self,
+        room_id: &str,
+        key_id: &str,
+        session_key: &str,
+    ) -> u32 {
+        let streaks = self.empty_streaks.lock().await;
+        streaks
+            .get(&(
+                room_id.to_string(),
+                key_id.to_string(),
+                session_key.to_string(),
+            ))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Record a segment's outcome: content resets the progressive clock,
+    /// no content lengthens the next one.
+    pub async fn segment_record_outcome(
+        &self,
+        room_id: &str,
+        key_id: &str,
+        session_key: &str,
+        had_content: bool,
+    ) {
+        let mut streaks = self.empty_streaks.lock().await;
+        let key = (
+            room_id.to_string(),
+            key_id.to_string(),
+            session_key.to_string(),
+        );
+        if had_content {
+            streaks.remove(&key);
+        } else {
+            *streaks.entry(key).or_insert(0) += 1;
+        }
     }
 
     /// The instant at which the room last saw any message — the deep-idle

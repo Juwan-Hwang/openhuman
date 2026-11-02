@@ -59,7 +59,7 @@ const COMPACT_TEXT_CHARS: usize = 8000;
 /// Tool output is what the responder works from, and its end (the failing
 /// test, the exit status) matters as much as its start: keep far more, and
 /// keep both ends.
-const COMPACT_OUTPUT_CHARS: usize = 60000;
+pub(crate) const COMPACT_OUTPUT_CHARS: usize = 60000;
 
 /// Detach a seat after this long without a poll (`OPENHUMAN_SEAT_TTL_SECS`).
 fn seat_ttl() -> Duration {
@@ -323,7 +323,7 @@ fn err(status: StatusCode, code: &str, message: &str) -> Response {
 
 /// Keep the first two thirds and the last third of `max`, with a marker
 /// saying how much was cut between them.
-fn truncate_middle(s: &str, max: usize) -> (String, bool) {
+pub(crate) fn truncate_middle(s: &str, max: usize) -> (String, bool) {
     let n = s.chars().count();
     if n <= max {
         return (s.to_string(), false);

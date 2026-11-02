@@ -201,6 +201,32 @@ pub fn build_router(state: AppState) -> Router {
                 "/v1/rooms/:room_id/caller-keys",
                 post(api::rooms::create_caller_key),
             )
+            // Caller ingress (§5.2): the room prefix carries the same
+            // three wires plus the /v1/v1 alias and per-room models.
+            .route(
+                "/rooms/:room_id/v1/chat/completions",
+                post(api::room_ingress::room_chat_completions),
+            )
+            .route(
+                "/rooms/:room_id/v1/v1/chat/completions",
+                post(api::room_ingress::room_chat_completions),
+            )
+            .route(
+                "/rooms/:room_id/v1/models",
+                get(api::room_ingress::room_list_models),
+            )
+            .route(
+                "/rooms/:room_id/v1/models/:model_id",
+                get(api::room_ingress::room_get_model),
+            )
+            .route(
+                "/rooms/:room_id/v1/v1/models",
+                get(api::room_ingress::room_list_models),
+            )
+            .route(
+                "/rooms/:room_id/v1/v1/models/:model_id",
+                get(api::room_ingress::room_get_model),
+            )
             .layer(from_fn_with_state(state.clone(), auth::require_api_key))
     } else {
         Router::new()
