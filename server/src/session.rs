@@ -79,6 +79,37 @@ pub fn text_digest(text: &str) -> Option<String> {
     }
 }
 
+/// Strip the room speaker prefix a streamed room message carries:
+/// `[名字] ` or `[名字 · a3f9] ` at the start of a line. Applied before
+/// digesting on the room path so a replayed assistant message with our
+/// own prefixes still hashes to the value we remembered (§7.2).
+pub fn strip_speaker_prefixes(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let t = line.trim_start();
+            if t.starts_with('[') {
+                if let Some(end) = t.find(']') {
+                    let head = &t[1..end];
+                    // A name or `name · shortsession` — never contain ']'.
+                    if !head.is_empty() && head.chars().count() <= 80 {
+                        let rest = t[end + 1..].strip_prefix(' ').unwrap_or(&t[end + 1..]);
+                        return rest.to_string();
+                    }
+                }
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Room-path digest: speaker prefixes stripped, then the same whitespace-
+/// insensitive digest as 1:1, so `remember_reply` and history matching
+/// agree in both directions.
+pub fn room_text_digest(text: &str) -> Option<String> {
+    text_digest(&strip_speaker_prefixes(text))
+}
+
 /// JSON with object keys sorted recursively, so re-serialised arguments
 /// compare equal.
 pub fn canonical_json(v: &Value) -> String {
@@ -641,5 +672,30 @@ mod tests {
             Some("cnv_x")
         );
         assert_eq!(lookup_continuity("agt_other", &[d]), None);
+    }
+}
+
+#[cfg(test)]
+mod room_digest_tests {
+    use super::*;
+
+    #[test]
+    fn room_digest_strips_prefixes() {
+        // A replayed room message with our prefixes digests to the same
+        // value as the bare text we remembered when streaming it out.
+        assert_eq!(
+            room_text_digest("[小明] hello\n\n[小明 · a3f9] world"),
+            text_digest("hello\n\nworld")
+        );
+    }
+
+    #[test]
+    fn room_digest_leaves_unprefixed_lines() {
+        assert_eq!(room_text_digest("plain text"), text_digest("plain text"));
+        // A bracket that is not a speaker prefix (long / empty head) stays.
+        assert_eq!(
+            room_text_digest("[not-a-prefix-because-it-is-way-too-long-to-be-a-display-name-xxxxxxxxxxxxxxxxxxxxxxxxxxxx] hi"),
+            text_digest("[not-a-prefix-because-it-is-way-too-long-to-be-a-display-name-xxxxxxxxxxxxxxxxxxxxxxxxxxxx] hi")
+        );
     }
 }
