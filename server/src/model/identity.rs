@@ -145,6 +145,10 @@ pub struct ApiKey {
     pub human_id: String,
     /// Which side of a conversation this key may act on — see [`KeyScope`].
     pub scope: KeyScope,
+    /// Room this caller key is bound to, if any. A bound key may only
+    /// reach `/rooms/<id>/v1/*` for this room, and an unbound key may
+    /// never reach a room ingress.
+    pub room_id: Option<String>,
 }
 
 /// Which side of a conversation a key may act on.
@@ -204,6 +208,7 @@ impl ApiKey {
             agent_id: agent_id.into(),
             human_id: human_id.into(),
             scope: KeyScope::Both,
+            room_id: None,
         }
     }
 
@@ -228,6 +233,7 @@ impl ApiKey {
             agent_id: self.agent_id.clone(),
             human_id: self.human_id.clone(),
             scope: self.scope,
+            room_id: self.room_id.clone(),
         }
     }
 

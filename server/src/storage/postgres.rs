@@ -107,6 +107,11 @@ impl PostgresStore {
         self.pool.execute(sql5).await?;
         let sql6 = include_str!("../../migrations/006_key_scope.sql");
         self.pool.execute(sql6).await?;
+        // 007 opens group rooms (type/role CHECKs, room_seq, counters,
+        // invites, cursors, key binding). Re-runnable like the rest; the
+        // rollback is 007_groups_down.sql, run by hand only.
+        let sql7 = include_str!("../../migrations/007_groups.sql");
+        self.pool.execute(sql7).await?;
         // 001 re-seeds the public demo key on every boot. Outside an
         // explicit demo it must not authenticate anything.
         if std::env::var("OPENHUMAN_DEMO").ok().as_deref() != Some("1") {
@@ -141,12 +146,13 @@ impl IdentityRepository for PostgresStore {
     async fn resolve_principal(&self, raw_key: &str) -> Option<AuthPrincipal> {
         let key_hash = api_key_hash(raw_key);
 
-        let key_row =
-            sqlx::query("SELECT id, agent_id, human_id, scope FROM api_keys WHERE key_hash = $1")
-                .bind(&key_hash)
-                .fetch_optional(&*self.pool)
-                .await
-                .ok()??;
+        let key_row = sqlx::query(
+            "SELECT id, agent_id, human_id, scope, room_id FROM api_keys WHERE key_hash = $1",
+        )
+        .bind(&key_hash)
+        .fetch_optional(&*self.pool)
+        .await
+        .ok()??;
 
         let key_id: String = key_row.try_get("id").ok()?;
         let agent_id: String = key_row.try_get("agent_id").ok()?;
@@ -154,6 +160,7 @@ impl IdentityRepository for PostgresStore {
         let scope: String = key_row
             .try_get("scope")
             .unwrap_or_else(|_| "both".to_string());
+        let room_id: Option<String> = key_row.try_get("room_id").ok().flatten();
 
         let agent = self.get_agent_inner(&agent_id).await?;
         let human = self.get_human_inner(&human_id).await?;
@@ -168,6 +175,7 @@ impl IdentityRepository for PostgresStore {
                 agent_id,
                 human_id,
                 scope: crate::model::identity::KeyScope::parse(&scope),
+                room_id,
             },
         })
     }
@@ -290,13 +298,14 @@ impl IdentityRepository for PostgresStore {
 
         let _ = sqlx::query(
             r#"
-            INSERT INTO api_keys (id, key_hash, agent_id, human_id, scope, created_at)
-            VALUES ($1, $2, $3, $4, $5, NOW())
+            INSERT INTO api_keys (id, key_hash, agent_id, human_id, scope, room_id, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
             ON CONFLICT (id) DO UPDATE SET
                 key_hash = EXCLUDED.key_hash,
                 agent_id = EXCLUDED.agent_id,
                 human_id = EXCLUDED.human_id,
-                scope = EXCLUDED.scope
+                scope = EXCLUDED.scope,
+                room_id = EXCLUDED.room_id
             "#,
         )
         .bind(&key.id)
@@ -304,6 +313,7 @@ impl IdentityRepository for PostgresStore {
         .bind(&key.agent_id)
         .bind(&key.human_id)
         .bind(key.scope.as_str())
+        .bind(&key.room_id)
         .execute(&*self.pool)
         .await;
     }
@@ -356,6 +366,27 @@ impl IdentityRepository for PostgresStore {
                 .execute(&*self.pool)
                 .await;
         matches!(result, Ok(r) if r.rows_affected() > 0)
+    }
+}
+
+/// Parse the `conversations.type` column.
+fn parse_conversation_type(s: &str) -> ConversationType {
+    match s {
+        "human_human" => ConversationType::HumanHuman,
+        "group" => ConversationType::Group,
+        _ => ConversationType::AgentHuman,
+    }
+}
+
+/// Parse the `conversation_participants.role` column.
+fn parse_participant_role(s: &str) -> Option<ParticipantRole> {
+    match s {
+        "initiator" => Some(ParticipantRole::Initiator),
+        "responder" => Some(ParticipantRole::Responder),
+        "observer" => Some(ParticipantRole::Observer),
+        "owner" => Some(ParticipantRole::Owner),
+        "member" => Some(ParticipantRole::Member),
+        _ => None,
     }
 }
 
@@ -506,11 +537,13 @@ impl ConversationRepository for PostgresStore {
                     participant: ParticipantRef::agent(agent_id),
                     joined_at: now,
                     role: Some(ParticipantRole::Initiator),
+                    first_visible_seq: None,
                 },
                 ConversationParticipant {
                     participant: ParticipantRef::human(human_id),
                     joined_at: now,
                     role: Some(ParticipantRole::Responder),
+                    first_visible_seq: None,
                 },
             ],
             title: None,
@@ -543,10 +576,11 @@ impl ConversationRepository for PostgresStore {
 
         let conversation_id: String = row.try_get("id").ok()?;
         let participants = self.get_participants(&conversation_id).await;
+        let type_str: String = row.try_get("type").unwrap_or_default();
 
         Some(Conversation {
             id: conversation_id,
-            conversation_type: ConversationType::AgentHuman,
+            conversation_type: parse_conversation_type(&type_str),
             participants,
             title: row.try_get("title").ok()?,
             status: ConversationStatus::Active,
@@ -569,7 +603,7 @@ impl ConversationRepository for PostgresStore {
         // Find all conversation IDs where this human is a participant.
         let rows = sqlx::query(
             r#"
-            SELECT DISTINCT c.id, c.title, c.status, c.metadata, c.created_at, c.updated_at, c.last_message_at
+            SELECT DISTINCT c.id, c.type, c.title, c.status, c.metadata, c.created_at, c.updated_at, c.last_message_at
             FROM conversations c
             JOIN conversation_participants cp ON cp.conversation_id = c.id
             WHERE cp.participant_id = $1 AND cp.participant_type = 'human'
@@ -590,9 +624,10 @@ impl ConversationRepository for PostgresStore {
         for row in &rows {
             if let Ok(conversation_id) = row.try_get::<String, _>("id") {
                 let participants = self.get_participants(&conversation_id).await;
+                let type_str: String = row.try_get("type").unwrap_or_default();
                 conversations.push(Conversation {
                     id: conversation_id,
-                    conversation_type: ConversationType::AgentHuman,
+                    conversation_type: parse_conversation_type(&type_str),
                     participants,
                     title: row.try_get("title").ok(),
                     status: ConversationStatus::Active,
@@ -663,7 +698,7 @@ impl ConversationRepository for PostgresStore {
         // empty trash.
         let rows = sqlx::query(
             r#"
-            SELECT DISTINCT c.id, c.title, c.status, c.metadata, c.created_at,
+            SELECT DISTINCT c.id, c.type, c.title, c.status, c.metadata, c.created_at,
                             c.updated_at, c.last_message_at, c.deleted_at
             FROM conversations c
             JOIN conversation_participants cp ON cp.conversation_id = c.id
@@ -688,9 +723,10 @@ impl ConversationRepository for PostgresStore {
         for row in &rows {
             if let Ok(conversation_id) = row.try_get::<String, _>("id") {
                 let participants = self.get_participants(&conversation_id).await;
+                let type_str: String = row.try_get("type").unwrap_or_default();
                 conversations.push(Conversation {
                     id: conversation_id,
-                    conversation_type: ConversationType::AgentHuman,
+                    conversation_type: parse_conversation_type(&type_str),
                     participants,
                     title: row.try_get("title").ok(),
                     status: ConversationStatus::Active,
@@ -754,10 +790,11 @@ impl PostgresStore {
 
         let conversation_id: String = row.try_get("id").ok()?;
         let participants = self.get_participants(&conversation_id).await;
+        let type_str: String = row.try_get("type").unwrap_or_default();
 
         Some(Conversation {
             id: conversation_id,
-            conversation_type: ConversationType::AgentHuman,
+            conversation_type: parse_conversation_type(&type_str),
             participants,
             title: row.try_get("title").ok()?,
             status: ConversationStatus::Active,
@@ -791,10 +828,11 @@ impl PostgresStore {
 
         let conversation_id: String = row.try_get("id").ok()?;
         let participants = self.get_participants(&conversation_id).await;
+        let type_str: String = row.try_get("type").unwrap_or_default();
 
         Some(Conversation {
             id: conversation_id,
-            conversation_type: ConversationType::AgentHuman,
+            conversation_type: parse_conversation_type(&type_str),
             participants,
             title: row.try_get("title").ok()?,
             status: ConversationStatus::Active,
@@ -812,7 +850,7 @@ impl PostgresStore {
     /// Internal: get all participants for a conversation.
     async fn get_participants(&self, conversation_id: &str) -> Vec<ConversationParticipant> {
         let rows = sqlx::query(
-            "SELECT participant_id, participant_type, joined_at, role \
+            "SELECT participant_id, participant_type, joined_at, role, first_visible_seq \
              FROM conversation_participants WHERE conversation_id = $1 ORDER BY joined_at",
         )
         .bind(conversation_id)
@@ -832,12 +870,8 @@ impl PostgresStore {
                     _ => ParticipantType::Agent,
                 };
 
-                let role = role_str.as_deref().and_then(|s| match s {
-                    "initiator" => Some(ParticipantRole::Initiator),
-                    "responder" => Some(ParticipantRole::Responder),
-                    "observer" => Some(ParticipantRole::Observer),
-                    _ => None,
-                });
+                let role = role_str.as_deref().and_then(parse_participant_role);
+                let first_visible_seq: Option<i64> = r.try_get("first_visible_seq").ok().flatten();
 
                 Some(ConversationParticipant {
                     participant: ParticipantRef {
@@ -847,6 +881,7 @@ impl PostgresStore {
                     },
                     joined_at,
                     role,
+                    first_visible_seq,
                 })
             })
             .collect()
@@ -868,8 +903,8 @@ impl MessageRepository for PostgresStore {
 
         let _ = sqlx::query(
             r#"
-            INSERT INTO messages (id, conversation_id, sender_id, sender_type, content, attachments, metadata, status, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO messages (id, conversation_id, sender_id, sender_type, content, attachments, metadata, status, created_at, room_seq)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT (id) DO NOTHING
             "#,
         )
@@ -888,6 +923,7 @@ impl MessageRepository for PostgresStore {
             MessageStatus::Failed => "failed",
         })
         .bind(message.created_at)
+        .bind(message.room_seq)
         .execute(&*self.pool)
         .await;
 
@@ -903,7 +939,7 @@ impl MessageRepository for PostgresStore {
 
     async fn list(&self, conversation_id: &str) -> Vec<Message> {
         let rows = sqlx::query(
-            "SELECT id, conversation_id, sender_id, sender_type, content, attachments, metadata, status, created_at \
+            "SELECT id, conversation_id, sender_id, sender_type, content, attachments, metadata, status, created_at, room_seq \
              FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC",
         )
         .bind(conversation_id)
@@ -953,6 +989,7 @@ impl MessageRepository for PostgresStore {
                     status,
                     visibility: crate::model::message::MessageVisibility::HumanVisible,
                     created_at,
+                    room_seq: r.try_get("room_seq").ok().flatten(),
                 })
             })
             .collect()
@@ -966,7 +1003,7 @@ impl MessageRepository for PostgresStore {
         let rows = sqlx::query(
             r#"
             SELECT m.id, m.conversation_id, m.sender_id, m.sender_type, m.content,
-                   m.attachments, m.metadata, m.status, m.created_at
+                   m.attachments, m.metadata, m.status, m.created_at, m.room_seq
             FROM messages m
             JOIN conversation_participants cp
               ON cp.conversation_id = m.conversation_id
@@ -1024,6 +1061,7 @@ impl MessageRepository for PostgresStore {
                     status: MessageStatus::Pending,
                     visibility: crate::model::message::MessageVisibility::HumanVisible,
                     created_at,
+                    room_seq: r.try_get("room_seq").ok().flatten(),
                 })
             })
             .collect()
@@ -1048,7 +1086,7 @@ impl MessageRepository for PostgresStore {
         // loaded the whole conversation and scanned it in Rust, which gets
         // slower with every message in the thread.
         let row = sqlx::query(
-            "SELECT id, conversation_id, sender_id, sender_type, content, attachments, metadata, status, created_at \
+            "SELECT id, conversation_id, sender_id, sender_type, content, attachments, metadata, status, created_at, room_seq \
              FROM messages \
              WHERE conversation_id = $1 \
                AND metadata->>'tool_call_id' = $2 \
@@ -1090,6 +1128,7 @@ impl MessageRepository for PostgresStore {
             },
             visibility: crate::model::message::MessageVisibility::HumanVisible,
             created_at: row.try_get("created_at").ok()?,
+            room_seq: row.try_get("room_seq").ok().flatten(),
         })
     }
 }
@@ -1365,5 +1404,386 @@ fn parse_client_type(s: &str) -> ClientType {
         "claude_code" => ClientType::ClaudeCode,
         "trae" => ClientType::Trae,
         _ => ClientType::Custom,
+    }
+}
+
+// ── RoomRepository (migration 007) ──
+
+use crate::storage::traits::{RoomInvite, RoomRepository};
+
+/// Map a messages row into the model — shared by the room log reads.
+fn message_from_row(r: &sqlx::postgres::PgRow) -> Option<Message> {
+    let sender_type_str: String = r.try_get("sender_type").ok()?;
+    let content_json: serde_json::Value = r.try_get("content").ok()?;
+    let status_str: String = r.try_get("status").ok()?;
+    Some(Message {
+        id: r.try_get("id").ok()?,
+        conversation_id: r.try_get("conversation_id").ok()?,
+        sender: ParticipantRef {
+            participant_id: r.try_get("sender_id").ok()?,
+            participant_type: match sender_type_str.as_str() {
+                "human" => ParticipantType::Human,
+                _ => ParticipantType::Agent,
+            },
+            display_name: None,
+        },
+        content: serde_json::from_value(content_json).unwrap_or(ContentBlock::text("")),
+        attachments: serde_json::from_value(r.try_get("attachments").ok()?).unwrap_or_default(),
+        metadata: serde_json::from_value(r.try_get("metadata").ok()?).unwrap_or_default(),
+        status: match status_str.as_str() {
+            "pending" => MessageStatus::Pending,
+            "sent" => MessageStatus::Sent,
+            "delivered" => MessageStatus::Delivered,
+            "read" => MessageStatus::Read,
+            _ => MessageStatus::Failed,
+        },
+        visibility: crate::model::message::MessageVisibility::HumanVisible,
+        created_at: r.try_get("created_at").ok()?,
+        room_seq: r.try_get("room_seq").ok().flatten(),
+    })
+}
+
+#[async_trait]
+impl RoomRepository for PostgresStore {
+    async fn room_create(
+        &self,
+        room_id: &str,
+        title: &str,
+        owner: &ParticipantRef,
+    ) -> Conversation {
+        let now = Utc::now();
+        let _ = sqlx::query(
+            "INSERT INTO conversations (id, type, title, status, metadata, created_at, updated_at) \
+             VALUES ($1, 'group', $2, 'active', '{}'::jsonb, $3, $3)",
+        )
+        .bind(room_id)
+        .bind(title)
+        .bind(now)
+        .execute(&*self.pool)
+        .await;
+        let _ = sqlx::query(
+            "INSERT INTO conversation_participants \
+             (conversation_id, participant_id, participant_type, joined_at, role, first_visible_seq) \
+             VALUES ($1, $2, $3, $4, 'owner', NULL)",
+        )
+        .bind(room_id)
+        .bind(&owner.participant_id)
+        .bind(match owner.participant_type {
+            ParticipantType::Human => "human",
+            ParticipantType::Agent => "agent",
+        })
+        .bind(now)
+        .execute(&*self.pool)
+        .await;
+        let _ = sqlx::query(
+            "INSERT INTO room_counters (room_id, next_seq) VALUES ($1, 1) \
+             ON CONFLICT (room_id) DO NOTHING",
+        )
+        .bind(room_id)
+        .execute(&*self.pool)
+        .await;
+        self.get(room_id).await.unwrap_or_else(|| Conversation {
+            id: room_id.to_string(),
+            conversation_type: ConversationType::Group,
+            participants: vec![ConversationParticipant {
+                participant: owner.clone(),
+                joined_at: now,
+                role: Some(ParticipantRole::Owner),
+                first_visible_seq: None,
+            }],
+            title: Some(title.to_string()),
+            status: ConversationStatus::Active,
+            metadata: HashMap::new(),
+            created_at: now,
+            updated_at: now,
+            last_message_at: None,
+            deleted_at: None,
+        })
+    }
+
+    async fn room_append(&self, mut message: Message) -> Option<Message> {
+        // Sequence allocation and insert commit in one transaction: two
+        // concurrent appends must never share a number, and a broadcast
+        // must never precede the commit that makes it durable.
+        let mut tx = self.pool.begin().await.ok()?;
+        let row = sqlx::query(
+            "INSERT INTO room_counters (room_id, next_seq) VALUES ($1, 2) \
+             ON CONFLICT (room_id) DO UPDATE SET next_seq = room_counters.next_seq + 1 \
+             RETURNING next_seq",
+        )
+        .bind(&message.conversation_id)
+        .fetch_one(&mut *tx)
+        .await
+        .ok()?;
+        let seq: i64 = row.try_get::<i64, _>("next_seq").ok()? - 1;
+        message.room_seq = Some(seq);
+
+        let content_json = serde_json::to_value(&message.content).unwrap_or_default();
+        let attachments_json = serde_json::to_value(&message.attachments).unwrap_or_default();
+        let metadata_json = serde_json::to_value(&message.metadata).unwrap_or_default();
+        sqlx::query(
+            "INSERT INTO messages \
+             (id, conversation_id, sender_id, sender_type, content, attachments, metadata, status, created_at, room_seq) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        )
+        .bind(&message.id)
+        .bind(&message.conversation_id)
+        .bind(&message.sender.participant_id)
+        .bind(match message.sender.participant_type {
+            ParticipantType::Human => "human",
+            ParticipantType::Agent => "agent",
+        })
+        .bind(&content_json)
+        .bind(&attachments_json)
+        .bind(&metadata_json)
+        .bind("sent")
+        .bind(message.created_at)
+        .bind(seq)
+        .execute(&mut *tx)
+        .await
+        .ok()?;
+        let _ = sqlx::query(
+            "UPDATE conversations SET last_message_at = $1, updated_at = $1 WHERE id = $2",
+        )
+        .bind(message.created_at)
+        .bind(&message.conversation_id)
+        .execute(&mut *tx)
+        .await;
+        tx.commit().await.ok()?;
+        Some(message)
+    }
+
+    async fn room_next_seq(&self, room_id: &str) -> i64 {
+        sqlx::query("SELECT next_seq FROM room_counters WHERE room_id = $1")
+            .bind(room_id)
+            .fetch_optional(&*self.pool)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| r.try_get("next_seq").ok())
+            .unwrap_or(1)
+    }
+
+    async fn room_messages_since(
+        &self,
+        room_id: &str,
+        after_seq: i64,
+        min_seq: i64,
+        limit: usize,
+    ) -> Vec<Message> {
+        let rows = sqlx::query(
+            "SELECT id, conversation_id, sender_id, sender_type, content, attachments, metadata, status, created_at, room_seq \
+             FROM messages \
+             WHERE conversation_id = $1 AND room_seq IS NOT NULL AND room_seq > $2 AND room_seq >= $3 \
+             ORDER BY room_seq ASC LIMIT $4",
+        )
+        .bind(room_id)
+        .bind(after_seq)
+        .bind(min_seq)
+        .bind(limit as i64)
+        .fetch_all(&*self.pool)
+        .await
+        .unwrap_or_default();
+        rows.iter().filter_map(message_from_row).collect()
+    }
+
+    async fn room_add_member(
+        &self,
+        room_id: &str,
+        participant: &ParticipantRef,
+        role: ParticipantRole,
+        first_visible_seq: Option<i64>,
+    ) -> bool {
+        let role_str = match role {
+            ParticipantRole::Owner => "owner",
+            ParticipantRole::Member => "member",
+            ParticipantRole::Initiator => "initiator",
+            ParticipantRole::Responder => "responder",
+            ParticipantRole::Observer => "observer",
+        };
+        let result = sqlx::query(
+            "INSERT INTO conversation_participants \
+             (conversation_id, participant_id, participant_type, joined_at, role, first_visible_seq) \
+             VALUES ($1, $2, $3, NOW(), $4, $5) \
+             ON CONFLICT (conversation_id, participant_id) DO UPDATE \
+             SET role = EXCLUDED.role, first_visible_seq = EXCLUDED.first_visible_seq",
+        )
+        .bind(room_id)
+        .bind(&participant.participant_id)
+        .bind(match participant.participant_type {
+            ParticipantType::Human => "human",
+            ParticipantType::Agent => "agent",
+        })
+        .bind(role_str)
+        .bind(first_visible_seq)
+        .execute(&*self.pool)
+        .await;
+        matches!(result, Ok(r) if r.rows_affected() > 0)
+    }
+
+    async fn room_remove_member(&self, room_id: &str, participant_id: &str) -> bool {
+        let result = sqlx::query(
+            "DELETE FROM conversation_participants \
+             WHERE conversation_id = $1 AND participant_id = $2 AND role <> 'owner'",
+        )
+        .bind(room_id)
+        .bind(participant_id)
+        .execute(&*self.pool)
+        .await;
+        matches!(result, Ok(r) if r.rows_affected() > 0)
+    }
+
+    async fn room_member_role(
+        &self,
+        room_id: &str,
+        participant_id: &str,
+    ) -> Option<ParticipantRole> {
+        let row = sqlx::query(
+            "SELECT role FROM conversation_participants \
+             WHERE conversation_id = $1 AND participant_id = $2",
+        )
+        .bind(room_id)
+        .bind(participant_id)
+        .fetch_optional(&*self.pool)
+        .await
+        .ok()??;
+        let role: Option<String> = row.try_get("role").ok()?;
+        role.as_deref().and_then(parse_participant_role)
+    }
+
+    async fn room_first_visible_seq(&self, room_id: &str, participant_id: &str) -> Option<i64> {
+        sqlx::query(
+            "SELECT first_visible_seq FROM conversation_participants \
+             WHERE conversation_id = $1 AND participant_id = $2",
+        )
+        .bind(room_id)
+        .bind(participant_id)
+        .fetch_optional(&*self.pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|r| {
+            r.try_get::<Option<i64>, _>("first_visible_seq")
+                .ok()
+                .flatten()
+        })
+    }
+
+    async fn room_update_metadata(&self, room_id: &str, patch: serde_json::Value) -> bool {
+        let result = sqlx::query(
+            "UPDATE conversations SET metadata = metadata || $2::jsonb, updated_at = NOW() \
+             WHERE id = $1 AND type = 'group'",
+        )
+        .bind(room_id)
+        .bind(&patch)
+        .execute(&*self.pool)
+        .await;
+        matches!(result, Ok(r) if r.rows_affected() > 0)
+    }
+
+    async fn room_invite_create(&self, invite: RoomInvite) -> bool {
+        let result = sqlx::query(
+            "INSERT INTO room_invites (code_hash, room_id, created_by, created_at, expires_at) \
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (code_hash) DO NOTHING",
+        )
+        .bind(&invite.code_hash)
+        .bind(&invite.room_id)
+        .bind(&invite.created_by)
+        .bind(invite.created_at)
+        .bind(invite.expires_at)
+        .execute(&*self.pool)
+        .await;
+        matches!(result, Ok(r) if r.rows_affected() > 0)
+    }
+
+    async fn room_invite_get(&self, code_hash: &str) -> Option<RoomInvite> {
+        let row = sqlx::query(
+            "SELECT code_hash, room_id, created_by, created_at, expires_at, revoked_at \
+             FROM room_invites WHERE code_hash = $1",
+        )
+        .bind(code_hash)
+        .fetch_optional(&*self.pool)
+        .await
+        .ok()??;
+        Some(RoomInvite {
+            code_hash: row.try_get("code_hash").ok()?,
+            room_id: row.try_get("room_id").ok()?,
+            created_by: row.try_get("created_by").ok()?,
+            created_at: row.try_get("created_at").ok()?,
+            expires_at: row.try_get("expires_at").ok()?,
+            revoked_at: row.try_get("revoked_at").ok()?,
+        })
+    }
+
+    async fn room_invite_revoke(&self, room_id: &str, code_hash: &str) -> bool {
+        let result = sqlx::query(
+            "UPDATE room_invites SET revoked_at = NOW() \
+             WHERE room_id = $1 AND code_hash = $2 AND revoked_at IS NULL",
+        )
+        .bind(room_id)
+        .bind(code_hash)
+        .execute(&*self.pool)
+        .await;
+        matches!(result, Ok(r) if r.rows_affected() > 0)
+    }
+
+    async fn room_cursor_get(
+        &self,
+        room_id: &str,
+        api_key_id: &str,
+        session_key: &str,
+    ) -> Option<i64> {
+        sqlx::query(
+            "SELECT last_received_seq FROM room_caller_cursors \
+             WHERE room_id = $1 AND api_key_id = $2 AND session_key = $3",
+        )
+        .bind(room_id)
+        .bind(api_key_id)
+        .bind(session_key)
+        .fetch_optional(&*self.pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|r| r.try_get("last_received_seq").ok())
+    }
+
+    async fn room_cursor_set(
+        &self,
+        room_id: &str,
+        api_key_id: &str,
+        session_key: &str,
+        last_received_seq: i64,
+    ) {
+        let _ = sqlx::query(
+            "INSERT INTO room_caller_cursors (room_id, api_key_id, session_key, last_received_seq) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (room_id, api_key_id, session_key) \
+             DO UPDATE SET last_received_seq = EXCLUDED.last_received_seq",
+        )
+        .bind(room_id)
+        .bind(api_key_id)
+        .bind(session_key)
+        .bind(last_received_seq)
+        .execute(&*self.pool)
+        .await;
+    }
+
+    async fn room_revoke_keys(&self, room_id: &str) {
+        let _ = sqlx::query("UPDATE api_keys SET scope = 'revoked' WHERE room_id = $1")
+            .bind(room_id)
+            .execute(&*self.pool)
+            .await;
+    }
+
+    async fn room_member_count(&self, room_id: &str) -> usize {
+        sqlx::query(
+            "SELECT COUNT(*) AS n FROM conversation_participants WHERE conversation_id = $1",
+        )
+        .bind(room_id)
+        .fetch_one(&*self.pool)
+        .await
+        .ok()
+        .and_then(|r| r.try_get::<i64, _>("n").ok())
+        .unwrap_or(0) as usize
     }
 }

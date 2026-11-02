@@ -187,6 +187,7 @@ mod tests {
             status: MessageStatus::Pending,
             visibility: MessageVisibility::HumanVisible,
             created_at: chrono::Utc::now(),
+            room_seq: None,
         }
     }
 

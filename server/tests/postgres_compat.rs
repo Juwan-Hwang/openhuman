@@ -250,6 +250,7 @@ async fn test_pg_message_insert_and_list() {
             status: MessageStatus::Pending,
             visibility: MessageVisibility::HumanVisible,
             created_at: now,
+            room_seq: None,
         })
         .await;
 
@@ -264,6 +265,7 @@ async fn test_pg_message_insert_and_list() {
             status: MessageStatus::Sent,
             visibility: MessageVisibility::HumanVisible,
             created_at: now,
+            room_seq: None,
         })
         .await;
 
@@ -407,6 +409,7 @@ async fn test_pg_full_storage_chain() {
             status: MessageStatus::Pending,
             visibility: MessageVisibility::HumanVisible,
             created_at: now,
+            room_seq: None,
         })
         .await;
 
@@ -421,6 +424,7 @@ async fn test_pg_full_storage_chain() {
             status: MessageStatus::Sent,
             visibility: MessageVisibility::HumanVisible,
             created_at: now,
+            room_seq: None,
         })
         .await;
 

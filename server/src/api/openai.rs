@@ -1051,6 +1051,7 @@ fn process_inbound_messages(
                     status: MessageStatus::Pending,
                     visibility: crate::model::message::MessageVisibility::InternalOnly,
                     created_at: now,
+                    room_seq: None,
                 };
                 messages.push(message);
             }
@@ -1123,6 +1124,7 @@ fn process_inbound_messages(
             status: MessageStatus::Pending,
             visibility: crate::model::message::MessageVisibility::HumanVisible,
             created_at: now,
+            room_seq: None,
         };
         // Tool results first: they answer the call that closed the previous
         // turn, and the person's words came after them (a client that held a
@@ -2319,6 +2321,7 @@ async fn build_nonstreaming_json_from_reply(
             status: MessageStatus::Sent,
             visibility: crate::model::message::MessageVisibility::HumanVisible,
             created_at: now,
+            room_seq: None,
         })
         .await;
 
@@ -2500,6 +2503,7 @@ async fn handle_streaming(
                         status: MessageStatus::Sent,
                         visibility: crate::model::message::MessageVisibility::HumanVisible,
                         created_at: Utc::now(),
+                        room_seq: None,
                     }).await;
 
                     if let Some(r) = crate::session::take_reasoning(&conv_id) {
@@ -2628,6 +2632,7 @@ async fn handle_streaming(
                         status: MessageStatus::Sent,
                         visibility: crate::model::message::MessageVisibility::HumanVisible,
                         created_at: now,
+                        room_seq: None,
                     }).await;
 
                     let args = call.arguments.to_string();

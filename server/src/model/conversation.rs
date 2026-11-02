@@ -17,6 +17,9 @@ pub enum ConversationType {
     AgentHuman,
     #[serde(rename = "human_human")]
     HumanHuman,
+    /// A group room — see `migrations/007_groups.sql`.
+    #[serde(rename = "group")]
+    Group,
 }
 
 /// Conversation lifecycle status.
@@ -37,6 +40,11 @@ pub struct ConversationParticipant {
     pub joined_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<ParticipantRole>,
+    /// Room visibility watermark: messages with `room_seq` below this are
+    /// hidden from this member (they predate their join). `None` on 1:1
+    /// conversations and for the owner, who sees everything.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub first_visible_seq: Option<i64>,
 }
 
 /// Role of a participant within a conversation.
@@ -46,6 +54,11 @@ pub enum ParticipantRole {
     Initiator,
     Responder,
     Observer,
+    /// Room owner: the only role allowed to end turns, invoke tools,
+    /// change settings, mint invites and caller keys, and kick members.
+    Owner,
+    /// Ordinary room member.
+    Member,
 }
 
 /// A communication context between two or more participants.

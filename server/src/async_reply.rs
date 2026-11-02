@@ -589,6 +589,7 @@ mod tests {
             status: crate::model::message::MessageStatus::Pending,
             visibility: crate::model::message::MessageVisibility::HumanVisible,
             created_at: chrono::Utc::now(),
+            room_seq: None,
         };
         store.insert(fresh.clone()).await;
 

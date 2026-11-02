@@ -50,6 +50,12 @@ struct MemoryData {
     capabilities: HashMap<String, Vec<AgentCapability>>,
     /// Key: agent_id → context
     contexts: HashMap<String, AgentContext>,
+    /// Room sequence allocators: room_id → next room_seq to assign.
+    room_counters: HashMap<String, i64>,
+    /// Room invites by code hash (plaintext codes never stored).
+    room_invites: HashMap<String, crate::storage::traits::RoomInvite>,
+    /// Streaming cursors: (room, key, session) → last received seq.
+    room_cursors: HashMap<(String, String, String), i64>,
 }
 
 // ── MemoryStore ──
@@ -164,6 +170,7 @@ impl IdentityRepository for MemoryStore {
                 agent_id: api_key.agent_id.clone(),
                 human_id: api_key.human_id.clone(),
                 scope: api_key.scope,
+                room_id: api_key.room_id.clone(),
             },
         })
     }
@@ -247,11 +254,13 @@ impl ConversationRepository for MemoryStore {
                     participant: ParticipantRef::agent(agent_id),
                     joined_at: now,
                     role: Some(ParticipantRole::Initiator),
+                    first_visible_seq: None,
                 },
                 ConversationParticipant {
                     participant: ParticipantRef::human(human_id),
                     joined_at: now,
                     role: Some(ParticipantRole::Responder),
+                    first_visible_seq: None,
                 },
             ],
             title: None,
@@ -515,5 +524,262 @@ impl ReplyRegistry for MemoryStore {
             .filter(|(_, channels)| channels.iter().any(|tx| !tx.is_closed()))
             .map(|(id, _)| id.clone())
             .collect()
+    }
+}
+
+// ── RoomRepository (migration 007) ──
+//
+// The whole room lives behind the same mutex as everything else, so the
+// sequence allocation + append in `room_append` is atomic for free. All of
+// it evaporates on restart — that is the documented memory-backend room
+// behaviour (design doc §6.9); the server logs a warning at boot.
+
+#[async_trait]
+impl crate::storage::traits::RoomRepository for MemoryStore {
+    async fn room_create(
+        &self,
+        room_id: &str,
+        title: &str,
+        owner: &ParticipantRef,
+    ) -> Conversation {
+        let mut data = self.data.lock().await;
+        let now = Utc::now();
+        let room = Conversation {
+            id: room_id.to_string(),
+            conversation_type: ConversationType::Group,
+            participants: vec![ConversationParticipant {
+                participant: owner.clone(),
+                joined_at: now,
+                role: Some(ParticipantRole::Owner),
+                first_visible_seq: None,
+            }],
+            title: Some(title.to_string()),
+            status: ConversationStatus::Active,
+            metadata: HashMap::new(),
+            created_at: now,
+            updated_at: now,
+            last_message_at: None,
+            deleted_at: None,
+        };
+        data.conversations
+            .insert(format!("room:{}", room_id), room.clone());
+        data.messages.entry(room_id.to_string()).or_default();
+        data.room_counters.insert(room_id.to_string(), 1);
+        room
+    }
+
+    async fn room_append(&self, mut message: Message) -> Option<Message> {
+        let mut data = self.data.lock().await;
+        let counter = data
+            .room_counters
+            .entry(message.conversation_id.clone())
+            .or_insert(1);
+        let seq = *counter;
+        *counter += 1;
+        message.room_seq = Some(seq);
+        message.status = MessageStatus::Sent;
+        let cid = message.conversation_id.clone();
+        let created = message.created_at;
+        data.messages
+            .entry(cid.clone())
+            .or_default()
+            .push(message.clone());
+        if let Some(c) = data.conversations.values_mut().find(|c| c.id == cid) {
+            c.last_message_at = Some(created);
+            c.updated_at = created;
+        }
+        Some(message)
+    }
+
+    async fn room_next_seq(&self, room_id: &str) -> i64 {
+        let data = self.data.lock().await;
+        *data.room_counters.get(room_id).unwrap_or(&1)
+    }
+
+    async fn room_messages_since(
+        &self,
+        room_id: &str,
+        after_seq: i64,
+        min_seq: i64,
+        limit: usize,
+    ) -> Vec<Message> {
+        let data = self.data.lock().await;
+        data.messages
+            .get(room_id)
+            .map(|msgs| {
+                msgs.iter()
+                    .filter(|m| {
+                        m.room_seq
+                            .map(|s| s > after_seq && s >= min_seq)
+                            .unwrap_or(false)
+                    })
+                    .take(limit)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    async fn room_add_member(
+        &self,
+        room_id: &str,
+        participant: &ParticipantRef,
+        role: ParticipantRole,
+        first_visible_seq: Option<i64>,
+    ) -> bool {
+        let mut data = self.data.lock().await;
+        let Some(room) = data.conversations.values_mut().find(|c| c.id == room_id) else {
+            return false;
+        };
+        if let Some(existing) = room
+            .participants
+            .iter_mut()
+            .find(|p| p.participant.participant_id == participant.participant_id)
+        {
+            existing.role = Some(role);
+            existing.first_visible_seq = first_visible_seq;
+            return true;
+        }
+        room.participants.push(ConversationParticipant {
+            participant: participant.clone(),
+            joined_at: Utc::now(),
+            role: Some(role),
+            first_visible_seq,
+        });
+        true
+    }
+
+    async fn room_remove_member(&self, room_id: &str, participant_id: &str) -> bool {
+        let mut data = self.data.lock().await;
+        let Some(room) = data.conversations.values_mut().find(|c| c.id == room_id) else {
+            return false;
+        };
+        let before = room.participants.len();
+        room.participants.retain(|p| {
+            !(p.participant.participant_id == participant_id
+                && p.role != Some(ParticipantRole::Owner))
+        });
+        room.participants.len() != before
+    }
+
+    async fn room_member_role(
+        &self,
+        room_id: &str,
+        participant_id: &str,
+    ) -> Option<ParticipantRole> {
+        let data = self.data.lock().await;
+        data.conversations
+            .values()
+            .find(|c| c.id == room_id)?
+            .participants
+            .iter()
+            .find(|p| p.participant.participant_id == participant_id)
+            .and_then(|p| p.role)
+    }
+
+    async fn room_first_visible_seq(&self, room_id: &str, participant_id: &str) -> Option<i64> {
+        let data = self.data.lock().await;
+        data.conversations
+            .values()
+            .find(|c| c.id == room_id)?
+            .participants
+            .iter()
+            .find(|p| p.participant.participant_id == participant_id)
+            .and_then(|p| p.first_visible_seq)
+    }
+
+    async fn room_update_metadata(&self, room_id: &str, patch: serde_json::Value) -> bool {
+        let mut data = self.data.lock().await;
+        let Some(room) = data
+            .conversations
+            .values_mut()
+            .find(|c| c.id == room_id && c.conversation_type == ConversationType::Group)
+        else {
+            return false;
+        };
+        if let serde_json::Value::Object(map) = patch {
+            for (k, v) in map {
+                room.metadata.insert(k, v);
+            }
+        }
+        room.updated_at = Utc::now();
+        true
+    }
+
+    async fn room_invite_create(&self, invite: crate::storage::traits::RoomInvite) -> bool {
+        let mut data = self.data.lock().await;
+        if data.room_invites.contains_key(&invite.code_hash) {
+            return false;
+        }
+        data.room_invites.insert(invite.code_hash.clone(), invite);
+        true
+    }
+
+    async fn room_invite_get(&self, code_hash: &str) -> Option<crate::storage::traits::RoomInvite> {
+        let data = self.data.lock().await;
+        data.room_invites.get(code_hash).cloned()
+    }
+
+    async fn room_invite_revoke(&self, room_id: &str, code_hash: &str) -> bool {
+        let mut data = self.data.lock().await;
+        match data.room_invites.get_mut(code_hash) {
+            Some(inv) if inv.room_id == room_id && inv.revoked_at.is_none() => {
+                inv.revoked_at = Some(Utc::now());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    async fn room_cursor_get(
+        &self,
+        room_id: &str,
+        api_key_id: &str,
+        session_key: &str,
+    ) -> Option<i64> {
+        let data = self.data.lock().await;
+        data.room_cursors
+            .get(&(
+                room_id.to_string(),
+                api_key_id.to_string(),
+                session_key.to_string(),
+            ))
+            .copied()
+    }
+
+    async fn room_cursor_set(
+        &self,
+        room_id: &str,
+        api_key_id: &str,
+        session_key: &str,
+        last_received_seq: i64,
+    ) {
+        let mut data = self.data.lock().await;
+        data.room_cursors.insert(
+            (
+                room_id.to_string(),
+                api_key_id.to_string(),
+                session_key.to_string(),
+            ),
+            last_received_seq,
+        );
+    }
+
+    async fn room_revoke_keys(&self, room_id: &str) {
+        let mut data = self.data.lock().await;
+        for key in data.api_keys.values_mut() {
+            if key.room_id.as_deref() == Some(room_id) {
+                key.scope = crate::model::identity::KeyScope::Revoked;
+            }
+        }
+    }
+
+    async fn room_member_count(&self, room_id: &str) -> usize {
+        let data = self.data.lock().await;
+        data.conversations
+            .values()
+            .find(|c| c.id == room_id)
+            .map(|c| c.participants.len())
+            .unwrap_or(0)
     }
 }

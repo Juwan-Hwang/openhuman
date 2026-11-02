@@ -545,6 +545,7 @@ async fn handle_reply_send(
                 status: MessageStatus::Sent,
                 visibility: crate::model::message::MessageVisibility::HumanVisible,
                 created_at: Utc::now(),
+                room_seq: None,
             })
             .await;
     }
@@ -804,6 +805,7 @@ async fn handle_tool_invoke(
                 status: MessageStatus::Sent,
                 visibility: crate::model::message::MessageVisibility::HumanVisible,
                 created_at: Utc::now(),
+                room_seq: None,
             })
             .await;
     }

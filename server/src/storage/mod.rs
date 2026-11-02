@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use crate::storage::traits::{
     CapabilityRepository, ContextRepository, ConversationRepository, IdentityRepository,
-    MessageRepository, ReplyRegistry,
+    MessageRepository, ReplyRegistry, RoomRepository,
 };
 use crate::ws::registry::ConnectionRegistry;
 
@@ -69,6 +69,9 @@ pub struct AppState {
     pub ephemeral: Option<Arc<ephemeral::EphemeralMessages>>,
     /// The model name callers see in `/v1/models` — see [`ModelName`].
     pub model: Arc<ModelName>,
+    /// Group-room storage (migration 007). Same backend as the rest;
+    /// with the memory backend every room evaporates on restart.
+    pub room: Arc<dyn RoomRepository>,
 }
 
 /// The name this instance answers to as a "model".
@@ -150,7 +153,8 @@ impl AppState {
             + MessageRepository
             + ReplyRegistry
             + CapabilityRepository
-            + ContextRepository,
+            + ContextRepository
+            + RoomRepository,
         S: 'static + Send + Sync,
     {
         let store = Arc::new(store);
@@ -160,12 +164,13 @@ impl AppState {
             message: store.clone(),
             reply: store.clone(),
             capability: store.clone(),
-            context: store,
+            context: store.clone(),
             connections: ConnectionRegistry::new(),
             async_reply: crate::async_reply::AsyncReplyRegistry::new(),
             outbound: crate::async_reply::OutboundQueue::new(),
             ephemeral: None,
             model: Arc::new(ModelName::from_env()),
+            room: store,
         }
     }
 
@@ -191,7 +196,8 @@ impl AppState {
             (eph.clone() as Arc<dyn MessageRepository>, Some(eph))
         };
         let capability: Arc<dyn CapabilityRepository> = Arc::new(store.clone());
-        let context: Arc<dyn ContextRepository> = Arc::new(store);
+        let context: Arc<dyn ContextRepository> = Arc::new(store.clone());
+        let room: Arc<dyn RoomRepository> = Arc::new(store);
         let reply: Arc<dyn ReplyRegistry> = Arc::new(reply);
         Self {
             identity,
@@ -205,6 +211,7 @@ impl AppState {
             outbound: crate::async_reply::OutboundQueue::new(),
             ephemeral,
             model: Arc::new(ModelName::from_env()),
+            room,
         }
     }
 }

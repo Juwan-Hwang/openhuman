@@ -60,4 +60,9 @@ pub struct Message {
     #[serde(default)]
     pub visibility: MessageVisibility,
     pub created_at: DateTime<Utc>,
+    /// Position in the room log — `Some` only on messages appended through
+    /// the room pipeline (migration 007). Assigned transactionally by the
+    /// store; senders never set it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub room_seq: Option<i64>,
 }

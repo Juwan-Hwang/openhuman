@@ -264,3 +264,114 @@ pub trait ReplyRegistry: Send + Sync {
             .any(|id| id == conversation_id)
     }
 }
+
+// ── Room Repository (group rooms, migration 007) ──
+
+use crate::model::conversation::ParticipantRole;
+use chrono::{DateTime, Utc};
+
+/// A room invite record. The plaintext code is never stored — only its
+/// SHA-256 hex digest — and is shown exactly once, at creation.
+#[derive(Debug, Clone)]
+pub struct RoomInvite {
+    pub code_hash: String,
+    pub room_id: String,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// Room storage — everything a group room needs beyond the plain
+/// conversation/message repositories. Implementations must keep the
+/// sequence allocator and the message append atomic (one transaction in
+/// Postgres; one mutex hold in memory) so two concurrent appends never
+/// share a `room_seq`.
+#[async_trait]
+pub trait RoomRepository: Send + Sync {
+    /// Create a room: a `type = 'group'` conversation whose creator is the
+    /// owner. Returns the conversation as stored.
+    async fn room_create(&self, room_id: &str, title: &str, owner: &ParticipantRef)
+        -> Conversation;
+
+    /// Append a message to the room log, assigning the next `room_seq`.
+    ///
+    /// This is the **only** way room messages enter storage; the sequence
+    /// number is allocated and the row committed atomically, and the
+    /// returned message carries its assigned `room_seq`. Callers broadcast
+    /// only after this returns.
+    async fn room_append(&self, message: Message) -> Option<Message>;
+
+    /// The sequence the next appended message will get (1 on an empty room).
+    async fn room_next_seq(&self, room_id: &str) -> i64;
+
+    /// Room log entries with `room_seq > after_seq`, in order, never below
+    /// `min_seq` (the caller's visibility watermark). `limit` caps the page.
+    async fn room_messages_since(
+        &self,
+        room_id: &str,
+        after_seq: i64,
+        min_seq: i64,
+        limit: usize,
+    ) -> Vec<Message>;
+
+    /// Add a member with a role and a visibility watermark.
+    async fn room_add_member(
+        &self,
+        room_id: &str,
+        participant: &ParticipantRef,
+        role: ParticipantRole,
+        first_visible_seq: Option<i64>,
+    ) -> bool;
+
+    /// Remove a member (leave or kick). Returns false when absent.
+    async fn room_remove_member(&self, room_id: &str, participant_id: &str) -> bool;
+
+    /// A member's role, or `None` when not a member (kicked / never joined).
+    async fn room_member_role(
+        &self,
+        room_id: &str,
+        participant_id: &str,
+    ) -> Option<ParticipantRole>;
+
+    /// A member's visibility watermark (`None` = sees everything).
+    async fn room_first_visible_seq(&self, room_id: &str, participant_id: &str) -> Option<i64>;
+
+    /// Merge room settings (idle release, segment overrides, …) into the
+    /// conversation's metadata.
+    async fn room_update_metadata(&self, room_id: &str, patch: serde_json::Value) -> bool;
+
+    /// Store an invite by its code hash.
+    async fn room_invite_create(&self, invite: RoomInvite) -> bool;
+
+    /// Look an invite up by code hash.
+    async fn room_invite_get(&self, code_hash: &str) -> Option<RoomInvite>;
+
+    /// Revoke an invite (owner action). False when unknown or already revoked.
+    async fn room_invite_revoke(&self, room_id: &str, code_hash: &str) -> bool;
+
+    /// Read a streaming cursor.
+    async fn room_cursor_get(
+        &self,
+        room_id: &str,
+        api_key_id: &str,
+        session_key: &str,
+    ) -> Option<i64>;
+
+    /// Initialize or advance a streaming cursor.
+    async fn room_cursor_set(
+        &self,
+        room_id: &str,
+        api_key_id: &str,
+        session_key: &str,
+        last_received_seq: i64,
+    );
+
+    /// Revoke every caller key bound to a room (owner left / room deleted).
+    async fn room_revoke_keys(&self, room_id: &str);
+
+    /// Count current members (for the 10-seat cap).
+    async fn room_member_count(&self, room_id: &str) -> usize;
+}
+
+use crate::model::identity::ParticipantRef;
