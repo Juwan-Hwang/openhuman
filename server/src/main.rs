@@ -96,6 +96,12 @@ async fn main() -> anyhow::Result<()> {
         }
         _ => {
             tracing::info!("Using in-memory backend");
+            if openhuman_server::rooms::rooms_enabled() {
+                tracing::warn!(
+                    "OPENHUMAN_BACKEND=memory: room logs, cursors and invites live in memory \
+                     only and are wiped on restart. Rooms must run on postgres in production."
+                );
+            }
             let store = MemoryStore::seeded();
             AppState::from_store(store)
         }

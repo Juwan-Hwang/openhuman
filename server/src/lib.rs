@@ -165,6 +165,47 @@ pub fn build_router(state: AppState) -> Router {
         .layer(axum::middleware::from_fn(observation::observe_request))
         .layer(from_fn_with_state(state.clone(), auth::require_api_key));
 
+    // Room management routes (design doc §5.1) — responder side, human
+    // clients. Registered only while the OPENHUMAN_ROOMS flag is on; the
+    // 1:1 surface is untouched either way. The caller ingress
+    // `/rooms/:id/v1/*` is registered with them.
+    let rooms = if crate::rooms::rooms_enabled() {
+        Router::new()
+            .route(
+                "/v1/rooms",
+                post(api::rooms::create_room).get(api::rooms::list_rooms),
+            )
+            .route(
+                "/v1/rooms/:room_id",
+                get(api::rooms::get_room).patch(api::rooms::patch_room),
+            )
+            .route(
+                "/v1/rooms/:room_id/invites",
+                post(api::rooms::create_invite),
+            )
+            .route(
+                "/v1/rooms/:room_id/invites/:code",
+                delete(api::rooms::revoke_invite),
+            )
+            .route("/v1/invites/:code/accept", post(api::rooms::accept_invite))
+            .route("/v1/rooms/:room_id/leave", post(api::rooms::leave_room))
+            .route(
+                "/v1/rooms/:room_id/members/:pid",
+                delete(api::rooms::kick_member),
+            )
+            .route(
+                "/v1/rooms/:room_id/messages",
+                get(api::rooms::room_messages),
+            )
+            .route(
+                "/v1/rooms/:room_id/caller-keys",
+                post(api::rooms::create_caller_key),
+            )
+            .layer(from_fn_with_state(state.clone(), auth::require_api_key))
+    } else {
+        Router::new()
+    };
+
     let public = Router::new()
         .route("/health", get(health))
         // `/healthz` is the Kubernetes convention and what the production
@@ -190,6 +231,7 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .merge(protected)
+        .merge(rooms)
         .merge(public)
         .merge(mock)
         .with_state(state)

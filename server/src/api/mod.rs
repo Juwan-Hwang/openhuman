@@ -10,3 +10,4 @@ pub mod history;
 pub mod mock;
 pub mod openai;
 pub mod replies;
+pub mod rooms;
