@@ -60,6 +60,7 @@ struct MemoryData {
     tasks: HashMap<String, crate::model::task::TaskRecord>,
     /// Files by id.
     files: HashMap<String, crate::api::files::StoredFile>,
+    vector_objects: HashMap<String, (String, crate::storage::traits::VectorObject)>,
 }
 
 // ── MemoryStore ──
@@ -996,5 +997,103 @@ impl crate::storage::traits::FileRepository for MemoryStore {
             .iter()
             .find(|(_, f)| f.purpose == "output" && f.bytes == bytes)
             .map(|(id, f)| (id.clone(), f.created_at))
+    }
+}
+
+/// Per-owner cap on stored vector objects of one kind;
+/// `OPENHUMAN_VECTOR_OBJECTS_MAX_PER_OWNER` overrides (default 500).
+fn vector_objects_max_per_owner() -> usize {
+    std::env::var("OPENHUMAN_VECTOR_OBJECTS_MAX_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(500)
+}
+
+fn vector_last_active(o: &crate::storage::traits::VectorObject) -> i64 {
+    o.obj
+        .get("last_active_at")
+        .or_else(|| o.obj.get("created_at"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+}
+
+#[async_trait]
+impl crate::storage::traits::VectorStoreRepository for MemoryStore {
+    async fn put_vector_object(
+        &self,
+        id: &str,
+        owner: &str,
+        obj: serde_json::Value,
+        input: Vec<serde_json::Value>,
+    ) {
+        let mut d = self.data.lock().await;
+        let kind = obj
+            .get("object")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        d.vector_objects.insert(
+            id.to_string(),
+            (
+                owner.to_string(),
+                crate::storage::traits::VectorObject { obj, input },
+            ),
+        );
+        // Per-owner, per-kind cap: least recently active goes first.
+        let mut mine: Vec<(i64, String)> = d
+            .vector_objects
+            .iter()
+            .filter(|(_, (o, v))| {
+                o == owner && v.obj.get("object").and_then(|x| x.as_str()) == Some(kind.as_str())
+            })
+            .map(|(vid, (_, v))| (vector_last_active(v), vid.clone()))
+            .collect();
+        mine.sort();
+        let over = mine.len().saturating_sub(vector_objects_max_per_owner());
+        for (_, vid) in mine.into_iter().take(over) {
+            d.vector_objects.remove(&vid);
+        }
+    }
+
+    async fn get_vector_object(
+        &self,
+        owner: &str,
+        id: &str,
+    ) -> Option<crate::storage::traits::VectorObject> {
+        self.data
+            .lock()
+            .await
+            .vector_objects
+            .get(id)
+            .filter(|(o, _)| o == owner)
+            .map(|(_, v)| v.clone())
+    }
+
+    async fn list_vector_objects(
+        &self,
+        owner: &str,
+        object_kind: &str,
+    ) -> Vec<(String, crate::storage::traits::VectorObject)> {
+        let d = self.data.lock().await;
+        let mut v: Vec<_> = d
+            .vector_objects
+            .iter()
+            .filter(|(_, (o, x))| {
+                o == owner && x.obj.get("object").and_then(|k| k.as_str()) == Some(object_kind)
+            })
+            .map(|(id, (_, x))| (id.clone(), x.clone()))
+            .collect();
+        v.sort_by_key(|(_, x)| std::cmp::Reverse(vector_last_active(x)));
+        v
+    }
+
+    async fn delete_vector_object(&self, owner: &str, id: &str) -> bool {
+        let mut d = self.data.lock().await;
+        if d.vector_objects.get(id).is_some_and(|(o, _)| o == owner) {
+            d.vector_objects.remove(id);
+            true
+        } else {
+            false
+        }
     }
 }

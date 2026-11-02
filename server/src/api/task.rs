@@ -109,7 +109,7 @@ pub enum Finished {
 /// short of the ~100 s a tunnel (Cloudflare) allows a silent response.
 fn hold() -> Duration {
     Duration::from_secs(
-        std::env::var("OMNI2API_TASK_HOLD_SECS")
+        std::env::var("OPENHUMAN_TASK_HOLD_SECS")
             .ok()
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(85),
@@ -344,12 +344,19 @@ fn finished_response(f: Finished) -> Response {
 /// a malformed answer is refused to the seat (which can fix it) instead of
 /// reaching the caller.
 pub fn check_reply(api: &str, spec: &Value, text: &str) -> Result<(), String> {
-    // The task kinds ported so far (images, audio, completions) answer
-    // free-form: no shape to check. The arms for the APIs not ported here
-    // (embeddings, moderations, vector stores, graders, decisions) return
-    // with their modules.
-    let _ = (api, spec, text);
-    Ok(())
+    match api {
+        // A search answer must be checkable hits before it reaches the
+        // caller.
+        "vector_stores.search" => crate::api::vector_stores::parse_hits(text, spec).map(|_| ()),
+        // The other task kinds ported so far (images, audio, completions)
+        // answer free-form: no shape to check. The arms for the APIs not
+        // ported here (embeddings, moderations, graders, decisions)
+        // return with their modules.
+        _ => {
+            let _ = (api, spec, text);
+            Ok(())
+        }
+    }
 }
 
 /// One SSE frame.

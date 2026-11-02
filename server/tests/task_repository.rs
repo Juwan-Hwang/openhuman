@@ -8,6 +8,12 @@ use openhuman_server::storage::memory::MemoryStore;
 use openhuman_server::storage::postgres::PostgresStore;
 use openhuman_server::storage::traits::TaskRepository;
 
+/// Unique id/owner prefix per test run: the postgres table persists
+/// across runs and test binaries run in parallel against it.
+fn tag() -> String {
+    uuid::Uuid::now_v7().simple().to_string()
+}
+
 fn rec(id: &str, owner: &str, status: TaskStatus) -> TaskRecord {
     TaskRecord {
         id: id.to_string(),
@@ -24,53 +30,65 @@ fn rec(id: &str, owner: &str, status: TaskStatus) -> TaskRecord {
 }
 
 async fn lifecycle(repo: &dyn TaskRepository) {
-    let owner = "agt_lifecycle";
-    repo.create_task(rec("task_lc1", owner, TaskStatus::Running))
-        .await;
-    let t = repo.get_task(owner, "task_lc1").await.expect("created");
+    let tag = tag();
+    let owner = format!("agt_lifecycle_{tag}");
+    let id1 = format!("task_lc1_{tag}");
+    let owner = owner.as_str();
+    let id1 = id1.as_str();
+    repo.create_task(rec(id1, owner, TaskStatus::Running)).await;
+    let t = repo.get_task(owner, id1).await.expect("created");
     assert_eq!(t.status, TaskStatus::Running);
-    repo.bind_task_conversation("task_lc1", "cnv_1").await;
-    let t = repo.get_task(owner, "task_lc1").await.unwrap();
+    repo.bind_task_conversation(id1, "cnv_1").await;
+    let t = repo.get_task(owner, id1).await.unwrap();
     assert_eq!(t.conversation_id.as_deref(), Some("cnv_1"));
-    repo.finish_task("task_lc1", Some(serde_json::json!({"text": "done"})), None)
+    repo.finish_task(id1, Some(serde_json::json!({"text": "done"})), None)
         .await;
-    let t = repo.get_task(owner, "task_lc1").await.unwrap();
+    let t = repo.get_task(owner, id1).await.unwrap();
     assert_eq!(t.status, TaskStatus::Completed);
     // Owner scoping: another owner cannot see it.
-    assert!(repo.get_task("agt_other", "task_lc1").await.is_none());
+    assert!(repo.get_task("agt_other", id1).await.is_none());
     // A late duplicate finish never reopens a completed task.
-    repo.finish_task("task_lc1", None, Some("late error".into()))
-        .await;
-    let t = repo.get_task(owner, "task_lc1").await.unwrap();
+    repo.finish_task(id1, None, Some("late error".into())).await;
+    let t = repo.get_task(owner, id1).await.unwrap();
     assert_eq!(t.status, TaskStatus::Completed);
     assert!(t.error.is_none());
 }
 
 async fn in_flight_sweep(repo: &dyn TaskRepository) {
-    let owner = "agt_sweep";
-    repo.create_task(rec("task_sw1", owner, TaskStatus::Queued))
+    let tag = tag();
+    let owner = format!("agt_sweep_{tag}");
+    let owner = owner.as_str();
+    let sw1 = format!("task_sw1_{tag}");
+    let sw3 = format!("task_sw3_{tag}");
+    repo.create_task(rec(&sw1, owner, TaskStatus::Queued)).await;
+    repo.create_task(rec(&format!("task_sw2_{tag}"), owner, TaskStatus::Running))
         .await;
-    repo.create_task(rec("task_sw2", owner, TaskStatus::Running))
-        .await;
-    repo.create_task(rec("task_sw3", owner, TaskStatus::Completed))
+    repo.create_task(rec(&sw3, owner, TaskStatus::Completed))
         .await;
     let n = repo.fail_in_flight_tasks("server restarted").await;
     assert!(n >= 2, "queued+running failed, got {n}");
-    let t = repo.get_task(owner, "task_sw1").await.unwrap();
+    let t = repo.get_task(owner, &sw1).await.unwrap();
     assert_eq!(t.status, TaskStatus::Failed);
     assert_eq!(t.error.as_deref(), Some("server restarted"));
-    let t = repo.get_task(owner, "task_sw3").await.unwrap();
+    let t = repo.get_task(owner, &sw3).await.unwrap();
     assert_eq!(t.status, TaskStatus::Completed, "finished rows untouched");
 }
 
 async fn quota_prunes_finished_only(repo: &dyn TaskRepository) {
     std::env::set_var("OPENHUMAN_TASKS_MAX_PER_OWNER", "5");
-    let owner = "agt_quota";
+    let tag = tag();
+    let owner = format!("agt_quota_{tag}");
+    let owner = owner.as_str();
     for i in 0..8 {
-        repo.create_task(rec(&format!("task_q{i}"), owner, TaskStatus::Completed))
-            .await;
+        repo.create_task(rec(
+            &format!("task_q{i}_{tag}"),
+            owner,
+            TaskStatus::Completed,
+        ))
+        .await;
     }
-    repo.create_task(rec("task_q_active", owner, TaskStatus::Running))
+    let active = format!("task_q_active_{tag}");
+    repo.create_task(rec(&active, owner, TaskStatus::Running))
         .await;
     let listed = repo.list_tasks(owner, 100).await;
     assert!(
@@ -79,7 +97,7 @@ async fn quota_prunes_finished_only(repo: &dyn TaskRepository) {
         listed.len()
     );
     assert!(
-        listed.iter().any(|t| t.id == "task_q_active"),
+        listed.iter().any(|t| t.id == active),
         "the active task is never pruned"
     );
     std::env::remove_var("OPENHUMAN_TASKS_MAX_PER_OWNER");
@@ -104,7 +122,6 @@ async fn pg_store() -> Option<PostgresStore> {
     let url = std::env::var("DATABASE_URL").ok()?;
     let store = PostgresStore::new(&url).await.ok()?;
     let _ = store.migrate().await;
-    let _ = sqlx::query("DELETE FROM tasks").execute(store.pool()).await;
     Some(store)
 }
 

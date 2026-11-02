@@ -127,6 +127,9 @@ impl PostgresStore {
         // 009 persists the Files API. Rollback: 009_files_down.sql by hand.
         let sql9 = include_str!("../../migrations/009_files.sql");
         tx.execute(sql9).await?;
+        // 010 persists vector stores. Rollback: 010_vector_stores_down.sql by hand.
+        let sql10 = include_str!("../../migrations/010_vector_stores.sql");
+        tx.execute(sql10).await?;
         // 001 re-seeds the public demo key on every boot. Outside an
         // explicit demo it must not authenticate anything.
         if std::env::var("OPENHUMAN_DEMO").ok().as_deref() != Some("1") {
@@ -2087,5 +2090,127 @@ impl crate::storage::traits::FileRepository for PostgresStore {
             let created: chrono::DateTime<chrono::Utc> = r.get("created_at");
             (r.get("id"), created.timestamp())
         })
+    }
+}
+
+/// Per-owner cap on stored vector objects of one kind;
+/// `OPENHUMAN_VECTOR_OBJECTS_MAX_PER_OWNER` overrides (default 500).
+fn vector_objects_max_per_owner() -> i64 {
+    std::env::var("OPENHUMAN_VECTOR_OBJECTS_MAX_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(500)
+}
+
+#[async_trait]
+impl crate::storage::traits::VectorStoreRepository for PostgresStore {
+    async fn put_vector_object(
+        &self,
+        id: &str,
+        owner: &str,
+        obj: serde_json::Value,
+        input: Vec<serde_json::Value>,
+    ) {
+        let kind = obj
+            .get("object")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let last_active = obj
+            .get("last_active_at")
+            .or_else(|| obj.get("created_at"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| Utc::now().timestamp());
+        let _ = sqlx::query(
+            "INSERT INTO vector_objects (id, owner, object_kind, obj, input, last_active_at)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (id) DO UPDATE SET obj = $4, input = $5, last_active_at = $6",
+        )
+        .bind(id)
+        .bind(owner)
+        .bind(&kind)
+        .bind(&obj)
+        .bind(serde_json::Value::from(input))
+        .bind(last_active)
+        .execute(&*self.pool)
+        .await;
+        // Per-owner, per-kind cap: least recently active goes first.
+        let _ = sqlx::query(
+            "DELETE FROM vector_objects v WHERE v.owner = $1 AND v.object_kind = $2 AND EXISTS (
+                 SELECT 1 FROM (
+                     SELECT id, ROW_NUMBER() OVER (ORDER BY last_active_at DESC, id DESC) AS rn
+                     FROM vector_objects WHERE owner = $1 AND object_kind = $2
+                 ) s WHERE s.id = v.id AND s.rn > $3)",
+        )
+        .bind(owner)
+        .bind(&kind)
+        .bind(vector_objects_max_per_owner())
+        .execute(&*self.pool)
+        .await;
+    }
+
+    async fn get_vector_object(
+        &self,
+        owner: &str,
+        id: &str,
+    ) -> Option<crate::storage::traits::VectorObject> {
+        sqlx::query("SELECT obj, input FROM vector_objects WHERE id = $1 AND owner = $2")
+            .bind(id)
+            .bind(owner)
+            .fetch_optional(&*self.pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| crate::storage::traits::VectorObject {
+                obj: r.get("obj"),
+                input: r
+                    .get::<serde_json::Value, _>("input")
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+            })
+    }
+
+    async fn list_vector_objects(
+        &self,
+        owner: &str,
+        object_kind: &str,
+    ) -> Vec<(String, crate::storage::traits::VectorObject)> {
+        sqlx::query(
+            "SELECT id, obj, input FROM vector_objects
+             WHERE owner = $1 AND object_kind = $2 ORDER BY last_active_at DESC, id DESC",
+        )
+        .bind(owner)
+        .bind(object_kind)
+        .fetch_all(&*self.pool)
+        .await
+        .map(|rows| {
+            rows.iter()
+                .map(|r| {
+                    (
+                        r.get("id"),
+                        crate::storage::traits::VectorObject {
+                            obj: r.get("obj"),
+                            input: r
+                                .get::<serde_json::Value, _>("input")
+                                .as_array()
+                                .cloned()
+                                .unwrap_or_default(),
+                        },
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    async fn delete_vector_object(&self, owner: &str, id: &str) -> bool {
+        sqlx::query("DELETE FROM vector_objects WHERE id = $1 AND owner = $2")
+            .bind(id)
+            .bind(owner)
+            .execute(&*self.pool)
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .unwrap_or(false)
     }
 }

@@ -35,6 +35,7 @@ use std::sync::Arc;
 use crate::storage::traits::{
     CapabilityRepository, ContextRepository, ConversationRepository, FileRepository,
     IdentityRepository, MessageRepository, ReplyRegistry, RoomRepository, TaskRepository,
+    VectorStoreRepository,
 };
 use crate::ws::registry::ConnectionRegistry;
 
@@ -79,6 +80,9 @@ pub struct AppState {
     /// Files API storage (migration 009). Byte quotas are enforced by
     /// the repository on every write.
     pub file: Arc<dyn FileRepository>,
+    /// Vector store storage (migration 010). Per-owner caps are enforced
+    /// by the repository on every write.
+    pub vector: Arc<dyn VectorStoreRepository>,
     /// Room runtime: live signal channels + idle-release timers.
     pub rooms: crate::rooms::RoomHub,
 }
@@ -165,7 +169,8 @@ impl AppState {
             + ContextRepository
             + RoomRepository
             + TaskRepository
-            + FileRepository,
+            + FileRepository
+            + VectorStoreRepository,
         S: 'static + Send + Sync,
     {
         let store = Arc::new(store);
@@ -183,6 +188,7 @@ impl AppState {
             model: Arc::new(ModelName::from_env()),
             task: store.clone(),
             file: store.clone(),
+            vector: store.clone(),
             room: store,
             rooms: crate::rooms::RoomHub::new(),
         }
@@ -213,6 +219,7 @@ impl AppState {
         let context: Arc<dyn ContextRepository> = Arc::new(store.clone());
         let task: Arc<dyn TaskRepository> = Arc::new(store.clone());
         let file: Arc<dyn FileRepository> = Arc::new(store.clone());
+        let vector: Arc<dyn VectorStoreRepository> = Arc::new(store.clone());
         let room: Arc<dyn RoomRepository> = Arc::new(store);
         let reply: Arc<dyn ReplyRegistry> = Arc::new(reply);
         Self {
@@ -229,6 +236,7 @@ impl AppState {
             model: Arc::new(ModelName::from_env()),
             task,
             file,
+            vector,
             room,
             rooms: crate::rooms::RoomHub::new(),
         }
