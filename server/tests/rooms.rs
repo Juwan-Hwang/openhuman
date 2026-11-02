@@ -412,7 +412,11 @@ async fn segment_closes_with_keepalive_call_and_result_is_dropped() {
     // Caller speech landed in the log with its display name.
     let log = room_log(&addr, DEMO_KEY, &room).await;
     assert_eq!(log.len(), 1);
-    assert_eq!(log[0]["sender_name"], "小明的 Codex");
+    // §10.2: caller speech carries its short session tag in the name.
+    assert!(log[0]["sender_name"]
+        .as_str()
+        .unwrap()
+        .starts_with("小明的 Codex · "));
 
     // Next segment carries the keepalive result back: dropped on sight.
     let r2 = segment(
@@ -797,7 +801,10 @@ async fn anthropic_room_line_segments_like_chat() {
     let log = room_log(&addr, DEMO_KEY, &room).await;
     assert_eq!(log.len(), 1);
     assert_eq!(log[0]["text"], "来自Claude");
-    assert_eq!(log[0]["sender_name"], "小明的 Claude Code");
+    assert!(log[0]["sender_name"]
+        .as_str()
+        .unwrap()
+        .starts_with("小明的 Claude Code · "));
 }
 
 #[tokio::test]
@@ -894,4 +901,86 @@ async fn async_mode_polls_a_room_segment() {
     let log = room_log(&addr, DEMO_KEY, &room).await;
     assert_eq!(log.len(), 1);
     assert_eq!(log[0]["text"], "异步第一句");
+}
+
+// ════════════════════════════════════════════════════════════
+// New-member visibility watermark, on both read paths (§4.4)
+// ════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn new_member_cannot_read_prejoin_history() {
+    let (_app, addr) = app_with_humans(&["bob"]).await;
+    let room = create_room(&addr, DEMO_KEY, "可见性测试").await;
+
+    // Owner speaks before bob joins.
+    let mut ws = ws_connect(&addr, DEMO_KEY).await;
+    let _ = ws_next(&mut ws).await; // session.connected
+    ws.send(WsMessage::Text(
+        serde_json::json!({"event_type":"reply.send","conversation_id":room,"text":"加入前的秘密"})
+            .to_string()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    // Bob joins; the watermark is set at accept time.
+    let code = mint_invite(&addr, DEMO_KEY, &room).await;
+    http()
+        .post(format!("http://{}/v1/invites/{}/accept", addr, code))
+        .bearer_auth("ohk_test_bob")
+        .send()
+        .await
+        .unwrap();
+
+    // Owner speaks again — this one is visible to bob.
+    ws.send(WsMessage::Text(
+        serde_json::json!({"event_type":"reply.send","conversation_id":room,"text":"加入后的招呼"})
+            .to_string()
+            .into(),
+    ))
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    // Room log endpoint: bob sees only the post-join line.
+    let log = room_log(&addr, "ohk_test_bob", &room).await;
+    let texts: Vec<&str> = log.iter().filter_map(|m| m["text"].as_str()).collect();
+    assert_eq!(texts, vec!["加入后的招呼"]);
+
+    // The generic history endpoint (what the Flutter client reads) applies
+    // the same watermark.
+    let res = http()
+        .get(format!(
+            "http://{}/v1/conversations/{}/messages",
+            addr, room
+        ))
+        .bearer_auth("ohk_test_bob")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: serde_json::Value = res.json().await.unwrap();
+    let texts: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["text"].as_str())
+        .collect();
+    assert_eq!(texts, vec!["加入后的招呼"]);
+
+    // The owner still sees everything on both paths.
+    let log = room_log(&addr, DEMO_KEY, &room).await;
+    assert_eq!(log.len(), 2);
+    let res = http()
+        .get(format!(
+            "http://{}/v1/conversations/{}/messages",
+            addr, room
+        ))
+        .bearer_auth(DEMO_KEY)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["data"].as_array().unwrap().len(), 2);
 }

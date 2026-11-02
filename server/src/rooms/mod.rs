@@ -372,6 +372,20 @@ pub async fn is_room(app: &AppState, conversation_id: &str) -> bool {
 /// Order matters: commit (with its `room_seq`) first, then hub signal,
 /// then WS fanout. `sender` is the real speaker — the room path never
 /// writes a hardcoded "You".
+/// Display name with the short caller-session tag appended (§10.2):
+/// "小明的 Claude Code · a3f9" — members can see which stream of the same
+/// caller key spoke. Untagged senders keep their plain display name.
+pub fn tagged_display_name(
+    display: Option<&str>,
+    metadata: &HashMap<String, Value>,
+) -> Option<String> {
+    let base = display?;
+    match metadata.get("caller_session").and_then(|v| v.as_str()) {
+        Some(tag) => Some(format!("{} · {}", base, tag)),
+        None => Some(base.to_string()),
+    }
+}
+
 pub async fn append_and_broadcast(
     app: &AppState,
     room_id: &str,
@@ -416,7 +430,7 @@ pub async fn append_and_broadcast(
         &stored.id,
         &stored.sender.participant_id,
         sender_type,
-        stored.sender.display_name.as_deref(),
+        tagged_display_name(stored.sender.display_name.as_deref(), &stored.metadata).as_deref(),
         text,
     );
     broadcast_event(app, room_id, &event).await;

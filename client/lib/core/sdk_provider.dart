@@ -101,6 +101,9 @@ class ConversationInfo {
     required this.agentName,
     this.lastMessage,
     this.lastMessageTime,
+    this.isGroup = false,
+    this.title,
+    this.memberCount,
   });
 
   final String id;
@@ -108,7 +111,52 @@ class ConversationInfo {
   final String agentName;
   String? lastMessage;
   DateTime? lastMessageTime;
+
+  /// Group room marker (§10.3): the sidebar shows a group icon and the
+  /// member count instead of a plain agent avatar.
+  final bool isGroup;
+
+  /// Room title (groups only).
+  final String? title;
+
+  /// Participant count (groups only).
+  final int? memberCount;
+
+  /// What the sidebar and app bar should call this conversation.
+  String get displayName => isGroup ? (title ?? agentName) : agentName;
 }
+
+/// Detail of one group room (members, roles, settings metadata), fetched
+/// on demand when a group conversation is open. `null` when the id is not
+/// a room or the fetch failed — the UI degrades to the plain chat then.
+final roomInfoProvider =
+    FutureProvider.family<Map<String, dynamic>?, String>((ref, roomId) async {
+  final info = ref
+      .watch(conversationListProvider)
+      .entries
+      .where((c) => c.id == roomId)
+      .firstOrNull;
+  if (info == null || !info.isGroup) return null;
+  try {
+    final client = ref.read(openHumanClientProvider);
+    return await client.getRoom(roomId);
+  } catch (_) {
+    return null;
+  }
+});
+
+/// Whether the signed-in human owns this room (§10.6: owner-only controls
+/// are guidance; the server enforces the rule regardless).
+final roomOwnershipProvider = Provider.family<bool, String>((ref, roomId) {
+  final room = ref.watch(roomInfoProvider(roomId)).valueOrNull;
+  if (room == null) return false;
+  final me = ref.watch(currentHumanProvider)?.id;
+  if (me == null) return false;
+  final members = (room['members'] as List?) ?? const [];
+  return members.whereType<Map<String, dynamic>>().any(
+        (m) => m['human_id'] == me && m['role'] == 'owner',
+      );
+});
 
 final conversationListProvider =
     StateNotifierProvider<ConversationListNotifier, ConversationListState>((ref) {
@@ -189,6 +237,9 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
             agentName: c.agentName ?? c.agentId ?? 'Agent',
             lastMessage: old?.lastMessage,
             lastMessageTime: old?.lastMessageTime,
+            isGroup: c.isGroup,
+            title: c.title,
+            memberCount: c.memberCount,
           ),
         );
       }

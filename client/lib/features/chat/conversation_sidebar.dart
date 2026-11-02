@@ -59,8 +59,18 @@ class ConversationSidebar extends ConsumerWidget {
                     ],
                   ),
                 ),
-          // ── Trash ──
-          _TrashButton(theme: theme, onOpen: () => _openTrash(context)),
+          // ── Trash + new room ──
+          Row(
+            children: [
+              Expanded(
+                child: _TrashButton(
+                  theme: theme,
+                  onOpen: () => _openTrash(context),
+                ),
+              ),
+              Expanded(child: _CreateRoomButton(theme: theme)),
+            ],
+          ),
           // ── Conversation list ──
           Expanded(
             child: conversations.isEmpty
@@ -121,6 +131,69 @@ Future<void> _openTrash(BuildContext context) {
     isScrollControlled: true,
     builder: (sheetContext) => const _TrashSheet(),
   );
+}
+
+/// Create a group room (§10.5): name it, then it appears in the list.
+class _CreateRoomButton extends ConsumerWidget {
+  const _CreateRoomButton({required this.theme});
+
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return TextButton.icon(
+      onPressed: () => _createRoom(context, ref),
+      icon: const Icon(Icons.group_add_outlined, size: 16),
+      label: const Text('新建群聊'),
+      style: TextButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        textStyle: theme.textTheme.bodySmall,
+      ),
+    );
+  }
+
+  Future<void> _createRoom(BuildContext context, WidgetRef ref) async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('新建群聊'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: '群名称'),
+          onSubmitted: (v) => Navigator.of(dialogContext).pop(v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(dialogContext).pop(controller.text.trim()),
+            child: const Text('创建'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+    try {
+      final client = ref.read(openHumanClientProvider);
+      final room = await client.createRoom(name);
+      final roomId = room['id'] as String?;
+      ref.read(conversationListProvider.notifier).retry();
+      if (roomId != null) {
+        ref.read(activeConversationIdProvider.notifier).state = roomId;
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('创建失败：$e')),
+        );
+      }
+    }
+  }
 }
 
 class _TrashButton extends StatelessWidget {
@@ -615,21 +688,27 @@ class _ConversationTile extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // Avatar circle with first letter of agent name
+            // Group rooms carry a group marker; 1:1 keeps the initial.
             CircleAvatar(
               radius: 16,
               backgroundColor: isActive
                   ? theme.colorScheme.primaryContainer
                   : theme.colorScheme.surfaceContainerHighest,
-              child: Text(
-                conversation.agentName.isNotEmpty
-                    ? conversation.agentName[0].toUpperCase()
-                    : '?',
-                style: theme.textTheme.labelLarge?.copyWith(
-                  color: theme.colorScheme.onPrimaryContainer,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
+              child: conversation.isGroup
+                  ? Icon(
+                      Icons.groups_rounded,
+                      size: 18,
+                      color: theme.colorScheme.onPrimaryContainer,
+                    )
+                  : Text(
+                      conversation.agentName.isNotEmpty
+                          ? conversation.agentName[0].toUpperCase()
+                          : '?',
+                      style: theme.textTheme.labelLarge?.copyWith(
+                        color: theme.colorScheme.onPrimaryContainer,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -637,7 +716,10 @@ class _ConversationTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    conversation.agentName,
+                    conversation.isGroup &&
+                            conversation.memberCount != null
+                        ? '${conversation.displayName}（${conversation.memberCount} 人）'
+                        : conversation.displayName,
                     style: theme.textTheme.bodyMedium?.copyWith(
                       fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
                     ),

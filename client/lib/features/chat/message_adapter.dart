@@ -17,7 +17,7 @@
 ///   .messageId                 →    .id
 ///   .senderId                  →    author.id
 ///   .senderName                →    author.firstName (fallback to senderId)
-///   .senderType                →    (ignored — not used for role assignment)
+///   .senderType                →    (ignored — "me" is judged by senderId, §10.1)
 ///   .text                      →    .text
 ///   (event timestamp)          →    .createdAt (ms)
 ///
@@ -46,21 +46,19 @@ List<types.Message> messageReceivedToMessages(
   // Use senderName if available, otherwise fall back to senderId.
   final displayName = data.senderName ?? data.senderId;
 
-  // Messages the human sent come back over the socket too. They must carry
-  // the *same* author object as the local user, because Flyer Chat decides
-  // which side a bubble goes on by comparing author id with the chat's user
-  // id — a sender id that merely happens to be the human's would land on
-  // the wrong side whenever the session object had not resolved yet.
-  final isHuman = data.senderType.toLowerCase() == 'human';
-  final author = isHuman
+  // "Me" is decided by sender id, not sender type: in a group room other
+  // humans' messages must NOT collapse onto the local user (§10.1). The
+  // author object must be identical to the chat's user for my own
+  // messages, because Flyer Chat compares author id with the chat's user
+  // id to pick the bubble side.
+  final isMe = data.senderId == humanUser.id;
+  final author = isMe
       ? humanUser
       : types.User(
           id: data.senderId,
+          // Caller speech carries the short session tag from the server
+          // ("小明的 Claude Code · a3f9", §10.2) — display it as-is.
           firstName: displayName,
-          // The agent is not a "user" in the chat sense — it is a
-          // communication endpoint. We use Role.user so Flyer Chat
-          // renders it on the left side (incoming), while the human's
-          // own messages appear on the right (outgoing).
           role: types.Role.user,
         );
   final createdAt = eventTimestamp.millisecondsSinceEpoch;
@@ -112,11 +110,11 @@ List<types.Message> historyMessageToMessages(
   oh.HistoryMessage data, {
   required types.User humanUser,
 }) {
-  final isHuman = data.senderType.toLowerCase() == 'human';
+  final isMe = data.senderId == humanUser.id;
   final createdAt =
       (data.createdAt ?? DateTime.now()).millisecondsSinceEpoch;
 
-  final author = isHuman
+  final author = isMe
       ? humanUser
       : types.User(
           id: data.senderId,

@@ -101,6 +101,9 @@ pub async fn list_conversations(
 
             rows.push(json!({
                 "id": c.id,
+                "type": c.conversation_type,
+                "title": c.title,
+                "member_count": c.participants.len(),
                 "agent_id": c.agent_id(),
                 "agent_name": agent_name,
                 "human_id": c.human_id(),
@@ -135,6 +138,22 @@ pub async fn list_messages(
     let limit = query.limit.clamp(1, MAX_LIMIT);
     let mut messages = app.message.list(&conversation_id).await;
 
+    // Room watermark (§4.4): a member never sees messages from before
+    // their join, whichever endpoint they ask.
+    if let Some(conv) = app.conversation.get(&conversation_id).await {
+        if conv.conversation_type == crate::model::conversation::ConversationType::Group {
+            let min_seq = conv
+                .participants
+                .iter()
+                .find(|p| p.participant.participant_id == principal.human.id)
+                .and_then(|p| p.first_visible_seq)
+                .unwrap_or(0);
+            if min_seq > 0 {
+                messages.retain(|m| m.room_seq.map(|s| s >= min_seq).unwrap_or(false));
+            }
+        }
+    }
+
     // Newest last is what a chat timeline wants; take the tail so a caller
     // asking for 100 gets the 100 most recent, not the oldest 100.
     let start = messages.len().saturating_sub(limit);
@@ -159,7 +178,7 @@ pub async fn list_messages(
                 "conversation_id": m.conversation_id,
                 "sender_id": m.sender.participant_id,
                 "sender_type": format!("{:?}", m.sender.participant_type).to_lowercase(),
-                "sender_name": m.sender.display_name,
+                "sender_name": crate::rooms::tagged_display_name(m.sender.display_name.as_deref(), &m.metadata),
                 "text": m.content.as_text().unwrap_or(""),
                 "images": images,
                 "created_at": m.created_at.to_rfc3339(),

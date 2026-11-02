@@ -560,6 +560,73 @@ class OpenHumanClient {
         .toList();
   }
 
+  // ══════════════════════════════════════════════════════════
+  //  Rooms (group chats) — design doc §5.1 / §10.
+  //  Available when the server runs with OPENHUMAN_ROOMS=1.
+  // ══════════════════════════════════════════════════════════
+
+  /// Create a room owned by the authenticated human. Returns the room
+  /// object (`id`, `title`, `members`, ...).
+  Future<Map<String, dynamic>> createRoom(String name) {
+    return _sendJson('/v1/rooms', body: {'name': name});
+  }
+
+  /// Room detail: title, settings metadata, members with roles.
+  Future<Map<String, dynamic>> getRoom(String roomId) {
+    return _getJson('/v1/rooms/$roomId');
+  }
+
+  /// Mint an invite code (owner). Returns `code` + `expires_at`.
+  Future<Map<String, dynamic>> mintInvite(String roomId) {
+    return _sendJson('/v1/rooms/$roomId/invites');
+  }
+
+  /// Revoke a live invite code (owner).
+  Future<bool> revokeInvite(String roomId, String code) {
+    return _send('/v1/rooms/$roomId/invites/$code', method: 'DELETE');
+  }
+
+  /// Mint a caller key bound to this room (owner). `displayName` is what
+  /// members see as the caller's stream prefix, e.g. "小明的 Claude Code".
+  /// The full key is returned once (`api_key`) — store it or lose it.
+  Future<Map<String, dynamic>> mintCallerKey(String roomId, String displayName) {
+    return _sendJson(
+      '/v1/rooms/$roomId/caller-keys',
+      body: {'display_name': displayName},
+    );
+  }
+
+  /// Room settings (owner): idle release seconds and segmentation knobs.
+  /// Omitted fields keep their current values.
+  Future<bool> updateRoomSettings(
+    String roomId, {
+    int? idleSecs,
+    bool? segmented,
+    int? segmentQuietSecs,
+    int? segmentMaxSecs,
+  }) {
+    final body = <String, dynamic>{
+      if (idleSecs != null) 'room_idle_secs': idleSecs,
+      if (segmented != null) 'room_segmented': segmented,
+      if (segmentQuietSecs != null) 'room_segment_quiet_secs': segmentQuietSecs,
+      if (segmentMaxSecs != null) 'room_segment_max_secs': segmentMaxSecs,
+    };
+    return _send('/v1/rooms/$roomId', method: 'PATCH', body: body);
+  }
+
+  /// Room message log since a watermark (member). `afterSeq` pages.
+  Future<Map<String, dynamic>> fetchRoomMessages(
+    String roomId, {
+    int? afterSeq,
+    int? limit,
+  }) {
+    final q = [
+      if (afterSeq != null) 'after_seq=$afterSeq',
+      if (limit != null) 'limit=$limit',
+    ].join('&');
+    return _getJson('/v1/rooms/$roomId/messages${q.isEmpty ? '' : '?$q'}');
+  }
+
   /// Rename an agent.
   ///
   /// The name the seed data or the issuing tool chose is rarely what the
@@ -689,6 +756,48 @@ class OpenHumanClient {
       if (response.statusCode != HttpStatus.ok) {
         throw HttpException(
           'GET $path failed with ${response.statusCode}: $text',
+          uri: Uri.parse('$base$path'),
+        );
+      }
+      final decoded = jsonDecode(text);
+      return decoded is Map<String, dynamic>
+          ? decoded
+          : <String, dynamic>{'data': decoded};
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// POST/PATCH with a JSON body that returns a decoded JSON object.
+  Future<Map<String, dynamic>> _sendJson(
+    String path, {
+    String method = 'POST',
+    Map<String, dynamic>? body,
+  }) async {
+    final base = _baseUrl;
+    final key = _apiKey;
+    if (base == null || key == null) {
+      throw StateError('fetch called before connect()');
+    }
+
+    final client = HttpClient();
+    try {
+      final request = await client
+          .openUrl(method, Uri.parse('$base$path'))
+          .timeout(_httpTimeout);
+      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $key');
+      request.headers.contentType = ContentType.json;
+      if (body != null) {
+        request.write(jsonEncode(body));
+      }
+      final response = await request.close().timeout(_httpTimeout);
+      final text = await response
+          .transform(utf8.decoder)
+          .join()
+          .timeout(_httpTimeout);
+      if (response.statusCode >= 400) {
+        throw HttpException(
+          '$method $path failed with ${response.statusCode}: $text',
           uri: Uri.parse('$base$path'),
         );
       }

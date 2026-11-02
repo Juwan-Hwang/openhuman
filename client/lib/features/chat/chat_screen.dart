@@ -29,6 +29,7 @@ import 'agent_integration_sheet.dart';
 import 'agent_runtime_panel.dart';
 import 'chat_controller.dart';
 import 'conversation_sidebar.dart';
+import 'room_panel.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -89,6 +90,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final controller = ref.read(chatControllerProvider.notifier);
     final humanUser = controller.humanUser;
 
+    // Group-room context (§10.6): end.turn and the tool-invoke panel are
+    // owner-only. The server enforces it; the buttons simply don't show.
+    final activeConvId = ref.watch(activeConversationIdProvider);
+    ConversationInfo? activeInfo;
+    for (final c in ref.watch(conversationListProvider).entries) {
+      if (c.id == activeConvId) {
+        activeInfo = c;
+        break;
+      }
+    }
+    final isGroup = activeInfo?.isGroup ?? false;
+    final isRoomOwner =
+        isGroup &&
+        activeConvId != null &&
+        ref.watch(roomOwnershipProvider(activeConvId));
+    final showOwnerControls = !isGroup || isRoomOwner;
+
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
@@ -126,8 +144,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   : const Icon(Icons.refresh_rounded),
               tooltip: 'Reconnect',
             ),
-          // ── End Turn button ──
-          if (_turnEnded)
+          // ── End Turn button (owner-only in rooms, §10.6) ──
+          if (!showOwnerControls)
+            const SizedBox.shrink()
+          else if (_turnEnded)
             Padding(
               padding: const EdgeInsets.only(right: 8),
               child: ActionChip(
@@ -145,16 +165,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 label: const Text('End Turn'),
               ),
             ),
-          // ── Toggle Runtime Panel ──
-          IconButton(
-            onPressed: () => setState(() => _showRuntimePanel = !_showRuntimePanel),
-            icon: Icon(
-              _showRuntimePanel
-                  ? Icons.view_sidebar_rounded
-                  : Icons.view_sidebar_outlined,
+          // ── Room panel (members / invites / connection / settings) ──
+          if (isGroup && activeConvId != null)
+            IconButton(
+              onPressed: () => RoomPanel.show(context, activeConvId),
+              icon: const Icon(Icons.groups_outlined),
+              tooltip: '群聊管理',
             ),
-            tooltip: 'Agent Runtime',
-          ),
+          // ── Toggle Runtime Panel (owner-only in rooms, §10.6) ──
+          if (showOwnerControls)
+            IconButton(
+              onPressed: () => setState(() => _showRuntimePanel = !_showRuntimePanel),
+              icon: Icon(
+                _showRuntimePanel
+                    ? Icons.view_sidebar_rounded
+                    : Icons.view_sidebar_outlined,
+              ),
+              tooltip: 'Agent Runtime',
+            ),
           // ── Agent Integration Guide ──
           IconButton(
             onPressed: () => AgentIntegrationSheet.show(context),
@@ -248,7 +276,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ),
             ),
             // ── Agent Runtime Panel ──
-            if (_showRuntimePanel) const AgentRuntimePanel(),
+            if (_showRuntimePanel && showOwnerControls)
+              const AgentRuntimePanel(),
           ],
         ),
       ),

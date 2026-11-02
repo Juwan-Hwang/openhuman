@@ -15,6 +15,9 @@ class HistoryConversation {
     this.humanId,
     this.lastMessageAt,
     this.createdAt,
+    this.type,
+    this.title,
+    this.memberCount,
   });
 
   factory HistoryConversation.fromJson(Map<String, dynamic> json) {
@@ -25,6 +28,9 @@ class HistoryConversation {
       humanId: json['human_id'] as String?,
       lastMessageAt: _parseDate(json['last_message_at']),
       createdAt: _parseDate(json['created_at']),
+      type: json['type'] as String?,
+      title: json['title'] as String?,
+      memberCount: json['member_count'] as int?,
     );
   }
 
@@ -36,6 +42,18 @@ class HistoryConversation {
   final String? humanId;
   final DateTime? lastMessageAt;
   final DateTime? createdAt;
+
+  /// `"group"` for a room, `"agent_human"` otherwise (§10.3).
+  final String? type;
+
+  /// Room title (groups only).
+  final String? title;
+
+  /// Participant count — shown next to the group marker (§10.3).
+  final int? memberCount;
+
+  /// Whether this conversation is a group room.
+  bool get isGroup => type == 'group';
 
   /// Most recent activity wins; conversations without a timestamp fall to
   /// the bottom rather than pretending to be epoch-old.

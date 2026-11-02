@@ -506,7 +506,7 @@ pub async fn room_messages(
                 "id": m.id,
                 "room_seq": m.room_seq,
                 "sender_id": m.sender.participant_id,
-                "sender_name": m.sender.display_name,
+                "sender_name": crate::rooms::tagged_display_name(m.sender.display_name.as_deref(), &m.metadata),
                 "text": m.content.as_text().unwrap_or(""),
                 "metadata": m.metadata,
                 "created_at": m.created_at,
