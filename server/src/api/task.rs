@@ -134,6 +134,8 @@ pub async fn run(
     delivery: Delivery,
     finish: Finish,
 ) -> Response {
+    let n_images = images.len();
+    let text_head = crate::seat::truncate_middle(&text, 500).0;
     let content = if images.is_empty() {
         Value::String(text)
     } else {
@@ -143,21 +145,57 @@ pub async fn run(
         }
         Value::Array(parts)
     };
+    // Durable record first: quotas are enforced on insert, and a task the
+    // server loses track of (restart, error below) is failed, never lost.
+    let task_id = format!("task_{}", uuid::Uuid::now_v7().simple());
+    app.task
+        .create_task(crate::model::task::TaskRecord {
+            id: task_id.clone(),
+            owner: principal.agent.id.clone(),
+            api: api.to_string(),
+            status: crate::model::task::TaskStatus::Running,
+            conversation_id: None,
+            request: json!({
+                "model": model,
+                "input_head": text_head,
+                "images": n_images,
+                "files": wants_files,
+                "spec": spec,
+            }),
+            answer: None,
+            error: None,
+            created_at: chrono::Utc::now().timestamp(),
+            updated_at: chrono::Utc::now().timestamp(),
+        })
+        .await;
     let req = json!({
         "model": model,
         "messages": [{"role": "user", "content": content}],
         "stream": false,
-        "metadata": {crate::api::openai::TASK_KEY: {"api": api, "expected": expected, "files": wants_files, "spec": spec}},
+        "metadata": {crate::api::openai::TASK_KEY: {"id": task_id, "api": api, "expected": expected, "files": wants_files, "spec": spec}},
     });
     let req = match serde_json::from_value(req) {
         Ok(r) => r,
-        Err(e) => return invalid(&e.to_string()),
+        Err(e) => {
+            app.task
+                .finish_task(&task_id, None, Some(e.to_string()))
+                .await;
+            return invalid(&e.to_string());
+        }
     };
     // A task always waits for its answer here; async mode is a chat thing.
     headers.remove("x-openhuman-mode");
     let resp =
-        crate::api::openai::chat_completions(State(app), principal, headers, Json(req)).await;
+        crate::api::openai::chat_completions(State(app.clone()), principal, headers, Json(req))
+            .await;
     if resp.status() != StatusCode::OK {
+        app.task
+            .finish_task(
+                &task_id,
+                None,
+                Some(format!("chat pipeline refused the task: {}", resp.status())),
+            )
+            .await;
         return resp;
     }
 
@@ -182,12 +220,17 @@ pub async fn run(
     match delivery {
         Delivery::JsonRaw => {
             let a = rx.await.unwrap_or_else(|_| Err("no answer".into()));
+            record_outcome(&app, &task_id, &a).await;
             finished_response(finish(a))
         }
         Delivery::Json => {
             let mut rx = rx;
             match tokio::time::timeout(hold(), &mut rx).await {
-                Ok(a) => finished_response(finish(a.unwrap_or_else(|_| Err("no answer".into())))),
+                Ok(a) => {
+                    let a = a.unwrap_or_else(|_| Err("no answer".into()));
+                    record_outcome(&app, &task_id, &a).await;
+                    finished_response(finish(a))
+                }
                 Err(_) => {
                     let stream = async_stream::stream! {
                         let mut tick = tokio::time::interval(Duration::from_secs(5));
@@ -197,7 +240,9 @@ pub async fn run(
                             tokio::select! {
                                 _ = tick.tick() => yield Ok::<Bytes, std::convert::Infallible>(Bytes::from_static(b"\n")),
                                 a = &mut rx => {
-                                    let out = finish(a.unwrap_or_else(|_| Err("no answer".into())));
+                                    let a = a.unwrap_or_else(|_| Err("no answer".into()));
+                                    record_outcome(&app, &task_id, &a).await;
+                                    let out = finish(a);
                                     let bytes = match out {
                                         Finished::Json(_, v) => v.to_string().into_bytes(),
                                         Finished::Raw(_, _, b) => b,
@@ -226,7 +271,9 @@ pub async fn run(
                     tokio::select! {
                         _ = tick.tick() => yield Ok::<Bytes, std::convert::Infallible>(Bytes::from_static(b": waiting\n\n")),
                         a = &mut rx => {
-                            let frames = match finish(a.unwrap_or_else(|_| Err("no answer".into()))) {
+                            let a = a.unwrap_or_else(|_| Err("no answer".into()));
+                            record_outcome(&app, &task_id, &a).await;
+                            let frames = match finish(a) {
                                 Finished::Sse(f) => f,
                                 Finished::Json(_, v) => vec![sse("error", &v)],
                                 Finished::Raw(..) => vec![],
@@ -244,6 +291,37 @@ pub async fn run(
                 .header("Cache-Control", "no-cache")
                 .body(Body::from_stream(stream))
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+    }
+}
+
+/// Persist how a task ended: a compact answer summary (never the bytes
+/// themselves) or the failure reason.
+async fn record_outcome(app: &AppState, task_id: &str, a: &Result<Answer, String>) {
+    match a {
+        Ok(a) => {
+            let files: Vec<Value> = a
+                .files
+                .iter()
+                .map(|f| match f {
+                    Output::Bytes { mime, name, .. } => json!({"name": name, "mime": mime}),
+                    Output::Link(u) => json!({"link": u}),
+                })
+                .collect();
+            app.task
+                .finish_task(
+                    task_id,
+                    Some(json!({
+                        "text": crate::seat::truncate_middle(&a.text, 2000).0,
+                        "files": files,
+                        "tool_calls": a.tool_calls.len(),
+                    })),
+                    None,
+                )
+                .await;
+        }
+        Err(e) => {
+            app.task.finish_task(task_id, None, Some(e.clone())).await;
         }
     }
 }

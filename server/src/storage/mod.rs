@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use crate::storage::traits::{
     CapabilityRepository, ContextRepository, ConversationRepository, IdentityRepository,
-    MessageRepository, ReplyRegistry, RoomRepository,
+    MessageRepository, ReplyRegistry, RoomRepository, TaskRepository,
 };
 use crate::ws::registry::ConnectionRegistry;
 
@@ -72,6 +72,10 @@ pub struct AppState {
     /// Group-room storage (migration 007). Same backend as the rest;
     /// with the memory backend every room evaporates on restart.
     pub room: Arc<dyn RoomRepository>,
+    /// API-task storage (migration 008). Persistent with the postgres
+    /// backend; with memory, a restart forgets tasks — but they are
+    /// failed at boot either way (see `fail_in_flight_tasks`).
+    pub task: Arc<dyn TaskRepository>,
     /// Room runtime: live signal channels + idle-release timers.
     pub rooms: crate::rooms::RoomHub,
 }
@@ -156,7 +160,8 @@ impl AppState {
             + ReplyRegistry
             + CapabilityRepository
             + ContextRepository
-            + RoomRepository,
+            + RoomRepository
+            + TaskRepository,
         S: 'static + Send + Sync,
     {
         let store = Arc::new(store);
@@ -172,6 +177,7 @@ impl AppState {
             outbound: crate::async_reply::OutboundQueue::new(),
             ephemeral: None,
             model: Arc::new(ModelName::from_env()),
+            task: store.clone(),
             room: store,
             rooms: crate::rooms::RoomHub::new(),
         }
@@ -200,6 +206,7 @@ impl AppState {
         };
         let capability: Arc<dyn CapabilityRepository> = Arc::new(store.clone());
         let context: Arc<dyn ContextRepository> = Arc::new(store.clone());
+        let task: Arc<dyn TaskRepository> = Arc::new(store.clone());
         let room: Arc<dyn RoomRepository> = Arc::new(store);
         let reply: Arc<dyn ReplyRegistry> = Arc::new(reply);
         Self {
@@ -214,6 +221,7 @@ impl AppState {
             outbound: crate::async_reply::OutboundQueue::new(),
             ephemeral,
             model: Arc::new(ModelName::from_env()),
+            task,
             room,
             rooms: crate::rooms::RoomHub::new(),
         }

@@ -120,6 +120,10 @@ impl PostgresStore {
         // rollback is 007_groups_down.sql, run by hand only.
         let sql7 = include_str!("../../migrations/007_groups.sql");
         tx.execute(sql7).await?;
+        // 008 opens API task cards (the tasks table). Re-runnable like the
+        // rest; the rollback is 008_task_cards_down.sql, run by hand only.
+        let sql8 = include_str!("../../migrations/008_task_cards.sql");
+        tx.execute(sql8).await?;
         // 001 re-seeds the public demo key on every boot. Outside an
         // explicit demo it must not authenticate anything.
         if std::env::var("OPENHUMAN_DEMO").ok().as_deref() != Some("1") {
@@ -1799,5 +1803,157 @@ impl RoomRepository for PostgresStore {
         .ok()
         .and_then(|r| r.try_get::<i64, _>("n").ok())
         .unwrap_or(0) as usize
+    }
+}
+
+// ── Task Repository (postgres) ──
+
+fn tasks_max_per_owner() -> i64 {
+    std::env::var("OPENHUMAN_TASKS_MAX_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(2_000)
+}
+
+fn tasks_max_total() -> i64 {
+    std::env::var("OPENHUMAN_TASKS_MAX_TOTAL")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(20_000)
+}
+
+fn task_from_row(r: &sqlx::postgres::PgRow) -> crate::model::task::TaskRecord {
+    use sqlx::Row;
+    let status: String = r.get("status");
+    let created: chrono::DateTime<chrono::Utc> = r.get("created_at");
+    let updated: chrono::DateTime<chrono::Utc> = r.get("updated_at");
+    crate::model::task::TaskRecord {
+        id: r.get("id"),
+        owner: r.get("owner"),
+        api: r.get("api"),
+        status: crate::model::task::TaskStatus::from_str(&status)
+            .unwrap_or(crate::model::task::TaskStatus::Failed),
+        conversation_id: r.get("conversation_id"),
+        request: r.get("request"),
+        answer: r.get("answer"),
+        error: r.get("error"),
+        created_at: created.timestamp(),
+        updated_at: updated.timestamp(),
+    }
+}
+
+const TASK_COLS: &str =
+    "id, owner, api, status, conversation_id, request, answer, error, created_at, updated_at";
+
+#[async_trait::async_trait]
+impl crate::storage::traits::TaskRepository for PostgresStore {
+    async fn create_task(&self, task: crate::model::task::TaskRecord) {
+        let _ = sqlx::query(
+            "INSERT INTO tasks (id, owner, api, status, conversation_id, request, answer, error)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(&task.id)
+        .bind(&task.owner)
+        .bind(&task.api)
+        .bind(task.status.as_str())
+        .bind(&task.conversation_id)
+        .bind(&task.request)
+        .bind(&task.answer)
+        .bind(&task.error)
+        .execute(&*self.pool)
+        .await;
+        // Quota pruning: only finished rows are ever removed, oldest first;
+        // active work is untouchable even when the cap is exceeded.
+        let _ = sqlx::query(
+            "DELETE FROM tasks WHERE id IN (
+                 SELECT id FROM tasks
+                 WHERE owner = $1 AND status IN ('completed', 'failed')
+                 ORDER BY created_at DESC OFFSET $2)",
+        )
+        .bind(&task.owner)
+        .bind(tasks_max_per_owner())
+        .execute(&*self.pool)
+        .await;
+        let _ = sqlx::query(
+            "DELETE FROM tasks WHERE id IN (
+                 SELECT id FROM tasks
+                 WHERE status IN ('completed', 'failed')
+                 ORDER BY created_at DESC OFFSET $1)",
+        )
+        .bind(tasks_max_total())
+        .execute(&*self.pool)
+        .await;
+    }
+
+    async fn bind_task_conversation(&self, id: &str, conversation_id: &str) {
+        let _ =
+            sqlx::query("UPDATE tasks SET conversation_id = $2, updated_at = now() WHERE id = $1")
+                .bind(id)
+                .bind(conversation_id)
+                .execute(&*self.pool)
+                .await;
+    }
+
+    async fn finish_task(
+        &self,
+        id: &str,
+        answer: Option<serde_json::Value>,
+        error: Option<String>,
+    ) {
+        // Never reopen a finished task: a late duplicate answer loses.
+        let status = if error.is_some() {
+            "failed"
+        } else {
+            "completed"
+        };
+        let _ = sqlx::query(
+            "UPDATE tasks SET status = $2, answer = $3, error = $4, updated_at = now()
+             WHERE id = $1 AND status NOT IN ('completed', 'failed')",
+        )
+        .bind(id)
+        .bind(status)
+        .bind(&answer)
+        .bind(&error)
+        .execute(&*self.pool)
+        .await;
+    }
+
+    async fn fail_in_flight_tasks(&self, reason: &str) -> u64 {
+        sqlx::query(
+            "UPDATE tasks SET status = 'failed', error = $1, updated_at = now()
+             WHERE status IN ('queued', 'running')",
+        )
+        .bind(reason)
+        .execute(&*self.pool)
+        .await
+        .map(|r| r.rows_affected())
+        .unwrap_or(0)
+    }
+
+    async fn get_task(&self, owner: &str, id: &str) -> Option<crate::model::task::TaskRecord> {
+        sqlx::query(&format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE id = $1 AND owner = $2"
+        ))
+        .bind(id)
+        .bind(owner)
+        .fetch_optional(&*self.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| task_from_row(&r))
+    }
+
+    async fn list_tasks(&self, owner: &str, limit: i64) -> Vec<crate::model::task::TaskRecord> {
+        sqlx::query(&format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE owner = $1
+             ORDER BY created_at DESC, id DESC LIMIT $2"
+        ))
+        .bind(owner)
+        .bind(limit.max(0))
+        .fetch_all(&*self.pool)
+        .await
+        .map(|rows| rows.iter().map(task_from_row).collect())
+        .unwrap_or_default()
     }
 }

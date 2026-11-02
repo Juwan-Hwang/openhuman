@@ -375,3 +375,33 @@ pub trait RoomRepository: Send + Sync {
 }
 
 use crate::model::identity::ParticipantRef;
+
+// ── Task Repository ──
+
+/// API-task storage — the units of human work behind the non-chat
+/// endpoints. Implementations must enforce the per-owner and global
+/// quotas (OPENHUMAN_TASKS_MAX_PER_OWNER, default 2000;
+/// OPENHUMAN_TASKS_MAX_TOTAL, default 20000) by pruning the oldest
+/// *finished* rows; active tasks are never pruned.
+#[async_trait]
+pub trait TaskRepository: Send + Sync {
+    /// Record a new task (status Queued or Running) after quota pruning.
+    async fn create_task(&self, task: crate::model::task::TaskRecord);
+
+    /// Attach the seat conversation once chat routing has opened it.
+    async fn bind_task_conversation(&self, id: &str, conversation_id: &str);
+
+    /// Mark a task completed with its answer, or failed with a reason.
+    async fn finish_task(&self, id: &str, answer: Option<serde_json::Value>, error: Option<String>);
+
+    /// Fail every task still queued or running — called once at startup
+    /// so work orphaned by a restart reads as failed, not lost. Returns
+    /// how many were failed.
+    async fn fail_in_flight_tasks(&self, reason: &str) -> u64;
+
+    /// Fetch one task, owner-scoped (a task is visible only to its owner).
+    async fn get_task(&self, owner: &str, id: &str) -> Option<crate::model::task::TaskRecord>;
+
+    /// The owner's tasks, newest first (status endpoints, batches).
+    async fn list_tasks(&self, owner: &str, limit: i64) -> Vec<crate::model::task::TaskRecord>;
+}

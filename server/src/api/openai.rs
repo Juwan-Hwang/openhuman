@@ -1592,6 +1592,14 @@ pub async fn chat_completions(
                     .cloned()
                     .unwrap_or(Value::Null);
                 crate::session::mark_task(&cnv.id, api, *files, spec);
+                if let Some(task_id) = req
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.pointer(&format!("/{TASK_KEY}/id")))
+                    .and_then(|v| v.as_str())
+                {
+                    app.task.bind_task_conversation(task_id, &cnv.id).await;
+                }
             }
             cnv.id
         };

@@ -24,7 +24,7 @@ use crate::model::message::{Message, MessageStatus};
 use crate::state::AuthPrincipal;
 use crate::storage::traits::{
     CapabilityRepository, ContextRepository, ConversationRepository, IdentityRepository,
-    MessageRepository, ReplyRegistry,
+    MessageRepository, ReplyRegistry, TaskRepository,
 };
 
 // ── Internal data ──
@@ -56,6 +56,8 @@ struct MemoryData {
     room_invites: HashMap<String, crate::storage::traits::RoomInvite>,
     /// Streaming cursors: (room, key, session) → last received seq.
     room_cursors: HashMap<(String, String, String), i64>,
+    /// API tasks by id (insertion order tracked by created_at + id).
+    tasks: HashMap<String, crate::model::task::TaskRecord>,
 }
 
 // ── MemoryStore ──
@@ -782,5 +784,125 @@ impl crate::storage::traits::RoomRepository for MemoryStore {
             .find(|c| c.id == room_id)
             .map(|c| c.participants.len())
             .unwrap_or(0)
+    }
+}
+
+// ── Task Repository (memory) ──
+
+/// Quota: most task rows kept per owner; the oldest finished go first.
+fn tasks_max_per_owner() -> usize {
+    std::env::var("OPENHUMAN_TASKS_MAX_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(2_000)
+}
+
+/// Quota: most task rows kept across all owners.
+fn tasks_max_total() -> usize {
+    std::env::var("OPENHUMAN_TASKS_MAX_TOTAL")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(20_000)
+}
+
+/// Drop the oldest finished rows beyond the cap. Active tasks (queued,
+/// running) are never pruned, so a burst of open work can exceed the cap
+/// temporarily; it settles as tasks finish.
+fn prune_tasks(tasks: &mut HashMap<String, crate::model::task::TaskRecord>, owner: &str) {
+    let mut finished: Vec<(i64, String, String)> = tasks
+        .values()
+        .filter(|t| t.status.finished())
+        .map(|t| (t.created_at, t.id.clone(), t.owner.clone()))
+        .collect();
+    finished.sort();
+    let owner_count = tasks.values().filter(|t| t.owner == owner).count();
+    let mut over_owner = owner_count.saturating_sub(tasks_max_per_owner());
+    let mut over_total = tasks.len().saturating_sub(tasks_max_total());
+    for (_, id, row_owner) in finished {
+        if over_owner == 0 && over_total == 0 {
+            break;
+        }
+        if row_owner == owner && over_owner > 0 {
+            over_owner -= 1;
+            tasks.remove(&id);
+            continue;
+        }
+        if over_total > 0 {
+            over_total -= 1;
+            tasks.remove(&id);
+        }
+    }
+}
+
+#[async_trait]
+impl TaskRepository for MemoryStore {
+    async fn create_task(&self, task: crate::model::task::TaskRecord) {
+        let mut d = self.data.lock().await;
+        let owner = task.owner.clone();
+        d.tasks.insert(task.id.clone(), task);
+        prune_tasks(&mut d.tasks, &owner);
+    }
+
+    async fn bind_task_conversation(&self, id: &str, conversation_id: &str) {
+        let mut d = self.data.lock().await;
+        if let Some(t) = d.tasks.get_mut(id) {
+            t.conversation_id = Some(conversation_id.to_string());
+            t.updated_at = Utc::now().timestamp();
+        }
+    }
+
+    async fn finish_task(
+        &self,
+        id: &str,
+        answer: Option<serde_json::Value>,
+        error: Option<String>,
+    ) {
+        let mut d = self.data.lock().await;
+        if let Some(t) = d.tasks.get_mut(id) {
+            if t.status.finished() {
+                return;
+            }
+            t.status = if error.is_some() {
+                crate::model::task::TaskStatus::Failed
+            } else {
+                crate::model::task::TaskStatus::Completed
+            };
+            t.answer = answer;
+            t.error = error;
+            t.updated_at = Utc::now().timestamp();
+        }
+    }
+
+    async fn fail_in_flight_tasks(&self, reason: &str) -> u64 {
+        let mut d = self.data.lock().await;
+        let mut n = 0;
+        let now = Utc::now().timestamp();
+        for t in d.tasks.values_mut() {
+            if !t.status.finished() {
+                t.status = crate::model::task::TaskStatus::Failed;
+                t.error = Some(reason.to_string());
+                t.updated_at = now;
+                n += 1;
+            }
+        }
+        n
+    }
+
+    async fn get_task(&self, owner: &str, id: &str) -> Option<crate::model::task::TaskRecord> {
+        let d = self.data.lock().await;
+        d.tasks.get(id).filter(|t| t.owner == owner).cloned()
+    }
+
+    async fn list_tasks(&self, owner: &str, limit: i64) -> Vec<crate::model::task::TaskRecord> {
+        let d = self.data.lock().await;
+        let mut v: Vec<_> = d
+            .tasks
+            .values()
+            .filter(|t| t.owner == owner)
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+        v.truncate(limit.max(0) as usize);
+        v
     }
 }
