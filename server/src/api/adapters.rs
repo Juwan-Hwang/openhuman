@@ -1197,8 +1197,16 @@ mod tests {
         assert_eq!(
             v,
             vec![
-                ("mcp__seat__next".to_string(), "mcp__seat".to_string(), "next".to_string()),
-                ("mcp__seat__reply".to_string(), "mcp__seat".to_string(), "reply".to_string()),
+                (
+                    "mcp__seat__next".to_string(),
+                    "mcp__seat".to_string(),
+                    "next".to_string()
+                ),
+                (
+                    "mcp__seat__reply".to_string(),
+                    "mcp__seat".to_string(),
+                    "reply".to_string()
+                ),
             ]
         );
         // A namespace whose name already ends in __ joins without another __.

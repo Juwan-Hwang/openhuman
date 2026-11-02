@@ -52,7 +52,9 @@ async fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         Some("help" | "-h" | "--help") => {
-            println!("openhuman-server: run with no arguments to serve; `issue-key` mints an API key.");
+            println!(
+                "openhuman-server: run with no arguments to serve; `issue-key` mints an API key."
+            );
             return Ok(());
         }
         Some(other) => {

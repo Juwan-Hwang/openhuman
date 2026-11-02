@@ -210,7 +210,11 @@ async fn resubmitted_turn_supersedes_over_http() {
         .unwrap();
     let status = second.status();
     if status != 200 {
-        panic!("resubmit refused with {}: {}", status, second.text().await.unwrap());
+        panic!(
+            "resubmit refused with {}: {}",
+            status,
+            second.text().await.unwrap()
+        );
     }
 
     // Let the second request register its waiter before the reply lands.
@@ -235,7 +239,12 @@ async fn resubmitted_turn_supersedes_over_http() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200, "end-turn: {}", resp.text().await.unwrap_or_default());
+    assert_eq!(
+        resp.status(),
+        200,
+        "end-turn: {}",
+        resp.text().await.unwrap_or_default()
+    );
 
     let body = second.text().await.unwrap();
     // The reply streams as word-sized chunks ("the " + "answer"), so match
