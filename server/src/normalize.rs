@@ -165,7 +165,12 @@ fn is_noise_part(client: &ClientType, text: &str) -> bool {
 /// carries anything the person typed.
 fn is_dsh_injection(text: &str) -> bool {
     let t = text.trim_start();
+    // Also its turn clock and its repeat-tool guard (dsh-repeat-tool-reminder),
+    // measured on dsh 0.2.1-rc.5, 2026-11-02.
     t.starts_with("Current runtime context.")
+        || t.starts_with("Time sampled while preparing turn ")
+        || t.starts_with("You are repeating the exact same tool call with identical arguments.")
+        || t.starts_with("Repeated tool call detected:")
         || (t.starts_with("<system-reminder") && t.trim_end().ends_with("</system-reminder>"))
 }
 
@@ -212,6 +217,12 @@ fn strip_claude_prefix(text: &str) -> String {
         return trimmed.to_string();
     };
     let rest = trimmed[open_end + close_rel + "</system-reminder>".len()..].trim();
+    // ZCode 3.16 delivers a mid-turn message inside a reminder, in Claude
+    // Code's own words: that reminder IS what the person typed.
+    let inner = trimmed[open_end + 1..open_end + close_rel].trim();
+    if rest.is_empty() && inner.starts_with(crate::rooms::segmenter::CLAUDE_INTERJECTION_PREFIX) {
+        return inner.to_string();
+    }
     if let Some(inner) = extract_tag(rest, "session") {
         return inner;
     }
@@ -494,5 +505,33 @@ mod tests {
             normalize_user_message(&ClientType::DeepSeekHarness, &real),
             "这里是创造模式"
         );
+    }
+
+    #[test]
+    fn zcode_mid_turn_reminder_keeps_the_typed_text() {
+        let t = "<system-reminder>\nThe user sent a new message while you were working:\n插话 X\n\nThis is how ZCode surfaces messages the user sends mid-turn — within the running turn. Address the message above as you continue this turn.\n</system-reminder>";
+        let out = strip_claude_prefix(t);
+        assert_eq!(
+            crate::rooms::segmenter::strip_interjection_leadin(&out),
+            "插话 X"
+        );
+        assert_eq!(
+            strip_claude_prefix("<system-reminder>date</system-reminder>"),
+            ""
+        );
+    }
+
+    #[test]
+    fn dsh_clock_and_repeat_guard_are_injections() {
+        assert!(is_dsh_injection(
+            "Time sampled while preparing turn 1, step 1: Mon"
+        ));
+        assert!(is_dsh_injection(
+            "Repeated tool call detected:\n- tool: get_goal"
+        ));
+        assert!(is_dsh_injection(
+            "You are repeating the exact same tool call with identical arguments. Carefully"
+        ));
+        assert!(!is_dsh_injection("你好"));
     }
 }

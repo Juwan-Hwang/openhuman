@@ -175,7 +175,8 @@ pub async fn room_chat_completions(
             let stripped = segmenter::strip_interjection_leadin(&raw)
                 .trim()
                 .to_string();
-            if stripped.is_empty() {
+            // A client's own auto prompt (no person typed it) is not speech.
+            if stripped.is_empty() || segmenter::is_client_auto_prompt(&stripped) {
                 return false;
             }
             let images = msg
@@ -712,11 +713,9 @@ fn close_with_invoke(tx: &mpsc::UnboundedSender<PumpEvent>, inv: crate::rooms::P
 
 /// Pick the keepalive tool from the client's own declared tools (§6.2).
 fn pick_keepalive_tool(declared: &[String]) -> (String, String) {
-    let name = segmenter::KEEPALIVE_TOOL_WHITELIST
-        .iter()
-        .find(|w| declared.iter().any(|d| d == *w))
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| segmenter::KEEPALIVE_FALLBACK_TOOL.to_string());
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = segmenter::keepalive_tool_for(declared, n).to_string();
     let id = format!(
         "{}{}",
         segmenter::KEEPALIVE_ID_PREFIX,
