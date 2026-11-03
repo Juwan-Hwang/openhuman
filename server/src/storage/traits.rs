@@ -40,6 +40,16 @@ pub trait IdentityRepository: Send + Sync {
     /// Insert an API key.
     async fn insert_api_key(&self, key: ApiKey);
 
+    /// The current scope of a key, by its id; `None` when no such key
+    /// exists. Credentials derived from a key (a ChatKit client secret)
+    /// check this on every use, so revoking or deleting the key cuts them
+    /// off at once instead of at their expiry. The default knows no key,
+    /// so a backend that does not implement it fails closed.
+    async fn api_key_scope(&self, id: &str) -> Option<crate::model::identity::KeyScope> {
+        let _ = id;
+        None
+    }
+
     /// Get a human by ID.
     async fn get_human(&self, id: &str) -> Option<HumanIdentity>;
 
@@ -375,3 +385,102 @@ pub trait RoomRepository: Send + Sync {
 }
 
 use crate::model::identity::ParticipantRef;
+
+// ── Task Repository ──
+
+/// API-task storage — the units of human work behind the non-chat
+/// endpoints. Implementations must enforce the per-owner and global
+/// quotas (OPENHUMAN_TASKS_MAX_PER_OWNER, default 2000;
+/// OPENHUMAN_TASKS_MAX_TOTAL, default 20000) by pruning the oldest
+/// *finished* rows; active tasks are never pruned.
+#[async_trait]
+pub trait TaskRepository: Send + Sync {
+    /// Record a new task (status Queued or Running) after quota pruning.
+    async fn create_task(&self, task: crate::model::task::TaskRecord);
+
+    /// Attach the seat conversation once chat routing has opened it.
+    async fn bind_task_conversation(&self, id: &str, conversation_id: &str);
+
+    /// Mark a task completed with its answer, or failed with a reason.
+    async fn finish_task(&self, id: &str, answer: Option<serde_json::Value>, error: Option<String>);
+
+    /// Fail every task still queued or running — called once at startup
+    /// so work orphaned by a restart reads as failed, not lost. Returns
+    /// how many were failed.
+    async fn fail_in_flight_tasks(&self, reason: &str) -> u64;
+
+    /// Fetch one task, owner-scoped (a task is visible only to its owner).
+    async fn get_task(&self, owner: &str, id: &str) -> Option<crate::model::task::TaskRecord>;
+
+    /// The owner's tasks, newest first (status endpoints, batches).
+    async fn list_tasks(&self, owner: &str, limit: i64) -> Vec<crate::model::task::TaskRecord>;
+}
+
+// ── File Repository ──
+
+/// Files API storage — caller uploads and seat-produced outputs.
+/// Implementations enforce the byte quotas
+/// (OPENHUMAN_FILES_MAX_BYTES_PER_OWNER, default 512 MiB;
+/// OPENHUMAN_FILES_MAX_BYTES_TOTAL, default 2 GiB) by evicting the
+/// oldest files first.
+#[async_trait]
+pub trait FileRepository: Send + Sync {
+    /// Store a file under a caller-minted id (`file-<32 hex>`; ids are
+    /// unguessable, and deterministic ids dedupe content).
+    async fn put_file(&self, id: &str, file: crate::api::files::StoredFile);
+
+    /// Fetch a file by id (any owner — authorization is the caller's).
+    async fn get_file(&self, id: &str) -> Option<crate::api::files::StoredFile>;
+
+    /// Delete a file owned by `owner`. Returns whether one was removed.
+    async fn delete_file(&self, owner: &str, id: &str) -> bool;
+
+    /// The owner's files, newest first, with their ids.
+    async fn list_files(&self, owner: &str) -> Vec<(String, crate::api::files::StoredFile)>;
+
+    /// Prove the seat produced these bytes: the id and creation time of
+    /// the purpose=output file holding exactly them.
+    async fn find_output_by_bytes(&self, bytes: &[u8]) -> Option<(String, i64)>;
+}
+
+// ── API Object Repository ──
+
+/// A stored OpenAI-style API object: the public object (`obj`, returned
+/// in responses verbatim) plus private working state (`input`: thread
+/// messages, run steps, store file entries; `history`: tool round trips
+/// a run continues from). The private parts never leak into responses.
+#[derive(Clone, Debug, Default)]
+pub struct StoredObject {
+    pub obj: serde_json::Value,
+    pub input: Vec<serde_json::Value>,
+    pub history: Vec<serde_json::Value>,
+}
+
+/// Persistence for the stateful OpenAI-style APIs — vector stores,
+/// assistants/threads/runs, agents/sessions (migration 010). Kind comes
+/// from `obj["object"]`; handlers read-modify-write whole objects.
+#[async_trait]
+pub trait ObjectRepository: Send + Sync {
+    /// Create or replace an object, evicting the owner's
+    /// least-recently-active objects of the same kind past the per-owner
+    /// cap (`OPENHUMAN_API_OBJECTS_MAX_PER_OWNER`, default 2000).
+    async fn put_object(&self, id: &str, owner: &str, obj: StoredObject);
+
+    /// Fetch one object, owner-scoped.
+    async fn get_object(&self, owner: &str, id: &str) -> Option<StoredObject>;
+
+    /// Mutate an object in place (read-modify-write under the backend's
+    /// own guard). Returns false when no object has the id.
+    async fn update_object(
+        &self,
+        id: &str,
+        f: &(dyn for<'a> Fn(&'a mut StoredObject) + Send + Sync),
+    ) -> bool;
+
+    /// The owner's objects of one kind ("vector_store", "thread.run",
+    /// ...), most recently active first.
+    async fn list_objects(&self, owner: &str, object_kind: &str) -> Vec<(String, StoredObject)>;
+
+    /// Delete an object owned by `owner`. Returns whether one was removed.
+    async fn delete_object(&self, owner: &str, id: &str) -> bool;
+}

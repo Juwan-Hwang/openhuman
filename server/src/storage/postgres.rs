@@ -120,6 +120,18 @@ impl PostgresStore {
         // rollback is 007_groups_down.sql, run by hand only.
         let sql7 = include_str!("../../migrations/007_groups.sql");
         tx.execute(sql7).await?;
+        // 008 opens API task cards (the tasks table). Re-runnable like the
+        // rest; the rollback is 008_task_cards_down.sql, run by hand only.
+        let sql8 = include_str!("../../migrations/008_task_cards.sql");
+        tx.execute(sql8).await?;
+        // 009 persists the Files API. Rollback: 009_files_down.sql by hand.
+        let sql9 = include_str!("../../migrations/009_files.sql");
+        tx.execute(sql9).await?;
+        // 010 persists OpenAI-style API objects (vector stores,
+        // assistants/threads/runs, agents/sessions).
+        // Rollback: 010_api_objects_down.sql by hand.
+        let sql10 = include_str!("../../migrations/010_api_objects.sql");
+        tx.execute(sql10).await?;
         // 001 re-seeds the public demo key on every boot. Outside an
         // explicit demo it must not authenticate anything.
         if std::env::var("OPENHUMAN_DEMO").ok().as_deref() != Some("1") {
@@ -324,6 +336,16 @@ impl IdentityRepository for PostgresStore {
         .bind(&key.room_id)
         .execute(&*self.pool)
         .await;
+    }
+
+    async fn api_key_scope(&self, id: &str) -> Option<crate::model::identity::KeyScope> {
+        let row = sqlx::query("SELECT scope FROM api_keys WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&*self.pool)
+            .await
+            .ok()??;
+        let scope: String = row.try_get("scope").ok()?;
+        Some(crate::model::identity::KeyScope::parse(&scope))
     }
 
     async fn get_human(&self, id: &str) -> Option<HumanIdentity> {
@@ -1799,5 +1821,477 @@ impl RoomRepository for PostgresStore {
         .ok()
         .and_then(|r| r.try_get::<i64, _>("n").ok())
         .unwrap_or(0) as usize
+    }
+}
+
+// ── Task Repository (postgres) ──
+
+fn tasks_max_per_owner() -> i64 {
+    std::env::var("OPENHUMAN_TASKS_MAX_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(2_000)
+}
+
+fn tasks_max_total() -> i64 {
+    std::env::var("OPENHUMAN_TASKS_MAX_TOTAL")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(20_000)
+}
+
+fn task_from_row(r: &sqlx::postgres::PgRow) -> crate::model::task::TaskRecord {
+    use sqlx::Row;
+    let status: String = r.get("status");
+    let created: chrono::DateTime<chrono::Utc> = r.get("created_at");
+    let updated: chrono::DateTime<chrono::Utc> = r.get("updated_at");
+    crate::model::task::TaskRecord {
+        id: r.get("id"),
+        owner: r.get("owner"),
+        api: r.get("api"),
+        status: crate::model::task::TaskStatus::parse(&status)
+            .unwrap_or(crate::model::task::TaskStatus::Failed),
+        conversation_id: r.get("conversation_id"),
+        request: r.get("request"),
+        answer: r.get("answer"),
+        error: r.get("error"),
+        created_at: created.timestamp(),
+        updated_at: updated.timestamp(),
+    }
+}
+
+const TASK_COLS: &str =
+    "id, owner, api, status, conversation_id, request, answer, error, created_at, updated_at";
+
+#[async_trait::async_trait]
+impl crate::storage::traits::TaskRepository for PostgresStore {
+    async fn create_task(&self, task: crate::model::task::TaskRecord) {
+        let _ = sqlx::query(
+            "INSERT INTO tasks (id, owner, api, status, conversation_id, request, answer, error)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(&task.id)
+        .bind(&task.owner)
+        .bind(&task.api)
+        .bind(task.status.as_str())
+        .bind(&task.conversation_id)
+        .bind(&task.request)
+        .bind(&task.answer)
+        .bind(&task.error)
+        .execute(&*self.pool)
+        .await;
+        // Quota pruning: only finished rows are ever removed, oldest first;
+        // active work is untouchable even when the cap is exceeded.
+        let _ = sqlx::query(
+            "DELETE FROM tasks WHERE id IN (
+                 SELECT id FROM tasks
+                 WHERE owner = $1 AND status IN ('completed', 'failed')
+                 ORDER BY created_at DESC OFFSET $2)",
+        )
+        .bind(&task.owner)
+        .bind(tasks_max_per_owner())
+        .execute(&*self.pool)
+        .await;
+        let _ = sqlx::query(
+            "DELETE FROM tasks WHERE id IN (
+                 SELECT id FROM tasks
+                 WHERE status IN ('completed', 'failed')
+                 ORDER BY created_at DESC OFFSET $1)",
+        )
+        .bind(tasks_max_total())
+        .execute(&*self.pool)
+        .await;
+    }
+
+    async fn bind_task_conversation(&self, id: &str, conversation_id: &str) {
+        let _ =
+            sqlx::query("UPDATE tasks SET conversation_id = $2, updated_at = now() WHERE id = $1")
+                .bind(id)
+                .bind(conversation_id)
+                .execute(&*self.pool)
+                .await;
+    }
+
+    async fn finish_task(
+        &self,
+        id: &str,
+        answer: Option<serde_json::Value>,
+        error: Option<String>,
+    ) {
+        // Never reopen a finished task: a late duplicate answer loses.
+        let status = if error.is_some() {
+            "failed"
+        } else {
+            "completed"
+        };
+        let _ = sqlx::query(
+            "UPDATE tasks SET status = $2, answer = $3, error = $4, updated_at = now()
+             WHERE id = $1 AND status NOT IN ('completed', 'failed')",
+        )
+        .bind(id)
+        .bind(status)
+        .bind(&answer)
+        .bind(&error)
+        .execute(&*self.pool)
+        .await;
+    }
+
+    async fn fail_in_flight_tasks(&self, reason: &str) -> u64 {
+        sqlx::query(
+            "UPDATE tasks SET status = 'failed', error = $1, updated_at = now()
+             WHERE status IN ('queued', 'running')",
+        )
+        .bind(reason)
+        .execute(&*self.pool)
+        .await
+        .map(|r| r.rows_affected())
+        .unwrap_or(0)
+    }
+
+    async fn get_task(&self, owner: &str, id: &str) -> Option<crate::model::task::TaskRecord> {
+        sqlx::query(&format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE id = $1 AND owner = $2"
+        ))
+        .bind(id)
+        .bind(owner)
+        .fetch_optional(&*self.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| task_from_row(&r))
+    }
+
+    async fn list_tasks(&self, owner: &str, limit: i64) -> Vec<crate::model::task::TaskRecord> {
+        sqlx::query(&format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE owner = $1
+             ORDER BY created_at DESC, id DESC LIMIT $2"
+        ))
+        .bind(owner)
+        .bind(limit.max(0))
+        .fetch_all(&*self.pool)
+        .await
+        .map(|rows| rows.iter().map(task_from_row).collect())
+        .unwrap_or_default()
+    }
+}
+
+// ── File Repository (postgres) ──
+
+fn files_max_bytes_per_owner() -> i64 {
+    std::env::var("OPENHUMAN_FILES_MAX_BYTES_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(512 * 1024 * 1024)
+}
+
+fn files_max_bytes_total() -> i64 {
+    std::env::var("OPENHUMAN_FILES_MAX_BYTES_TOTAL")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(2 * 1024 * 1024 * 1024)
+}
+
+fn file_from_row(r: &sqlx::postgres::PgRow) -> crate::api::files::StoredFile {
+    use sqlx::Row;
+    let created: chrono::DateTime<chrono::Utc> = r.get("created_at");
+    crate::api::files::StoredFile {
+        owner: r.get("owner"),
+        filename: r.get("filename"),
+        mime: r.get("mime"),
+        purpose: r.get("purpose"),
+        bytes: r.get("bytes"),
+        created_at: created.timestamp(),
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::storage::traits::FileRepository for PostgresStore {
+    async fn put_file(&self, id: &str, file: crate::api::files::StoredFile) {
+        let id = id.to_string();
+        let _ = sqlx::query(
+            "INSERT INTO files (id, owner, filename, mime, purpose, bytes)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(&id)
+        .bind(&file.owner)
+        .bind(&file.filename)
+        .bind(&file.mime)
+        .bind(&file.purpose)
+        .bind(&file.bytes)
+        .execute(&*self.pool)
+        .await;
+        // Byte quotas: a row whose running byte total (newest first)
+        // exceeds the cap is old enough to go. Two steps, race-tolerable.
+        let _ = sqlx::query(
+            "DELETE FROM files f WHERE f.owner = $1 AND EXISTS (
+                 SELECT 1 FROM (
+                     SELECT id, SUM(octet_length(bytes)) OVER (ORDER BY created_at DESC, id DESC) AS running
+                     FROM files WHERE owner = $1
+                 ) s WHERE s.id = f.id AND s.running > $2)",
+        )
+        .bind(&file.owner)
+        .bind(files_max_bytes_per_owner())
+        .execute(&*self.pool)
+        .await;
+        let _ = sqlx::query(
+            "DELETE FROM files f WHERE EXISTS (
+                 SELECT 1 FROM (
+                     SELECT id, SUM(octet_length(bytes)) OVER (ORDER BY created_at DESC, id DESC) AS running
+                     FROM files
+                 ) s WHERE s.id = f.id AND s.running > $1)",
+        )
+        .bind(files_max_bytes_total())
+        .execute(&*self.pool)
+        .await;
+    }
+
+    async fn get_file(&self, id: &str) -> Option<crate::api::files::StoredFile> {
+        sqlx::query(
+            "SELECT owner, filename, mime, purpose, bytes, created_at FROM files WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&*self.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| file_from_row(&r))
+    }
+
+    async fn delete_file(&self, owner: &str, id: &str) -> bool {
+        sqlx::query("DELETE FROM files WHERE id = $1 AND owner = $2")
+            .bind(id)
+            .bind(owner)
+            .execute(&*self.pool)
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .unwrap_or(false)
+    }
+
+    async fn list_files(&self, owner: &str) -> Vec<(String, crate::api::files::StoredFile)> {
+        use sqlx::Row;
+        sqlx::query(
+            "SELECT id, owner, filename, mime, purpose, bytes, created_at FROM files
+             WHERE owner = $1 ORDER BY created_at DESC, id DESC",
+        )
+        .bind(owner)
+        .fetch_all(&*self.pool)
+        .await
+        .map(|rows| {
+            rows.iter()
+                .map(|r| (r.get("id"), file_from_row(r)))
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    async fn find_output_by_bytes(&self, bytes: &[u8]) -> Option<(String, i64)> {
+        use sqlx::Row;
+        sqlx::query(
+            "SELECT id, created_at FROM files
+             WHERE purpose = 'output' AND md5(bytes) = md5($1) AND bytes = $1
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(bytes)
+        .fetch_optional(&*self.pool)
+        .await
+        .ok()
+        .flatten()
+        .map(|r| {
+            let created: chrono::DateTime<chrono::Utc> = r.get("created_at");
+            (r.get("id"), created.timestamp())
+        })
+    }
+}
+
+/// Per-owner cap on stored API objects of one kind;
+/// `OPENHUMAN_API_OBJECTS_MAX_PER_OWNER` overrides (default 2000).
+fn api_objects_max_per_owner() -> i64 {
+    std::env::var("OPENHUMAN_API_OBJECTS_MAX_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(2000)
+}
+
+#[async_trait]
+impl crate::storage::traits::ObjectRepository for PostgresStore {
+    async fn put_object(&self, id: &str, owner: &str, obj: crate::storage::traits::StoredObject) {
+        let kind = obj
+            .obj
+            .get("object")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let last_active = obj
+            .obj
+            .get("last_active_at")
+            .or_else(|| obj.obj.get("created_at"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| Utc::now().timestamp());
+        let _ = sqlx::query(
+            "INSERT INTO api_objects (id, owner, object_kind, obj, input, history, last_active_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (id) DO UPDATE SET obj = $4, input = $5, history = $6, last_active_at = $7",
+        )
+        .bind(id)
+        .bind(owner)
+        .bind(&kind)
+        .bind(&obj.obj)
+        .bind(serde_json::Value::from(obj.input))
+        .bind(serde_json::Value::from(obj.history))
+        .bind(last_active)
+        .execute(&*self.pool)
+        .await;
+        // Per-owner, per-kind cap: least recently active goes first.
+        let _ = sqlx::query(
+            "DELETE FROM api_objects v WHERE v.owner = $1 AND v.object_kind = $2 AND EXISTS (
+                 SELECT 1 FROM (
+                     SELECT id, ROW_NUMBER() OVER (ORDER BY last_active_at DESC, id DESC) AS rn
+                     FROM api_objects WHERE owner = $1 AND object_kind = $2
+                 ) s WHERE s.id = v.id AND s.rn > $3)",
+        )
+        .bind(owner)
+        .bind(&kind)
+        .bind(api_objects_max_per_owner())
+        .execute(&*self.pool)
+        .await;
+    }
+
+    async fn get_object(
+        &self,
+        owner: &str,
+        id: &str,
+    ) -> Option<crate::storage::traits::StoredObject> {
+        sqlx::query("SELECT obj, input, history FROM api_objects WHERE id = $1 AND owner = $2")
+            .bind(id)
+            .bind(owner)
+            .fetch_optional(&*self.pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| crate::storage::traits::StoredObject {
+                obj: r.get("obj"),
+                input: r
+                    .get::<serde_json::Value, _>("input")
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+                history: r
+                    .get::<serde_json::Value, _>("history")
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+            })
+    }
+
+    async fn update_object(
+        &self,
+        id: &str,
+        f: &(dyn for<'a> Fn(&'a mut crate::storage::traits::StoredObject) + Send + Sync),
+    ) -> bool {
+        // Read-modify-write in one transaction: the row lock keeps two
+        // concurrent updates from losing each other.
+        let mut tx = match self.pool.begin().await {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+        let row =
+            sqlx::query("SELECT obj, input, history FROM api_objects WHERE id = $1 FOR UPDATE")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await;
+        let Ok(Some(r)) = row else {
+            let _ = tx.rollback().await;
+            return false;
+        };
+        let mut v = crate::storage::traits::StoredObject {
+            obj: r.get("obj"),
+            input: r
+                .get::<serde_json::Value, _>("input")
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+            history: r
+                .get::<serde_json::Value, _>("history")
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+        };
+        f(&mut v);
+        let last_active = v
+            .obj
+            .get("last_active_at")
+            .or_else(|| v.obj.get("created_at"))
+            .and_then(|x| x.as_i64())
+            .unwrap_or_else(|| Utc::now().timestamp());
+        let done = sqlx::query(
+            "UPDATE api_objects SET obj = $2, input = $3, history = $4, last_active_at = $5 WHERE id = $1",
+        )
+        .bind(id)
+        .bind(&v.obj)
+        .bind(serde_json::Value::from(v.input))
+        .bind(serde_json::Value::from(v.history))
+        .bind(last_active)
+        .execute(&mut *tx)
+        .await;
+        match done {
+            Ok(_) => {
+                let _ = tx.commit().await;
+                true
+            }
+            Err(_) => {
+                let _ = tx.rollback().await;
+                false
+            }
+        }
+    }
+
+    async fn list_objects(
+        &self,
+        owner: &str,
+        object_kind: &str,
+    ) -> Vec<(String, crate::storage::traits::StoredObject)> {
+        sqlx::query(
+            "SELECT id, obj, input, history FROM api_objects
+             WHERE owner = $1 AND object_kind = $2 ORDER BY last_active_at DESC, id DESC",
+        )
+        .bind(owner)
+        .bind(object_kind)
+        .fetch_all(&*self.pool)
+        .await
+        .map(|rows| {
+            rows.iter()
+                .map(|r| {
+                    (
+                        r.get("id"),
+                        crate::storage::traits::StoredObject {
+                            obj: r.get("obj"),
+                            input: r
+                                .get::<serde_json::Value, _>("input")
+                                .as_array()
+                                .cloned()
+                                .unwrap_or_default(),
+                            history: r
+                                .get::<serde_json::Value, _>("history")
+                                .as_array()
+                                .cloned()
+                                .unwrap_or_default(),
+                        },
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    async fn delete_object(&self, owner: &str, id: &str) -> bool {
+        sqlx::query("DELETE FROM api_objects WHERE id = $1 AND owner = $2")
+            .bind(id)
+            .bind(owner)
+            .execute(&*self.pool)
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .unwrap_or(false)
     }
 }

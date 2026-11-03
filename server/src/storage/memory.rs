@@ -24,7 +24,7 @@ use crate::model::message::{Message, MessageStatus};
 use crate::state::AuthPrincipal;
 use crate::storage::traits::{
     CapabilityRepository, ContextRepository, ConversationRepository, IdentityRepository,
-    MessageRepository, ReplyRegistry,
+    MessageRepository, ReplyRegistry, TaskRepository,
 };
 
 // ── Internal data ──
@@ -56,6 +56,11 @@ struct MemoryData {
     room_invites: HashMap<String, crate::storage::traits::RoomInvite>,
     /// Streaming cursors: (room, key, session) → last received seq.
     room_cursors: HashMap<(String, String, String), i64>,
+    /// API tasks by id (insertion order tracked by created_at + id).
+    tasks: HashMap<String, crate::model::task::TaskRecord>,
+    /// Files by id.
+    files: HashMap<String, crate::api::files::StoredFile>,
+    api_objects: HashMap<String, (String, crate::storage::traits::StoredObject)>,
 }
 
 // ── MemoryStore ──
@@ -139,6 +144,24 @@ impl MemoryStore {
             data: Arc::new(Mutex::new(data)),
         }
     }
+
+    /// Add one more human + agent + API key, for callers that need a
+    /// second principal (demos, tests). Like `seeded`, the plaintext key
+    /// exists only at the call site; the map stores the digest.
+    pub async fn add_seeded_identity(
+        &self,
+        human: HumanIdentity,
+        agent: AgentIdentity,
+        key_id: &str,
+        raw_key: &str,
+    ) {
+        let api_key = ApiKey::new(key_id, raw_key, agent.id.clone(), human.id.clone());
+        let mut data = self.data.lock().await;
+        data.humans.insert(human.id.clone(), human);
+        data.agents.insert(agent.id.clone(), agent);
+        data.api_keys
+            .insert(ApiKey::hash_of(raw_key), api_key.persisted());
+    }
 }
 
 impl Default for MemoryStore {
@@ -197,9 +220,19 @@ impl IdentityRepository for MemoryStore {
         data.api_keys.insert(key_hash, persisted);
     }
 
+    async fn api_key_scope(&self, id: &str) -> Option<crate::model::identity::KeyScope> {
+        let data = self.data.lock().await;
+        data.api_keys.values().find(|k| k.id == id).map(|k| k.scope)
+    }
+
     async fn get_human(&self, id: &str) -> Option<HumanIdentity> {
         let data = self.data.lock().await;
         data.humans.get(id).cloned()
+    }
+
+    async fn get_agent(&self, id: &str) -> Option<AgentIdentity> {
+        let data = self.data.lock().await;
+        data.agents.get(id).cloned()
     }
 
     async fn set_human_status(&self, id: &str, status: HumanStatus) -> bool {
@@ -782,5 +815,316 @@ impl crate::storage::traits::RoomRepository for MemoryStore {
             .find(|c| c.id == room_id)
             .map(|c| c.participants.len())
             .unwrap_or(0)
+    }
+}
+
+// ── Task Repository (memory) ──
+
+/// Quota: most task rows kept per owner; the oldest finished go first.
+fn tasks_max_per_owner() -> usize {
+    std::env::var("OPENHUMAN_TASKS_MAX_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(2_000)
+}
+
+/// Quota: most task rows kept across all owners.
+fn tasks_max_total() -> usize {
+    std::env::var("OPENHUMAN_TASKS_MAX_TOTAL")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(20_000)
+}
+
+/// Drop the oldest finished rows beyond the cap. Active tasks (queued,
+/// running) are never pruned, so a burst of open work can exceed the cap
+/// temporarily; it settles as tasks finish.
+fn prune_tasks(tasks: &mut HashMap<String, crate::model::task::TaskRecord>, owner: &str) {
+    let mut finished: Vec<(i64, String, String)> = tasks
+        .values()
+        .filter(|t| t.status.finished())
+        .map(|t| (t.created_at, t.id.clone(), t.owner.clone()))
+        .collect();
+    finished.sort();
+    let owner_count = tasks.values().filter(|t| t.owner == owner).count();
+    let mut over_owner = owner_count.saturating_sub(tasks_max_per_owner());
+    let mut over_total = tasks.len().saturating_sub(tasks_max_total());
+    for (_, id, row_owner) in finished {
+        if over_owner == 0 && over_total == 0 {
+            break;
+        }
+        if row_owner == owner && over_owner > 0 {
+            over_owner -= 1;
+            tasks.remove(&id);
+            continue;
+        }
+        if over_total > 0 {
+            over_total -= 1;
+            tasks.remove(&id);
+        }
+    }
+}
+
+#[async_trait]
+impl TaskRepository for MemoryStore {
+    async fn create_task(&self, task: crate::model::task::TaskRecord) {
+        let mut d = self.data.lock().await;
+        let owner = task.owner.clone();
+        d.tasks.insert(task.id.clone(), task);
+        prune_tasks(&mut d.tasks, &owner);
+    }
+
+    async fn bind_task_conversation(&self, id: &str, conversation_id: &str) {
+        let mut d = self.data.lock().await;
+        if let Some(t) = d.tasks.get_mut(id) {
+            t.conversation_id = Some(conversation_id.to_string());
+            t.updated_at = Utc::now().timestamp();
+        }
+    }
+
+    async fn finish_task(
+        &self,
+        id: &str,
+        answer: Option<serde_json::Value>,
+        error: Option<String>,
+    ) {
+        let mut d = self.data.lock().await;
+        if let Some(t) = d.tasks.get_mut(id) {
+            if t.status.finished() {
+                return;
+            }
+            t.status = if error.is_some() {
+                crate::model::task::TaskStatus::Failed
+            } else {
+                crate::model::task::TaskStatus::Completed
+            };
+            t.answer = answer;
+            t.error = error;
+            t.updated_at = Utc::now().timestamp();
+        }
+    }
+
+    async fn fail_in_flight_tasks(&self, reason: &str) -> u64 {
+        let mut d = self.data.lock().await;
+        let mut n = 0;
+        let now = Utc::now().timestamp();
+        for t in d.tasks.values_mut() {
+            if !t.status.finished() {
+                t.status = crate::model::task::TaskStatus::Failed;
+                t.error = Some(reason.to_string());
+                t.updated_at = now;
+                n += 1;
+            }
+        }
+        n
+    }
+
+    async fn get_task(&self, owner: &str, id: &str) -> Option<crate::model::task::TaskRecord> {
+        let d = self.data.lock().await;
+        d.tasks.get(id).filter(|t| t.owner == owner).cloned()
+    }
+
+    async fn list_tasks(&self, owner: &str, limit: i64) -> Vec<crate::model::task::TaskRecord> {
+        let d = self.data.lock().await;
+        let mut v: Vec<_> = d
+            .tasks
+            .values()
+            .filter(|t| t.owner == owner)
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+        v.truncate(limit.max(0) as usize);
+        v
+    }
+}
+
+// ── File Repository (memory) ──
+
+fn files_max_bytes_per_owner() -> usize {
+    std::env::var("OPENHUMAN_FILES_MAX_BYTES_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(512 * 1024 * 1024)
+}
+
+fn files_max_bytes_total() -> usize {
+    std::env::var("OPENHUMAN_FILES_MAX_BYTES_TOTAL")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(2 * 1024 * 1024 * 1024)
+}
+
+#[async_trait]
+impl crate::storage::traits::FileRepository for MemoryStore {
+    async fn put_file(&self, id: &str, file: crate::api::files::StoredFile) {
+        let mut d = self.data.lock().await;
+        let id = id.to_string();
+        let owner = file.owner.clone();
+        d.files.insert(id.clone(), file);
+        // Byte quotas: evict the oldest files first, whichever purpose.
+        let mut by_age: Vec<(i64, String, String, usize)> = d
+            .files
+            .iter()
+            .map(|(fid, f)| (f.created_at, fid.clone(), f.owner.clone(), f.bytes.len()))
+            .collect();
+        by_age.sort();
+        let owner_bytes: usize = d
+            .files
+            .values()
+            .filter(|f| f.owner == owner)
+            .map(|f| f.bytes.len())
+            .sum();
+        let mut over_owner = owner_bytes.saturating_sub(files_max_bytes_per_owner());
+        let total_bytes: usize = d.files.values().map(|f| f.bytes.len()).sum();
+        let mut over_total = total_bytes.saturating_sub(files_max_bytes_total());
+        for (_, fid, row_owner, len) in by_age {
+            if over_owner == 0 && over_total == 0 {
+                break;
+            }
+            if row_owner == owner && over_owner > 0 {
+                over_owner = over_owner.saturating_sub(len);
+                d.files.remove(&fid);
+                continue;
+            }
+            if over_total > 0 {
+                over_total = over_total.saturating_sub(len);
+                d.files.remove(&fid);
+            }
+        }
+    }
+
+    async fn get_file(&self, id: &str) -> Option<crate::api::files::StoredFile> {
+        self.data.lock().await.files.get(id).cloned()
+    }
+
+    async fn delete_file(&self, owner: &str, id: &str) -> bool {
+        let mut d = self.data.lock().await;
+        if d.files.get(id).is_some_and(|f| f.owner == owner) {
+            d.files.remove(id);
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn list_files(&self, owner: &str) -> Vec<(String, crate::api::files::StoredFile)> {
+        let d = self.data.lock().await;
+        let mut v: Vec<_> = d
+            .files
+            .iter()
+            .filter(|(_, f)| f.owner == owner)
+            .map(|(id, f)| (id.clone(), f.clone()))
+            .collect();
+        v.sort_by_key(|(_, f)| std::cmp::Reverse(f.created_at));
+        v
+    }
+
+    async fn find_output_by_bytes(&self, bytes: &[u8]) -> Option<(String, i64)> {
+        let d = self.data.lock().await;
+        d.files
+            .iter()
+            .find(|(_, f)| f.purpose == "output" && f.bytes == bytes)
+            .map(|(id, f)| (id.clone(), f.created_at))
+    }
+}
+
+/// Per-owner cap on stored API objects of one kind;
+/// `OPENHUMAN_API_OBJECTS_MAX_PER_OWNER` overrides (default 2000).
+fn api_objects_max_per_owner() -> usize {
+    std::env::var("OPENHUMAN_API_OBJECTS_MAX_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(2000)
+}
+
+fn api_object_last_active(o: &crate::storage::traits::StoredObject) -> i64 {
+    o.obj
+        .get("last_active_at")
+        .or_else(|| o.obj.get("created_at"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+}
+
+#[async_trait]
+impl crate::storage::traits::ObjectRepository for MemoryStore {
+    async fn put_object(&self, id: &str, owner: &str, obj: crate::storage::traits::StoredObject) {
+        let mut d = self.data.lock().await;
+        let kind = obj
+            .obj
+            .get("object")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        d.api_objects
+            .insert(id.to_string(), (owner.to_string(), obj));
+        // Per-owner, per-kind cap: least recently active goes first.
+        let mut mine: Vec<(i64, String)> = d
+            .api_objects
+            .iter()
+            .filter(|(_, (o, v))| {
+                o == owner && v.obj.get("object").and_then(|x| x.as_str()) == Some(kind.as_str())
+            })
+            .map(|(vid, (_, v))| (api_object_last_active(v), vid.clone()))
+            .collect();
+        mine.sort();
+        let over = mine.len().saturating_sub(api_objects_max_per_owner());
+        for (_, vid) in mine.into_iter().take(over) {
+            d.api_objects.remove(&vid);
+        }
+    }
+
+    async fn get_object(
+        &self,
+        owner: &str,
+        id: &str,
+    ) -> Option<crate::storage::traits::StoredObject> {
+        self.data
+            .lock()
+            .await
+            .api_objects
+            .get(id)
+            .filter(|(o, _)| o == owner)
+            .map(|(_, v)| v.clone())
+    }
+
+    async fn update_object(
+        &self,
+        id: &str,
+        f: &(dyn for<'a> Fn(&'a mut crate::storage::traits::StoredObject) + Send + Sync),
+    ) -> bool {
+        let mut d = self.data.lock().await;
+        let Some((_, v)) = d.api_objects.get_mut(id) else {
+            return false;
+        };
+        f(v);
+        true
+    }
+
+    async fn list_objects(
+        &self,
+        owner: &str,
+        object_kind: &str,
+    ) -> Vec<(String, crate::storage::traits::StoredObject)> {
+        let d = self.data.lock().await;
+        let mut v: Vec<_> = d
+            .api_objects
+            .iter()
+            .filter(|(_, (o, x))| {
+                o == owner && x.obj.get("object").and_then(|k| k.as_str()) == Some(object_kind)
+            })
+            .map(|(id, (_, x))| (id.clone(), x.clone()))
+            .collect();
+        v.sort_by_key(|(_, x)| std::cmp::Reverse(api_object_last_active(x)));
+        v
+    }
+
+    async fn delete_object(&self, owner: &str, id: &str) -> bool {
+        let mut d = self.data.lock().await;
+        if d.api_objects.get(id).is_some_and(|(o, _)| o == owner) {
+            d.api_objects.remove(id);
+            true
+        } else {
+            false
+        }
     }
 }

@@ -12,4 +12,5 @@ pub mod conversation;
 pub mod event;
 pub mod identity;
 pub mod message;
+pub mod task;
 pub mod tool_invocation;

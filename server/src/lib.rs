@@ -21,7 +21,7 @@ pub mod storage;
 pub mod ws;
 
 use axum::middleware::from_fn_with_state;
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
@@ -95,6 +95,201 @@ pub fn build_router(state: AppState) -> Router {
             get(api::files::get_meta).delete(api::files::delete),
         )
         .route("/v1/files/:file_id/content", get(api::files::content))
+        .route("/v1/uploads", post(api::uploads::create))
+        .route(
+            "/v1/uploads/:upload_id/parts",
+            post(api::uploads::add_part).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/uploads/:upload_id/complete",
+            post(api::uploads::complete),
+        )
+        .route("/v1/uploads/:upload_id/cancel", post(api::uploads::cancel))
+        .route(
+            "/v1/batches",
+            post(api::batches::create).get(api::batches::list),
+        )
+        .route("/v1/batches/:batch_id", get(api::batches::retrieve))
+        .route("/v1/batches/:batch_id/cancel", post(api::batches::cancel))
+        .route(
+            "/v1/vector_stores",
+            post(api::vector_stores::create).get(api::vector_stores::list),
+        )
+        .route(
+            "/v1/vector_stores/:store_id",
+            get(api::vector_stores::retrieve)
+                .post(api::vector_stores::modify)
+                .delete(api::vector_stores::delete),
+        )
+        .route(
+            "/v1/vector_stores/:store_id/files",
+            post(api::vector_stores::add_file).get(api::vector_stores::list_files),
+        )
+        .route(
+            "/v1/vector_stores/:store_id/files/:file_id",
+            get(api::vector_stores::get_file)
+                .post(api::vector_stores::update_file)
+                .delete(api::vector_stores::delete_file),
+        )
+        .route(
+            "/v1/vector_stores/:store_id/files/:file_id/content",
+            get(api::vector_stores::file_content),
+        )
+        .route(
+            "/v1/vector_stores/:store_id/file_batches",
+            post(api::vector_stores::create_batch),
+        )
+        .route(
+            "/v1/vector_stores/:store_id/file_batches/:batch_id",
+            get(api::vector_stores::get_batch_route).post(api::vector_stores::cancel_batch),
+        )
+        .route(
+            "/v1/vector_stores/:store_id/file_batches/:batch_id/files",
+            get(api::vector_stores::batch_files),
+        )
+        .route(
+            "/v1/vector_stores/:store_id/search",
+            post(api::vector_stores::search),
+        )
+        .route(
+            "/v1/assistants",
+            post(api::assistants::create_assistant).get(api::assistants::list_assistants),
+        )
+        .route(
+            "/v1/assistants/:id",
+            get(api::assistants::get_assistant)
+                .post(api::assistants::update_assistant)
+                .delete(api::assistants::delete_assistant),
+        )
+        .route("/v1/threads", post(api::assistants::create_thread))
+        .route(
+            "/v1/threads/runs",
+            post(api::assistants::create_thread_and_run),
+        )
+        .route(
+            "/v1/threads/:id",
+            get(api::assistants::get_thread)
+                .post(api::assistants::update_thread)
+                .delete(api::assistants::delete_thread),
+        )
+        .route(
+            "/v1/threads/:id/messages",
+            post(api::assistants::create_message).get(api::assistants::list_messages),
+        )
+        .route(
+            "/v1/threads/:id/messages/:message_id",
+            get(api::assistants::get_message)
+                .post(api::assistants::update_message)
+                .delete(api::assistants::delete_message),
+        )
+        .route(
+            "/v1/threads/:id/runs",
+            post(api::assistants::create_run).get(api::assistants::list_runs),
+        )
+        .route(
+            "/v1/threads/:id/runs/:run_id",
+            get(api::assistants::get_run_route).post(api::assistants::update_run),
+        )
+        .route(
+            "/v1/threads/:id/runs/:run_id/cancel",
+            post(api::assistants::cancel_run),
+        )
+        .route(
+            "/v1/threads/:id/runs/:run_id/submit_tool_outputs",
+            post(api::assistants::submit_tool_outputs),
+        )
+        .route(
+            "/v1/threads/:id/runs/:run_id/steps",
+            get(api::assistants::list_steps),
+        )
+        .route(
+            "/v1/threads/:id/runs/:run_id/steps/:step_id",
+            get(api::assistants::get_step),
+        )
+        .route("/v1/moderations", post(api::moderations::moderations))
+        .route("/v1/decisions", post(api::decisions::create))
+        .route(
+            "/v1/videos",
+            post(api::videos::create).get(api::videos::list),
+        )
+        .route(
+            "/v1/videos/:id",
+            get(api::videos::retrieve).delete(api::videos::delete),
+        )
+        .route("/v1/videos/:id/content", get(api::videos::content))
+        .route("/v1/videos/edits", post(api::videos::edits))
+        .route("/v1/videos/extensions", post(api::videos::extensions))
+        .route("/v1/videos/characters", post(api::videos::create_character))
+        .route("/v1/videos/characters/:id", get(api::videos::get_character))
+        .route("/v1/videos/:id/remix", post(api::videos::remix))
+        .route(
+            "/v1/webhook_endpoints",
+            post(api::webhooks::create).get(api::webhooks::list),
+        )
+        .route(
+            "/v1/webhook_endpoints/:id",
+            get(api::webhooks::get)
+                .post(api::webhooks::update)
+                .delete(api::webhooks::delete),
+        )
+        .route(
+            "/v1/webhook_endpoints/:id/rotate_secret",
+            post(api::webhooks::rotate_secret),
+        )
+        .route("/v1/webhook_endpoints/:id/test", post(api::webhooks::test))
+        .route("/v1/webhook_event_types", get(api::webhooks::event_types))
+        .route("/v1/chatkit/sessions", post(api::chatkit::create_session))
+        .route(
+            "/v1/chatkit/sessions/:id/cancel",
+            post(api::chatkit::cancel_session),
+        )
+        .route("/v1/chatkit/threads", get(api::chatkit::list_threads))
+        .route(
+            "/v1/chatkit/threads/:id",
+            get(api::chatkit::get_thread).delete(api::chatkit::delete_thread),
+        )
+        .route(
+            "/v1/chatkit/threads/:id/items",
+            get(api::chatkit::list_items),
+        )
+        .route(
+            "/v1/fine_tuning/alpha/graders/run",
+            post(api::evals::graders_run),
+        )
+        .route(
+            "/v1/fine_tuning/alpha/graders/validate",
+            post(api::evals::graders_validate),
+        )
+        .route(
+            "/v1/evals",
+            post(api::evals::create_eval).get(api::evals::list_evals),
+        )
+        .route(
+            "/v1/evals/:id",
+            get(api::evals::get_eval_route)
+                .post(api::evals::update_eval)
+                .delete(api::evals::delete_eval),
+        )
+        .route(
+            "/v1/evals/:id/runs",
+            post(api::evals::create_run).get(api::evals::list_runs),
+        )
+        .route(
+            "/v1/evals/:id/runs/:run",
+            get(api::evals::get_run_route).delete(api::evals::delete_run),
+        )
+        .route(
+            "/v1/evals/:id/runs/:run/cancel",
+            post(api::evals::cancel_run),
+        )
+        .route(
+            "/v1/evals/:id/runs/:run/output_items",
+            get(api::evals::list_output_items),
+        )
+        .route(
+            "/v1/evals/:id/runs/:run/output_items/:item",
+            get(api::evals::get_output_item),
+        )
         .route("/v1/models", get(list_models))
         .route("/v1/models/:model_id", get(get_model))
         // A base URL configured as `.../v1` by a client that appends `/v1`
@@ -112,6 +307,87 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/v1/models", get(list_models))
         .route("/v1/v1/models/:model_id", get(get_model))
         .route("/v1/tokenizers", get(list_tokenizers))
+        // The other OpenAI endpoints: each request is a task the seat
+        // answers (see `api/task.rs`).
+        .route("/v1/images/generations", post(api::images::generations))
+        .route("/v1/v1/images/generations", post(api::images::generations))
+        .route(
+            "/v1/images/edits",
+            post(api::images::edits).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/v1/images/edits",
+            post(api::images::edits).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route("/v1/completions", post(api::completions::completions))
+        .route("/v1/v1/completions", post(api::completions::completions))
+        .route("/v1/audio/speech", post(api::audio::speech))
+        .route("/v1/v1/audio/speech", post(api::audio::speech))
+        .route(
+            "/v1/audio/transcriptions",
+            post(api::audio::transcriptions).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/v1/audio/transcriptions",
+            post(api::audio::transcriptions).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/audio/translations",
+            post(api::audio::translations).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/v1/audio/translations",
+            post(api::audio::translations).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/audio/voices",
+            post(api::library::create_voice)
+                .get(api::library::list_voices)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/audio/voices/:id",
+            get(api::library::get_voice).delete(api::library::delete_voice),
+        )
+        .route(
+            "/v1/audio/voice_consents",
+            post(api::library::create_consent)
+                .get(api::library::list_consents)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/audio/voice_consents/:id",
+            get(api::library::get_consent)
+                .post(api::library::update_consent)
+                .delete(api::library::delete_consent),
+        )
+        .route(
+            "/v1/skills",
+            post(api::library::create_skill)
+                .get(api::library::list_skills)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/skills/:id",
+            get(api::library::retrieve_skill)
+                .post(api::library::update_skill)
+                .delete(api::library::delete_skill),
+        )
+        .route("/v1/skills/:id/content", get(api::library::skill_content))
+        .route(
+            "/v1/skills/:id/versions",
+            post(api::library::create_version)
+                .get(api::library::list_versions)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/skills/:id/versions/:version",
+            get(api::library::get_version).delete(api::library::delete_version),
+        )
+        .route(
+            "/v1/skills/:id/versions/:version/content",
+            get(api::library::version_content),
+        )
         // Companion to async mode: poll for a human's reply without
         // holding the original request open.
         // axum 0.7 path-parameter syntax is `:name` — `{name}` would be
@@ -146,7 +422,90 @@ pub fn build_router(state: AppState) -> Router {
             delete(api::history::delete_conversation_permanent),
         )
         // The seeded agent name is rarely what the human calls it.
-        .route("/v1/agents/:agent_id", patch(api::history::rename_agent))
+        // The Agents API (beta): agents, sessions with turns, items and
+        // an event stream. PATCH on /v1/agents/:agent_id stays with
+        // history::rename_agent (seat-agent identities in history).
+        .route(
+            "/v1/agents",
+            post(api::agents::create_agent).get(api::agents::list_agents),
+        )
+        .route(
+            "/v1/agents/:agent_id",
+            get(api::agents::get_agent)
+                .post(api::agents::update_agent)
+                .delete(api::agents::delete_agent)
+                .patch(api::history::rename_agent),
+        )
+        .route(
+            "/v1/agents/sessions",
+            post(api::agents::create_session).get(api::agents::list_sessions),
+        )
+        .route(
+            "/v1/agents/sessions/:id",
+            get(api::agents::get_session)
+                .post(api::agents::update_session)
+                .delete(api::agents::delete_session),
+        )
+        .route(
+            "/v1/agents/sessions/:id/events",
+            post(api::agents::create_events).get(api::agents::stream_events),
+        )
+        .route(
+            "/v1/agents/sessions/:id/items",
+            get(api::agents::list_items),
+        )
+        .route(
+            "/v1/agents/sessions/:id/turns",
+            get(api::agents::list_turns),
+        )
+        .route(
+            "/v1/agents/sessions/:id/turns/:turn",
+            get(api::agents::get_turn),
+        )
+        .route(
+            "/v1/agents/sessions/:id/turns/:turn/items",
+            get(api::agents::list_turn_items),
+        )
+        .route(
+            "/v1/agents/sessions/:id/traces",
+            get(api::agents::empty_list),
+        )
+        .route(
+            "/v1/agents/sessions/:id/artifacts",
+            get(api::agents::empty_list),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents",
+            get(api::agents::empty_list),
+        )
+        .route(
+            "/v1/agents/sessions/:id/artifacts/:art",
+            get(api::agents::none_found).delete(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/artifacts/:art/content",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub/items",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub/turns",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub/turns/:turn",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub/turns/:turn/items",
+            get(api::agents::none_found),
+        )
         // Agent Seat: the human seat over plain HTTP, for agents that
         // cannot hold a WebSocket (see `seat.rs`).
         .route("/v1/seat/inbox", get(seat::inbox))
@@ -264,6 +623,8 @@ pub fn build_router(state: AppState) -> Router {
         // Without it the container is reported unhealthy forever even
         // though the server is serving traffic fine.
         .route("/healthz", get(health))
+        // ChatKit's protocol takes a session's client secret as well as a key.
+        .route("/v1/chatkit", post(api::chatkit::protocol))
         .route("/ws", get(ws::ws_handler));
 
     // `/v1/mock/*` impersonates the human — forgeable replies, tool calls,

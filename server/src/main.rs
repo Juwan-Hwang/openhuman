@@ -107,6 +107,14 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Tasks the last process left queued or running will never be answered
+    // now; fail them honestly before taking new work. (A no-op on a fresh
+    // or memory-backed boot.)
+    let failed = state.task.fail_in_flight_tasks("server restarted").await;
+    if failed > 0 {
+        tracing::warn!("failed {failed} task(s) left in flight by the previous run");
+    }
+
     let app = build_router(state);
 
     let host = std::env::var("OPENHUMAN_HOST").unwrap_or_else(|_| "0.0.0.0".into());

@@ -5,10 +5,27 @@
 //! Phase 10: `GET /v1/replies/{invocation_id}` (async reply polling)
 
 pub mod adapters;
+pub mod agents;
+pub mod assistants;
+pub mod audio;
+pub mod batches;
+pub mod chatkit;
+pub mod completions;
+pub mod decisions;
+pub mod evals;
 pub mod files;
 pub mod history;
+pub mod images;
+pub mod library;
 pub mod mock;
+pub mod moderations;
 pub mod openai;
 pub mod replies;
 pub mod room_ingress;
 pub mod rooms;
+pub mod stored;
+pub mod task;
+pub mod uploads;
+pub mod vector_stores;
+pub mod videos;
+pub mod webhooks;

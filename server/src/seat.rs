@@ -378,7 +378,12 @@ fn render(cursor: u64, ev: &Value, full: bool) -> Value {
             if let Some(req) = data.get("request") {
                 out["client"] = req.get("client").cloned().unwrap_or(Value::Null);
                 let kind = req.get("kind").cloned().unwrap_or(Value::Null);
-                if kind.as_str() == Some("auxiliary") {
+                if matches!(kind.as_str(), Some("auxiliary") | Some("api")) {
+                    for k in ["api", "wants_files", "session"] {
+                        if let Some(v) = req.get(k).filter(|v| !v.is_null()) {
+                            out[k] = v.clone();
+                        }
+                    }
                     for k in [
                         "expected_format",
                         "system_prompt_head",
@@ -825,6 +830,7 @@ pub async fn send(
 #[derive(Debug, Deserialize)]
 pub struct ReplyBody {
     conversation_id: String,
+    #[serde(default)]
     text: String,
     #[serde(default)]
     invocation_id: Option<String>,
@@ -837,6 +843,19 @@ pub struct ReplyBody {
     /// `reasoning_content`).
     #[serde(default)]
     reasoning: Option<String>,
+    /// Files that answer an API task (the picture an image request asked
+    /// for, the audio of a speech request): base64 bytes with a name.
+    #[serde(default)]
+    attachments: Vec<Attachment>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Attachment {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    mime: Option<String>,
+    data: String,
 }
 
 fn yes() -> bool {
@@ -854,6 +873,82 @@ pub async fn reply(
     if let Some(id) = &b.client_msg_id {
         if !seat.first_time(id).await {
             return Json(json!({ "ok": true, "duplicate": true })).into_response();
+        }
+    }
+    let mut b = b;
+    if !b.attachments.is_empty() {
+        match crate::session::task_api(&b.conversation_id) {
+            None => return err(
+                StatusCode::BAD_REQUEST,
+                "not_a_task",
+                "attachments answer API tasks (images, audio...); a chat conversation takes text",
+            ),
+            Some((api, false)) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "text_task",
+                    &format!("{api} answers with text, not files"),
+                )
+            }
+            Some(_) => {}
+        }
+        let mut ids = Vec::new();
+        for (i, a) in b.attachments.iter().enumerate() {
+            let data = a.data.trim();
+            let data = data
+                .strip_prefix("data:")
+                .and_then(|r| r.split_once(','))
+                .map(|(_, d)| d)
+                .unwrap_or(data);
+            let Some(bytes) = crate::openai_compat::b64_decode(data).filter(|b| !b.is_empty())
+            else {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "bad_attachment",
+                    &format!("attachment {} is not base64", i + 1),
+                );
+            };
+            let filename = a
+                .name
+                .clone()
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| format!("output-{}", i + 1));
+            let mime = a
+                .mime
+                .clone()
+                .filter(|m| !m.trim().is_empty())
+                .unwrap_or_else(|| {
+                    crate::api::files::sniff_mime(&bytes)
+                        .unwrap_or(crate::openai_compat::guess_mime(&filename))
+                        .to_string()
+                });
+            ids.push(
+                crate::api::files::put(
+                    &app,
+                    crate::api::files::StoredFile {
+                        owner: principal.agent.id.clone(),
+                        filename,
+                        mime,
+                        purpose: crate::api::files::OUTPUT_PURPOSE.to_string(),
+                        bytes,
+                        created_at: chrono::Utc::now().timestamp(),
+                    },
+                )
+                .await,
+            );
+        }
+        let mut text = b.text.trim().to_string();
+        for id in ids {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&id);
+        }
+        b.text = text;
+    }
+    if let Some((api, spec)) = crate::session::task_spec(&b.conversation_id) {
+        if let Err(m) = crate::api::task::check_reply(&api, &spec, &b.text) {
+            return err(StatusCode::BAD_REQUEST, "bad_answer", &m);
         }
     }
     let had_waiter = app.reply.has_waiter(&b.conversation_id).await;
@@ -883,10 +978,14 @@ pub async fn reply(
         )
         .await;
     }
+    // A task is one request: once its caller stopped waiting there is no
+    // next request to carry the answer.
+    let abandoned = !had_waiter && crate::session::task_api(&b.conversation_id).is_some();
     Json(json!({
         "ok": true,
         "live": had_waiter,
         "turn_ended": b.end_turn && had_waiter,
+        "abandoned": abandoned,
     }))
     .into_response()
 }
