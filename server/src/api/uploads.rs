@@ -72,6 +72,12 @@ pub async fn create(principal: AuthPrincipal, Json(b): Json<Value>) -> Response 
     let (Some(filename), Some(purpose)) = (s("filename"), s("purpose")) else {
         return err(StatusCode::BAD_REQUEST, "filename and purpose are required");
     };
+    // The reserved purpose is checked here too: complete() lands the
+    // upload through files::put, where it would become anonymously
+    // downloadable.
+    if let Err(e) = crate::api::files::check_caller_purpose(&purpose) {
+        return err(StatusCode::BAD_REQUEST, &e);
+    }
     let Some(bytes) = b.get("bytes").and_then(|v| v.as_u64()) else {
         return err(StatusCode::BAD_REQUEST, "bytes is required");
     };

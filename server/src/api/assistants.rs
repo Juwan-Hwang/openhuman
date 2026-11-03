@@ -172,7 +172,9 @@ pub async fn update_assistant(
         .update_object(&id, &|s| {
             if let Some(o) = b.as_object() {
                 for (k, v) in o {
-                    s.obj[k] = v.clone();
+                    if !crate::api::stored::IMMUTABLE_KEYS.contains(&k.as_str()) {
+                        s.obj[k] = v.clone();
+                    }
                 }
             }
         })

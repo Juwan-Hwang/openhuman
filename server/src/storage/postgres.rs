@@ -338,6 +338,16 @@ impl IdentityRepository for PostgresStore {
         .await;
     }
 
+    async fn api_key_scope(&self, id: &str) -> Option<crate::model::identity::KeyScope> {
+        let row = sqlx::query("SELECT scope FROM api_keys WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&*self.pool)
+            .await
+            .ok()??;
+        let scope: String = row.try_get("scope").ok()?;
+        Some(crate::model::identity::KeyScope::parse(&scope))
+    }
+
     async fn get_human(&self, id: &str) -> Option<HumanIdentity> {
         self.get_human_inner(id).await
     }

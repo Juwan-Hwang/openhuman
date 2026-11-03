@@ -56,11 +56,34 @@ fn not_found(kind: &str, id: &str) -> Response {
 
 // ── sessions ──
 
+/// What a minted client secret acts with. Only identity ids are kept,
+/// never the API key that minted it.
 struct Secret {
-    principal: AuthPrincipal,
+    agent_id: String,
+    human_id: String,
+    api_key_id: String,
+    scope: crate::model::identity::KeyScope,
     session: String,
     user: String,
     expires_at: i64,
+    /// `max_requests_per_1_minute`, and the times of recent requests.
+    rpm: usize,
+    recent: std::collections::VecDeque<i64>,
+}
+
+impl Secret {
+    /// Count a request at `t` against the per-minute limit; false when the
+    /// last minute already holds `rpm` requests.
+    fn admit(&mut self, t_ms: i64) -> bool {
+        while self.recent.front().is_some_and(|x| *x <= t_ms - 60_000) {
+            self.recent.pop_front();
+        }
+        if self.recent.len() >= self.rpm {
+            return false;
+        }
+        self.recent.push_back(t_ms);
+        true
+    }
 }
 
 fn secrets() -> &'static Mutex<HashMap<String, Secret>> {
@@ -87,7 +110,8 @@ pub async fn create_session(
     let rpm = b
         .pointer("/rate_limits/max_requests_per_1_minute")
         .and_then(|s| s.as_i64())
-        .unwrap_or(10);
+        .unwrap_or(10)
+        .max(1);
     let cfg = &b["chatkit_configuration"];
     let flag = |p: &str, d: bool| cfg.pointer(p).and_then(|v| v.as_bool()).unwrap_or(d);
     let id = uid("cksess");
@@ -115,10 +139,15 @@ pub async fn create_session(
         g.insert(
             secret.clone(),
             Secret {
-                principal: principal.clone(),
+                agent_id: principal.agent.id.clone(),
+                human_id: principal.human.id.clone(),
+                api_key_id: principal.api_key.id.clone(),
+                scope: principal.api_key.scope,
                 session: id.clone(),
                 user: user.to_string(),
                 expires_at,
+                rpm: rpm as usize,
+                recent: std::collections::VecDeque::new(),
             },
         );
     }
@@ -301,15 +330,51 @@ async fn caller(app: &AppState, headers: &HeaderMap) -> Result<(AuthPrincipal, S
         ));
     };
     if key.starts_with("ck_") {
-        let g = secrets().lock().unwrap();
-        return match g.get(&key).filter(|s| s.expires_at > now()) {
-            Some(s) => {
-                let _ = &s.session;
-                Ok((s.principal.clone(), s.user.clone()))
+        let (agent_id, human_id, api_key_id, _minted_scope, user) = {
+            let mut g = secrets().lock().unwrap();
+            let Some(s) = g.get_mut(&key).filter(|s| s.expires_at > now()) else {
+                return Err(err(
+                    StatusCode::UNAUTHORIZED,
+                    "Expired or unknown client secret",
+                ));
+            };
+            let _ = &s.session;
+            if !s.admit(chrono::Utc::now().timestamp_millis()) {
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({"error": {"message": format!("Rate limit reached for this ChatKit session: {} requests per minute.", s.rpm),
+                        "type": "rate_limit_exceeded", "code": "rate_limit_exceeded", "param": null}})),
+                )
+                    .into_response());
             }
+            (
+                s.agent_id.clone(),
+                s.human_id.clone(),
+                s.api_key_id.clone(),
+                s.scope,
+                s.user.clone(),
+            )
+        };
+        // The key that minted the secret must still be live: revoking or
+        // deleting it ends its secrets now, not at their expiry. Its scope
+        // as it stands today is the one the secret acts with.
+        let live = app
+            .identity
+            .api_key_scope(&api_key_id)
+            .await
+            .filter(|s| s.may_call());
+        let Some(scope) = live else {
+            secrets().lock().unwrap().remove(&key);
+            return Err(err(
+                StatusCode::UNAUTHORIZED,
+                "The key behind this client secret was revoked",
+            ));
+        };
+        return match principal_of(app, &agent_id, &human_id, &api_key_id, scope).await {
+            Some(p) => Ok((p, user)),
             None => Err(err(
                 StatusCode::UNAUTHORIZED,
-                "Expired or unknown client secret",
+                "The key behind this client secret no longer exists",
             )),
         };
     }
@@ -317,6 +382,33 @@ async fn caller(app: &AppState, headers: &HeaderMap) -> Result<(AuthPrincipal, S
         Some(p) if p.api_key.scope.may_call() => Ok((p, String::new())),
         _ => Err(err(StatusCode::UNAUTHORIZED, "Invalid API key")),
     }
+}
+
+/// The principal a client secret acts for, rebuilt from its ids. The raw
+/// key is not kept, so it is not carried either (it is transient on every
+/// principal and nothing past authentication reads it).
+async fn principal_of(
+    app: &AppState,
+    agent_id: &str,
+    human_id: &str,
+    api_key_id: &str,
+    scope: crate::model::identity::KeyScope,
+) -> Option<AuthPrincipal> {
+    let agent = app.identity.get_agent(agent_id).await?;
+    let human = app.identity.get_human(human_id).await?;
+    Some(AuthPrincipal {
+        agent,
+        human,
+        api_key: crate::model::identity::ApiKey {
+            id: api_key_id.to_string(),
+            key: String::new(),
+            key_hash: None,
+            agent_id: agent_id.to_string(),
+            human_id: human_id.to_string(),
+            scope,
+            room_id: None,
+        },
+    })
 }
 
 /// A thread in the protocol's shape, with a page of its items.

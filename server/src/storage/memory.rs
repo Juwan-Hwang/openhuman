@@ -220,9 +220,19 @@ impl IdentityRepository for MemoryStore {
         data.api_keys.insert(key_hash, persisted);
     }
 
+    async fn api_key_scope(&self, id: &str) -> Option<crate::model::identity::KeyScope> {
+        let data = self.data.lock().await;
+        data.api_keys.values().find(|k| k.id == id).map(|k| k.scope)
+    }
+
     async fn get_human(&self, id: &str) -> Option<HumanIdentity> {
         let data = self.data.lock().await;
         data.humans.get(id).cloned()
+    }
+
+    async fn get_agent(&self, id: &str) -> Option<AgentIdentity> {
+        let data = self.data.lock().await;
+        data.agents.get(id).cloned()
     }
 
     async fn set_human_status(&self, id: &str, status: HumanStatus) -> bool {

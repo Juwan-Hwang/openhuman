@@ -252,7 +252,6 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/chatkit/threads/:id/items",
             get(api::chatkit::list_items),
         )
-        .route("/v1/chatkit", post(api::chatkit::protocol))
         .route(
             "/v1/fine_tuning/alpha/graders/run",
             post(api::evals::graders_run),
@@ -624,6 +623,8 @@ pub fn build_router(state: AppState) -> Router {
         // Without it the container is reported unhealthy forever even
         // though the server is serving traffic fine.
         .route("/healthz", get(health))
+        // ChatKit's protocol takes a session's client secret as well as a key.
+        .route("/v1/chatkit", post(api::chatkit::protocol))
         .route("/ws", get(ws::ws_handler));
 
     // `/v1/mock/*` impersonates the human — forgeable replies, tool calls,

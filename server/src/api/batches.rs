@@ -25,6 +25,73 @@ const ENDPOINTS: &[&str] = &["/v1/chat/completions", "/v1/responses", "/v1/compl
 /// How many lines of a batch run at once.
 const PARALLEL: usize = 4;
 
+/// The completion window: a batch expires this long after it is created.
+const WINDOW_SECS: i64 = 86_400;
+
+/// Most request lines one batch may hold (`OPENHUMAN_BATCH_MAX_LINES`,
+/// default 50 000 as at OpenAI).
+fn max_lines() -> usize {
+    std::env::var("OPENHUMAN_BATCH_MAX_LINES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(50_000)
+}
+
+/// What became of one line.
+#[derive(Debug, Clone, PartialEq)]
+enum Outcome {
+    Done(u16, Value),
+    /// Not answered before `expires_at`.
+    Expired,
+}
+
+/// Run every line through `f`, `PARALLEL` at a time, in order; a line
+/// still unanswered at `deadline` (or not started by then) is `Expired`.
+async fn run_lines<F, Fut>(
+    lines: Vec<Value>,
+    deadline: tokio::time::Instant,
+    f: F,
+) -> Vec<(Value, Outcome)>
+where
+    F: Fn(Value) -> Fut,
+    Fut: std::future::Future<Output = (u16, Value)>,
+{
+    use futures::StreamExt;
+    futures::stream::iter(lines)
+        .map(|line| {
+            let fut = f(line.clone());
+            async move {
+                match tokio::time::timeout_at(deadline, fut).await {
+                    Ok((status, v)) => (line, Outcome::Done(status, v)),
+                    Err(_) => (line, Outcome::Expired),
+                }
+            }
+        })
+        .buffered(PARALLEL)
+        .collect()
+        .await
+}
+
+/// The output and error file lines for the outcomes.
+fn result_lines(results: Vec<(Value, Outcome)>) -> (Vec<Value>, Vec<Value>) {
+    let (mut out, mut errs) = (Vec::new(), Vec::new());
+    for (line, outcome) in results {
+        let custom_id = line["custom_id"].clone();
+        let rid = format!("batch_req_{}", uuid::Uuid::now_v7().simple());
+        match outcome {
+            Outcome::Done(status, v) if status < 400 => out.push(json!({"id": rid, "custom_id": custom_id,
+                "response": {"status_code": status, "request_id": rid, "body": v}, "error": null})),
+            Outcome::Done(status, v) => errs.push(json!({"id": rid, "custom_id": custom_id,
+                "response": {"status_code": status, "request_id": rid, "body": v},
+                "error": {"code": "request_failed", "message": v.pointer("/error/message").cloned().unwrap_or(Value::Null)}})),
+            Outcome::Expired => errs.push(json!({"id": rid, "custom_id": custom_id, "response": null,
+                "error": {"code": "batch_expired", "message": "This request could not be executed before the completion window expired."}})),
+        }
+    }
+    (out, errs)
+}
+
 /// Abort handles for the batches this process is running.
 fn running() -> &'static Mutex<HashMap<String, tokio::task::AbortHandle>> {
     static R: OnceLock<Mutex<HashMap<String, tokio::task::AbortHandle>>> = OnceLock::new();
@@ -154,6 +221,14 @@ pub async fn create(
         );
     };
     let text = String::from_utf8_lossy(&file.bytes).to_string();
+    let limit = max_lines();
+    let count = text.lines().filter(|l| !l.trim().is_empty()).count();
+    if count > limit {
+        return err(
+            StatusCode::BAD_REQUEST,
+            &format!("the input file has {count} requests; a batch holds at most {limit}"),
+        );
+    }
     let mut lines = Vec::new();
     for (i, l) in text
         .lines()
@@ -200,7 +275,7 @@ pub async fn create(
         "error_file_id": null,
         "created_at": now,
         "in_progress_at": now,
-        "expires_at": now + 86400,
+        "expires_at": now + WINDOW_SECS,
         "finalizing_at": null,
         "completed_at": null,
         "failed_at": null,
@@ -227,46 +302,36 @@ pub async fn create(
         .await;
     let bid = id.clone();
     let runner_app = app.clone();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(WINDOW_SECS as u64);
     let task = tokio::spawn(async move {
-        use futures::StreamExt;
-        let results: Vec<(Value, u16, Value)> = futures::stream::iter(lines)
-            .map(|line| {
-                let (app, principal, headers, bid) = (
-                    runner_app.clone(),
-                    principal.clone(),
-                    headers.clone(),
-                    bid.clone(),
-                );
-                async move {
-                    // Each line its own conversation, even when two lines
-                    // start with the same words.
-                    let mut headers = headers;
-                    let key = format!("batch:{bid}:{}", line["custom_id"].as_str().unwrap_or(""));
-                    if let Ok(v) = axum::http::HeaderValue::from_str(&key) {
-                        headers.insert("x-openhuman-session-id", v);
-                    }
-                    let url = line["url"].as_str().unwrap_or("").to_string();
-                    let body = line.get("body").cloned().unwrap_or(json!({}));
-                    let (status, v) = dispatch(app, principal, headers, &url, body).await;
-                    (line, status, v)
+        let results = run_lines(lines, deadline, |line| {
+            let (app, principal, headers, bid) = (
+                runner_app.clone(),
+                principal.clone(),
+                headers.clone(),
+                bid.clone(),
+            );
+            async move {
+                // Each line its own conversation, even when two lines
+                // start with the same words.
+                let mut headers = headers;
+                let key = format!("batch:{bid}:{}", line["custom_id"].as_str().unwrap_or(""));
+                if let Ok(v) = axum::http::HeaderValue::from_str(&key) {
+                    headers.insert("x-openhuman-session-id", v);
                 }
-            })
-            .buffered(PARALLEL)
-            .collect()
-            .await;
-        let (mut out, mut errs) = (Vec::new(), Vec::new());
-        for (line, status, v) in results {
-            let custom_id = line["custom_id"].clone();
-            let rid = format!("batch_req_{}", uuid::Uuid::now_v7().simple());
-            if status < 400 {
-                out.push(json!({"id": rid, "custom_id": custom_id,
-                    "response": {"status_code": status, "request_id": rid, "body": v}, "error": null}));
-            } else {
-                errs.push(json!({"id": rid, "custom_id": custom_id,
-                    "response": {"status_code": status, "request_id": rid, "body": v},
-                    "error": {"code": "request_failed", "message": v.pointer("/error/message").cloned().unwrap_or(Value::Null)}}));
+                let url = line["url"].as_str().unwrap_or("").to_string();
+                let body = line.get("body").cloned().unwrap_or(json!({}));
+                dispatch(app, principal, headers, &url, body).await
             }
-        }
+        })
+        .await;
+        // Past expires_at: what finished is kept, the rest is reported as
+        // batch_expired in the error file and the batch ends `expired`.
+        let expired = results
+            .iter()
+            .filter(|(_, o)| *o == Outcome::Expired)
+            .count();
+        let (out, errs) = result_lines(results);
         let of = jsonl_file(
             &app,
             &owner,
@@ -291,7 +356,8 @@ pub async fn create(
                     "output_file_id": of,
                     "error_file_id": ef,
                     "finalizing_at": now,
-                    "completed_at": now,
+                    "completed_at": if expired > 0 { Value::Null } else { json!(now) },
+                    "expired_at": if expired > 0 { json!(now) } else { Value::Null },
                     "request_counts": {
                         "total": out.len() + errs.len(),
                         "completed": out.len(),
@@ -320,9 +386,13 @@ fn batch_obj(t: &TaskRecord) -> Value {
                     "error_file_id",
                     "finalizing_at",
                     "completed_at",
+                    "expired_at",
                     "request_counts",
                 ] {
                     o[k] = a.get(k).cloned().unwrap_or(Value::Null);
+                }
+                if a["expired_at"].is_number() {
+                    o["status"] = json!("expired");
                 }
             }
         }

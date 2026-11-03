@@ -270,7 +270,7 @@ Client → server: `reply.send` (carries an optional `invocation_id` to complete
 
 The `tool.invoke` event is what produces a real `tool_calls` array on the OpenAI side — the `tool_id` becomes the function name and `invocation_id` becomes the OpenAI call id, so the client can match the `role: tool` result back to the original call.
 
-The full wire specification is in `docs/protocol.md` and `protocol/`.
+The full wire specification is in `docs/protocol.md` and `protocol/`. The server's environment settings are in `docs/server-env.md`, and the places its OpenAI-compatible API knowingly departs from OpenAI are in `docs/openai-differences.md`.
 
 ---
 

@@ -30,6 +30,20 @@ pub struct StoredFile {
 /// Only these are served without a key, at their unguessable id.
 pub const OUTPUT_PURPOSE: &str = "output";
 
+/// `output` is reserved for files the seat produces: those are served on
+/// the anonymous download route, so a caller-chosen `output` purpose
+/// would hand out public URLs for caller-uploaded content. Every
+/// caller-facing path that takes a purpose (file upload, uploads
+/// create/complete) rejects it here.
+pub fn check_caller_purpose(purpose: &str) -> Result<(), String> {
+    if purpose == OUTPUT_PURPOSE {
+        return Err(format!(
+            "purpose \"{OUTPUT_PURPOSE}\" is reserved for files the seat produces"
+        ));
+    }
+    Ok(())
+}
+
 // ── Sync read cache ──
 //
 // Files are immutable once stored, so a process-local cache can serve the
@@ -269,10 +283,10 @@ pub async fn upload(
     // `output` marks seat-made files served on the anonymous download route;
     // letting a caller set it would hand out public URLs for arbitrary
     // uploaded content. Only server-side `put` callers may use it.
-    if purpose == OUTPUT_PURPOSE {
+    if let Err(m) = check_caller_purpose(&purpose) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": {"message": format!("purpose \"{OUTPUT_PURPOSE}\" is reserved for files the seat produces"), "type": "invalid_request_error"}})),
+            Json(json!({"error": {"message": m, "type": "invalid_request_error"}})),
         )
             .into_response();
     }

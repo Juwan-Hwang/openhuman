@@ -410,6 +410,7 @@ async fn transcribe(
         "audio.transcriptions"
     };
     let lang = language.clone();
+    let fmt = format.clone();
     let finish: task::Finish = Box::new(move |answer| {
         let a = match answer {
             Ok(a) => a,
@@ -465,7 +466,7 @@ async fn transcribe(
             ));
             return Finished::Sse(frames);
         }
-        match format.as_str() {
+        match fmt.as_str() {
             "text" => Finished::Raw(
                 StatusCode::OK,
                 "text/plain; charset=utf-8".into(),
@@ -533,6 +534,17 @@ async fn transcribe(
     } else {
         "Transcribe the attached audio.".to_string()
     };
+    // Slow-path padding follows the response format: json formats take
+    // the padded hold (padding is valid leading whitespace), raw formats
+    // (text/srt/vtt) skip it so padding cannot corrupt their bytes.
+    let delivery = if stream {
+        Delivery::Sse
+    } else {
+        match format.as_str() {
+            "text" | "srt" | "vtt" => Delivery::JsonRaw,
+            _ => Delivery::Json,
+        }
+    };
     task::run(
         app,
         principal,
@@ -544,11 +556,7 @@ async fn transcribe(
         what,
         false,
         Value::Null,
-        if stream {
-            Delivery::Sse
-        } else {
-            Delivery::JsonRaw
-        },
+        delivery,
         finish,
     )
     .await

@@ -139,9 +139,13 @@ fn str_map(v: Option<&Value>) -> Value {
     }
 }
 
-/// Apply the keys of `b` that are in `keys` onto `obj`.
+/// Apply the keys of `b` that are in `keys` onto `obj`; an object's own
+/// `id`, `object` and `created_at` are never taken from a body.
 fn patch(obj: &mut Value, b: &Value, keys: &[&str]) {
     for k in keys {
+        if crate::api::stored::IMMUTABLE_KEYS.contains(k) {
+            continue;
+        }
         if let Some(v) = b.get(*k) {
             obj[*k] = v.clone();
         }

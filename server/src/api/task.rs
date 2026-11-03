@@ -486,8 +486,7 @@ pub async fn fetch(o: &Output) -> Option<(String, Vec<u8>)> {
             if !crate::api::webhooks::valid_url(u) {
                 return None;
             }
-            let r = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
+            let r = crate::api::webhooks::egress_client()
                 .build()
                 .ok()?
                 .get(u)
@@ -565,7 +564,26 @@ pub fn publish(
 
 /// This server as the caller reached it.
 pub fn base_url(headers: &HeaderMap) -> String {
-    if let Ok(u) = std::env::var("SERVER_PUBLIC_URL") {
+    let env = |k: &str| std::env::var(k).ok();
+    base_url_from(
+        headers,
+        env("SERVER_PUBLIC_URL")
+            .or_else(|| env("OPENHUMAN_PUBLIC_URL"))
+            .as_deref(),
+        env("OPENHUMAN_TRUST_PROXY").is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes")),
+    )
+}
+
+/// The public base URL links are published under.
+///
+/// A configured address wins (`SERVER_PUBLIC_URL`, else
+/// `OPENHUMAN_PUBLIC_URL`, the named-tunnel address). Without one the
+/// request's own `Host` is used, `https` unless it is a loopback host.
+/// `X-Forwarded-Host` and `X-Forwarded-Proto` are client-settable through
+/// most proxies, so they count only when `OPENHUMAN_TRUST_PROXY` says the
+/// proxy in front sets them itself.
+pub fn base_url_from(headers: &HeaderMap, configured: Option<&str>, trust_proxy: bool) -> String {
+    if let Some(u) = configured {
         let u = u.trim().trim_end_matches('/');
         if !u.is_empty() {
             return u.to_string();
@@ -578,13 +596,15 @@ pub fn base_url(headers: &HeaderMap) -> String {
             .map(|s| s.split(',').next().unwrap_or("").trim().to_string())
             .filter(|s| !s.is_empty())
     };
-    let host = h("x-forwarded-host")
+    let forwarded = |n: &str| if trust_proxy { h(n) } else { None };
+    let host = forwarded("x-forwarded-host")
         .or_else(|| h("host"))
         .unwrap_or_else(|| "localhost".into());
     let local =
         host.starts_with("localhost") || host.starts_with("127.") || host.starts_with("[::1]");
-    let proto =
-        h("x-forwarded-proto").unwrap_or_else(|| if local { "http" } else { "https" }.into());
+    let proto = forwarded("x-forwarded-proto")
+        .filter(|p| p == "http" || p == "https")
+        .unwrap_or_else(|| if local { "http" } else { "https" }.into());
     format!("{proto}://{host}")
 }
 
