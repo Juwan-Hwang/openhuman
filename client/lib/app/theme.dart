@@ -9,53 +9,10 @@ library;
 
 import 'package:flutter/material.dart';
 
+import 'adaptive.dart';
 import 'tokens.dart';
 
 export 'tokens.dart';
-
-/// Corner radii, in the Aevum scale (`--radius: 0.875rem`).
-///
-/// 14px is the base; the rest are multipliers of it, matching the
-/// `--radius-*` tokens rather than Flutter's 4/8/12 defaults.
-class AppRadius {
-  static const double sm = Rd.sm;
-  static const double md = Rd.md;
-  static const double lg = Rd.lg;
-  static const double xl = Rd.xl;
-  static const double pill = Rd.pill;
-}
-
-/// Motion vocabulary, carried over from Aevum.
-class AppMotion {
-  static const Duration fast = Duration(milliseconds: 160);
-  static const Duration base = Duration(milliseconds: 240);
-  static const Duration slow = Duration(milliseconds: 420);
-
-  /// Decisive, settles late — the Aevum `--ease-expo`.
-  static const Cubic expo = Cubic(0.16, 1, 0.3, 1);
-
-  /// Softer landing for small state changes.
-  static const Cubic softOut = Cubic(0.22, 1, 0.36, 1);
-}
-
-/// The zinc ramp, converted from the Aevum oklch tokens.
-///
-/// These are the Tailwind zinc values the tokens resolve to; keeping
-/// them named here means a colour is never written into a widget.
-class Zinc {
-  // Legacy names kept so older widgets keep compiling; they now resolve
-  // to the warm Darkroom ramp rather than Tailwind zinc.
-  static const Color c50 = Dk.t1;
-  static const Color c100 = Color(0xFFE4E1DA);
-  static const Color c200 = Color(0xFFCFCBC3);
-  static const Color c400 = Dk.t2;
-  static const Color c500 = Dk.t3;
-  static const Color c600 = Dk.t4;
-  static const Color c700 = Dk.line2;
-  static const Color c800 = Dk.p3;
-  static const Color c900 = Dk.p2;
-  static const Color c950 = Dk.bg;
-}
 
 /// The sans face for prose.
 const String _sans = 'Manrope';
@@ -91,6 +48,20 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
     fontFamily: _sans, fontFamilyFallback: _fallback,
     scaffoldBackgroundColor: scheme.surface,
     canvasColor: scheme.surface,
+    // Keyboard focus is an emphasis, so it may borrow the signal.
+    focusColor: Dk.signalSoft,
+    hoverColor: Dk.p2,
+    // One transition on every platform: a short fade with a small rise,
+    // instead of Android's zoom on a phone and nothing on Windows.
+    pageTransitionsTheme: const PageTransitionsTheme(
+      builders: {
+        TargetPlatform.android: FadeForwardsPageTransitionsBuilder(),
+        TargetPlatform.windows: FadeForwardsPageTransitionsBuilder(),
+        TargetPlatform.linux: FadeForwardsPageTransitionsBuilder(),
+        TargetPlatform.macOS: FadeForwardsPageTransitionsBuilder(),
+        TargetPlatform.iOS: FadeForwardsPageTransitionsBuilder(),
+      },
+    ),
     tooltipTheme: TooltipThemeData(
       decoration: BoxDecoration(
         color: Dk.p4,
@@ -198,14 +169,14 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
       surfaceTintColor: Colors.transparent,
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.lg),
+        borderRadius: BorderRadius.circular(Rd.lg),
         side: BorderSide(color: scheme.outlineVariant),
       ),
     ),
 
     listTileTheme: ListTileThemeData(
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(Rd.md),
       ),
       contentPadding: const EdgeInsets.symmetric(horizontal: 12),
       minVerticalPadding: 10,
@@ -226,8 +197,8 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
 
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
-        backgroundColor: isDark ? Zinc.c200 : Zinc.c900,
-        foregroundColor: isDark ? Zinc.c950 : Zinc.c50,
+        backgroundColor: isDark ? Dk.t1Soft : Dk.p2,
+        foregroundColor: isDark ? Dk.bg : Dk.t1,
         overlayColor: overlay,
         elevation: 0,
         minimumSize: const Size(0, 40),
@@ -239,7 +210,7 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
           fontWeight: FontWeight.w500,
         ),
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppRadius.md),
+          borderRadius: BorderRadius.circular(Rd.md),
         ),
       ),
     ),
@@ -257,7 +228,7 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
           fontWeight: FontWeight.w500,
         ),
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppRadius.md),
+          borderRadius: BorderRadius.circular(Rd.md),
         ),
       ),
     ),
@@ -277,7 +248,7 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
         ),
         side: BorderSide(color: scheme.outline),
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppRadius.md),
+          borderRadius: BorderRadius.circular(Rd.md),
         ),
       ),
     ),
@@ -290,14 +261,14 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
         minimumSize: const Size(34, 34),
         padding: const EdgeInsets.all(8),
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppRadius.sm),
+          borderRadius: BorderRadius.circular(Rd.sm),
         ),
       ),
     ),
 
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: isDark ? Zinc.c900 : Zinc.c100,
+      fillColor: isDark ? Dk.p2 : Dk.mineCode,
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       hintStyle: TextStyle(
         fontFamily: _sans,
@@ -308,15 +279,15 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
       // A border you can always see: a bare underline disappears into
       // the surface on a chat screen.
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(Rd.md),
         borderSide: BorderSide(color: scheme.outline),
       ),
       enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(Rd.md),
         borderSide: BorderSide(color: scheme.outline),
       ),
       focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(Rd.md),
         borderSide: BorderSide(color: scheme.onSurface, width: 1.5),
       ),
     ),
@@ -329,7 +300,7 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
       barrierColor: const Color(0xB3050506),
       insetPadding: const EdgeInsets.all(Sp.x8),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.xl),
+        borderRadius: BorderRadius.circular(Rd.xl),
         side: const BorderSide(color: Dk.line2),
       ),
       titleTextStyle: TextStyle(
@@ -357,11 +328,11 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
         fontFamily: _sans,
         fontFamilyFallback: _fallback,
         fontSize: 13,
-        color: isDark ? Zinc.c50 : Zinc.c50,
+        color: isDark ? Dk.t1 : Dk.t1,
       ),
       width: 420,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(Rd.md),
         side: const BorderSide(color: Dk.line2),
       ),
     ),
@@ -373,7 +344,7 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
       surfaceTintColor: Colors.transparent,
       menuPadding: const EdgeInsets.all(4),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(Rd.md),
         side: const BorderSide(color: Dk.line2),
       ),
       textStyle: TextStyle(
@@ -406,7 +377,7 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
     // Aevum's scrollbars: thin, rounded, coloured from the border ramp.
     scrollbarTheme: ScrollbarThemeData(
       thickness: WidgetStateProperty.all(6),
-      radius: const Radius.circular(AppRadius.pill),
+      radius: const Radius.circular(Rd.pill),
       thumbVisibility: WidgetStateProperty.all(false),
       trackVisibility: WidgetStateProperty.all(false),
       crossAxisMargin: 2,
@@ -414,13 +385,15 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
 
     // Selection is inverted rather than tinted, as in Aevum.
     textSelectionTheme: TextSelectionThemeData(
-      selectionColor: (isDark ? Zinc.c50 : Zinc.c950).withValues(alpha: 0.18),
+      selectionColor: (isDark ? Dk.t1 : Dk.bg).withValues(alpha: 0.18),
       cursorColor: Dk.signal,
       selectionHandleColor: Dk.signal,
     ),
 
     splashFactory: NoSplash.splashFactory,
-    visualDensity: VisualDensity.compact,
+    // Dense for a mouse; standard for a finger.
+    visualDensity:
+        Touch.primary ? VisualDensity.standard : VisualDensity.compact,
   );
 }
 

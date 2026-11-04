@@ -573,7 +573,7 @@ Future<void> _askForName(
         maxLength: 64,
         decoration: const InputDecoration(
           labelText: '名称',
-          helperText: '该 agent 的所有对话都会用这个名字',
+          helperText: '这个 AI 的所有对话都会用这个名字',
         ),
         onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
       ),
@@ -687,7 +687,7 @@ class _ListPlaceholder extends StatelessWidget {
           theme: theme,
           icon: Icons.forum_outlined,
           title: '还没有会话',
-          subtitle: '当 agent 发来消息时，会话会出现在这里',
+          subtitle: 'AI 发来消息后，会话会出现在这里',
         );
 
       case ConversationListStatus.idle:
@@ -976,7 +976,7 @@ class _ConversationTileState extends State<_ConversationTile> {
                 children: [
                   Monogram(
                     c.displayName,
-                    size: touch ? 38 : 30,
+                    size: touch ? 34 : 30,
                     group: c.isGroup,
                   ),
                   SizedBox(width: touch ? 14 : 11),

@@ -108,6 +108,8 @@ class Dk {
     Color(0xFFB07AD6), // lilac
     Color(0xFF4FB3A9), // teal
     Color(0xFFC77C9A), // rose
+    Color(0xFF7FA6C9), // steel
+    Color(0xFFA3B86C), // olive
   ];
   static const Color onHue = Color(0xFF111216);
 }

@@ -193,7 +193,7 @@ class AgentRuntimePanel extends ConsumerWidget {
       padding: const EdgeInsets.all(12),
       children: [
         _InfoRow(
-          label: 'Agent',
+          label: 'AI 标识',
           value: data.agentId,
           icon: Icons.fingerprint,
         ),
@@ -207,7 +207,7 @@ class AgentRuntimePanel extends ConsumerWidget {
         ),
         const SizedBox(height: 8),
         if (data.capabilities.isEmpty)
-          Text('这个 agent 没有声明工具', style: Ty.small.copyWith(color: Dk.t2))
+          Text('这个 AI 没有声明工具', style: Ty.small.copyWith(color: Dk.t2))
         else
           ...data.capabilities.map((cap) => _ToolCard(
                 capability: cap,
@@ -602,28 +602,20 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
   }
 
   IconData _categoryIcon(String? category) {
-    switch (category) {
-      case 'terminal':
-        return Icons.terminal;
-      case 'filesystem':
-        return Icons.folder_outlined;
-      case 'web':
-        return Icons.language;
-      case 'subagent':
-        return Icons.account_tree_outlined;
-      case 'task_management':
-        return Icons.task_alt;
-      case 'ui':
-        return Icons.web_outlined;
-      case 'communication':
-        return Icons.chat_outlined;
-      case 'skill':
-        return Icons.school_outlined;
-      case 'scheduling':
-        return Icons.schedule_outlined;
-      default:
-        return Icons.build_outlined;
-    }
+    return switch (category) {
+      'terminal' || 'shell' => Icons.terminal_rounded,
+      'filesystem' || 'fs' || 'file' => Icons.folder_outlined,
+      'git' || 'vcs' => Icons.commit_rounded,
+      'web' || 'browser' => Icons.language_rounded,
+      'subagent' => Icons.account_tree_outlined,
+      'task_management' => Icons.task_alt_rounded,
+      'ui' => Icons.web_outlined,
+      'communication' => Icons.chat_bubble_outline_rounded,
+      'skill' => Icons.school_outlined,
+      'scheduling' => Icons.schedule_rounded,
+      'search' => Icons.search_rounded,
+      _ => Icons.extension_outlined,
+    };
   }
 }
 

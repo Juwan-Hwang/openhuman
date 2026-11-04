@@ -22,12 +22,14 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/sdk_provider.dart';
+import '../../widgets/monogram.dart';
+import '../../widgets/sheet.dart';
 
 class RoomPanel {
   static Future<void> show(BuildContext context, String roomId) {
-    return showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
+    return showDkSheet<void>(
+      context,
+      maxWidth: 680,
       builder: (_) => _RoomPanelSheet(roomId: roomId),
     );
   }
@@ -79,7 +81,13 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
       child: SizedBox(
         height: MediaQuery.of(context).size.height * 0.75,
         child: roomAsync.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
+          loading: () => const Center(
+            child: SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 1.6, color: Dk.t2),
+            ),
+          ),
           error: (e, _) => Center(child: Text('加载失败：$e')),
           data: (room) {
             if (room == null) {
@@ -95,7 +103,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
             final title = room['title'] as String? ?? '群聊';
 
             return ListView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(Sp.x6, Sp.x2, Sp.x6, Sp.x6),
               children: [
                 Row(
                   children: [
@@ -105,28 +113,45 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                       const SizedBox(
                         width: 16,
                         height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.6,
+                          color: Dk.t2,
+                        ),
                       ),
                   ],
                 ),
                 const SizedBox(height: 16),
 
                 // ── 成员 ──
-                Text('成员（${members.length}）',
-                    style: Ty.name.copyWith(fontSize: 13.5)),
+                Text('成员（${members.length}）', style: Ty.label),
                 const SizedBox(height: 8),
                 for (final m in members)
                   ListTile(
                     dense: true,
                     contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.person_outline, size: 20),
+                    leading: Monogram(
+                      m['display_name'] as String? ??
+                          m['human_id'] as String? ??
+                          '?',
+                      size: 26,
+                    ),
                     title: Text(m['display_name'] as String? ??
                         m['human_id'] as String? ??
                         '?'),
                     trailing: m['role'] == 'owner'
-                        ? const Chip(
-                            label: Text('房主'),
-                            visualDensity: VisualDensity.compact,
+                        ? Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Dk.p3,
+                              borderRadius: BorderRadius.circular(Rd.pill),
+                            ),
+                            child: Text(
+                              '房主',
+                              style: Ty.small.copyWith(fontSize: 11.5),
+                            ),
                           )
                         : null,
                   ),
@@ -134,7 +159,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
 
                 if (isOwner) ...[
                   // ── 邀请 ──
-                  Text('邀请', style: Ty.name.copyWith(fontSize: 13.5)),
+                  const Text('邀请', style: Ty.label),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
@@ -170,7 +195,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                   const Divider(height: 32),
 
                   // ── 连接配置 ──
-                  Text('连接配置', style: Ty.name.copyWith(fontSize: 13.5)),
+                  const Text('连接配置', style: Ty.label),
                   const SizedBox(height: 8),
                   _CopyRow(
                     label: 'Base URL',
@@ -222,7 +247,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                   const Divider(height: 32),
 
                   // ── 设置 ──
-                  Text('房间设置', style: Ty.name.copyWith(fontSize: 13.5)),
+                  const Text('房间设置', style: Ty.label),
                   const SizedBox(height: 8),
                   _SettingsEditor(
                     idleSecs: metadata['room_idle_secs'] as int?,
@@ -409,7 +434,7 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
       children: [
         Row(
           children: [
-            Text('已连接的 AI', style: Ty.name.copyWith(fontSize: 13.5)),
+            const Text('已连接的 AI', style: Ty.label),
             const Spacer(),
             IconButton(
               icon: const Icon(Icons.refresh, size: 18),

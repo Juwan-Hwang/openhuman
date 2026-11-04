@@ -49,11 +49,9 @@ Future<T?> showDkSheet<T>(
         decoration: const BoxDecoration(
           color: Dk.p1,
           borderRadius: BorderRadius.vertical(top: Radius.circular(Rd.xl)),
-          border: Border(
-            top: BorderSide(color: Dk.line2),
-            left: BorderSide(color: Dk.line),
-            right: BorderSide(color: Dk.line),
-          ),
+          // A uniform hairline: Flutter cannot round a border whose
+          // sides differ in colour.
+          border: Border.fromBorderSide(BorderSide(color: Dk.line2)),
         ),
         clipBehavior: Clip.antiAlias,
         child: Column(
