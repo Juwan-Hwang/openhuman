@@ -1,24 +1,28 @@
-/// Material 3 theme for the OpenHuman client.
+/// Material 3 theme for the OpenHuman client — the "Darkroom" language.
 ///
-/// The palette, radii, type and motion come from the Aevum design
-/// language: a neutral zinc ramp, generous corner radii, Manrope for
-/// prose and Geist Mono for identifiers. Nothing here is chromatic —
-/// the restraint is the point, and it leaves the message list as the
-/// only thing competing for attention.
+/// Values come from `tokens.dart`; this file only maps them onto
+/// Material components so stock widgets (dialogs, menus, fields) look
+/// native to the console. The console is dark only: it is a desktop
+/// instrument that stays open all day, and its one loud colour, the
+/// signal orange, only reads against the dark floor.
 library;
 
 import 'package:flutter/material.dart';
+
+import 'tokens.dart';
+
+export 'tokens.dart';
 
 /// Corner radii, in the Aevum scale (`--radius: 0.875rem`).
 ///
 /// 14px is the base; the rest are multipliers of it, matching the
 /// `--radius-*` tokens rather than Flutter's 4/8/12 defaults.
 class AppRadius {
-  static const double sm = 8;
-  static const double md = 11;
-  static const double lg = 14;
-  static const double xl = 20;
-  static const double pill = 999;
+  static const double sm = Rd.sm;
+  static const double md = Rd.md;
+  static const double lg = Rd.lg;
+  static const double xl = Rd.xl;
+  static const double pill = Rd.pill;
 }
 
 /// Motion vocabulary, carried over from Aevum.
@@ -39,16 +43,18 @@ class AppMotion {
 /// These are the Tailwind zinc values the tokens resolve to; keeping
 /// them named here means a colour is never written into a widget.
 class Zinc {
-  static const Color c50 = Color(0xFFFAFAFA);
-  static const Color c100 = Color(0xFFF4F4F5);
-  static const Color c200 = Color(0xFFE4E4E7);
-  static const Color c400 = Color(0xFFA1A1AA);
-  static const Color c500 = Color(0xFF71717B);
-  static const Color c600 = Color(0xFF52525B);
-  static const Color c700 = Color(0xFF3F3F46);
-  static const Color c800 = Color(0xFF27272A);
-  static const Color c900 = Color(0xFF18181B);
-  static const Color c950 = Color(0xFF09090B);
+  // Legacy names kept so older widgets keep compiling; they now resolve
+  // to the warm Darkroom ramp rather than Tailwind zinc.
+  static const Color c50 = Dk.t1;
+  static const Color c100 = Color(0xFFE4E1DA);
+  static const Color c200 = Color(0xFFCFCBC3);
+  static const Color c400 = Dk.t2;
+  static const Color c500 = Dk.t3;
+  static const Color c600 = Dk.t4;
+  static const Color c700 = Dk.line2;
+  static const Color c800 = Dk.p3;
+  static const Color c900 = Dk.p2;
+  static const Color c950 = Dk.bg;
 }
 
 /// The sans face for prose.
@@ -60,7 +66,7 @@ const String _mono = 'GeistMono';
 /// What to fall back to when a glyph is missing from the above — which
 /// for Chinese is always. Kept as a constant so it can ride along in
 /// `const` text styles.
-const List<String> _fallback = ['PingFangSF'];
+const List<String> _fallback = ['NotoSansSC'];
 
 /// Hover and press feedback in the surface's own colour.
 ///
@@ -68,8 +74,7 @@ const List<String> _fallback = ['PingFangSF'];
 /// neutral palette is the one place an unexpected cast shows up. On the
 /// desktop there is no ripple to lean on, so hover is the entire
 /// acknowledgement that a control is live.
-Color _overlay(ColorScheme scheme) =>
-    scheme.onSurface.withValues(alpha: 0.06);
+Color _overlay(ColorScheme scheme) => scheme.onSurface.withValues(alpha: 0.06);
 
 /// Shared component styling that does not depend on the palette.
 ///
@@ -85,63 +90,82 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
     colorScheme: scheme,
     fontFamily: _sans, fontFamilyFallback: _fallback,
     scaffoldBackgroundColor: scheme.surface,
+    canvasColor: scheme.surface,
+    tooltipTheme: TooltipThemeData(
+      decoration: BoxDecoration(
+        color: Dk.p4,
+        borderRadius: BorderRadius.circular(Rd.sm),
+        border: Border.all(color: Dk.line2),
+      ),
+      textStyle: Ty.small.copyWith(color: Dk.t1, fontSize: 12),
+      waitDuration: const Duration(milliseconds: 400),
+    ),
 
     // Aevum sets 1.6 on the body and lets headings tighten from there.
     textTheme: TextTheme(
       displaySmall: const TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 32,
         fontWeight: FontWeight.w600,
         letterSpacing: -0.7,
         height: 1.1,
       ),
       headlineSmall: const TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 22,
         fontWeight: FontWeight.w600,
         letterSpacing: -0.4,
         height: 1.2,
       ),
       titleMedium: const TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 15,
         fontWeight: FontWeight.w600,
         letterSpacing: -0.1,
         height: 1.35,
       ),
       titleSmall: const TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 13,
         fontWeight: FontWeight.w600,
         height: 1.35,
       ),
       bodyLarge: const TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 15,
         fontWeight: FontWeight.w400,
         height: 1.6,
       ),
       bodyMedium: const TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 14,
         fontWeight: FontWeight.w400,
         height: 1.6,
       ),
       bodySmall: TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 12,
         fontWeight: FontWeight.w400,
         height: 1.55,
         color: scheme.onSurfaceVariant,
       ),
       labelLarge: const TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 14,
         fontWeight: FontWeight.w500,
         height: 1.3,
       ),
       labelSmall: const TextStyle(
-        fontFamily: _mono, fontFamilyFallback: _fallback,
+        fontFamily: _mono,
+        fontFamilyFallback: _fallback,
         fontSize: 11,
         fontWeight: FontWeight.w500,
         letterSpacing: 1.3,
@@ -156,7 +180,8 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
       backgroundColor: scheme.surface,
       surfaceTintColor: Colors.transparent,
       titleTextStyle: TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 15,
         fontWeight: FontWeight.w600,
         letterSpacing: -0.1,
@@ -185,13 +210,15 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
       contentPadding: const EdgeInsets.symmetric(horizontal: 12),
       minVerticalPadding: 10,
       titleTextStyle: TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 14,
         fontWeight: FontWeight.w500,
         color: scheme.onSurface,
       ),
       subtitleTextStyle: TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 12,
         color: scheme.onSurfaceVariant,
       ),
@@ -206,7 +233,8 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
         minimumSize: const Size(0, 40),
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
         textStyle: const TextStyle(
-          fontFamily: _sans, fontFamilyFallback: _fallback,
+          fontFamily: _sans,
+          fontFamilyFallback: _fallback,
           fontSize: 14,
           fontWeight: FontWeight.w500,
         ),
@@ -223,7 +251,8 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
         minimumSize: const Size(0, 36),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         textStyle: const TextStyle(
-          fontFamily: _sans, fontFamilyFallback: _fallback,
+          fontFamily: _sans,
+          fontFamilyFallback: _fallback,
           fontSize: 13,
           fontWeight: FontWeight.w500,
         ),
@@ -241,7 +270,8 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
         minimumSize: const Size(0, 40),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         textStyle: const TextStyle(
-          fontFamily: _sans, fontFamilyFallback: _fallback,
+          fontFamily: _sans,
+          fontFamilyFallback: _fallback,
           fontSize: 14,
           fontWeight: FontWeight.w500,
         ),
@@ -270,7 +300,8 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
       fillColor: isDark ? Zinc.c900 : Zinc.c100,
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       hintStyle: TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 14,
         color: scheme.onSurfaceVariant,
       ),
@@ -299,13 +330,15 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
         side: BorderSide(color: scheme.outlineVariant),
       ),
       titleTextStyle: TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 16,
         fontWeight: FontWeight.w600,
         color: scheme.onSurface,
       ),
       contentTextStyle: TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 14,
         height: 1.6,
         color: scheme.onSurfaceVariant,
@@ -317,7 +350,8 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
       elevation: 0,
       backgroundColor: isDark ? Zinc.c800 : Zinc.c900,
       contentTextStyle: TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 13,
         color: isDark ? Zinc.c50 : Zinc.c50,
       ),
@@ -335,7 +369,8 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
         side: BorderSide(color: scheme.outlineVariant),
       ),
       textStyle: TextStyle(
-        fontFamily: _sans, fontFamilyFallback: _fallback,
+        fontFamily: _sans,
+        fontFamilyFallback: _fallback,
         fontSize: 13,
         color: scheme.onSurface,
       ),
@@ -364,62 +399,43 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
     ),
 
     splashFactory: NoSplash.splashFactory,
-    visualDensity: VisualDensity.standard,
+    visualDensity: VisualDensity.compact,
   );
 }
 
-/// The light theme — the default.
-final ThemeData lightTheme = _base(
-  Brightness.light,
-  const ColorScheme(
-    brightness: Brightness.light,
-    surface: Color(0xFFFFFFFF),
-    onSurface: Zinc.c950,
-    surfaceContainerHighest: Zinc.c100,
-    surfaceContainerLow: Zinc.c50,
-    surfaceContainerHigh: Zinc.c100,
-    onSurfaceVariant: Zinc.c500,
-    primary: Zinc.c900,
-    onPrimary: Zinc.c50,
-    primaryContainer: Zinc.c100,
-    onPrimaryContainer: Zinc.c950,
-    secondary: Zinc.c100,
-    onSecondary: Zinc.c950,
-    secondaryContainer: Zinc.c100,
-    onSecondaryContainer: Zinc.c950,
-    error: Color(0xFFE7000B),
-    onError: Color(0xFFFFFFFF),
-    outline: Zinc.c200,
-    outlineVariant: Zinc.c200,
-    shadow: Color(0x1A000000),
-    scrim: Color(0x1A000000),
-  ),
-);
-
-/// The dark theme.
+/// The dark theme — the only one the console ships.
 final ThemeData darkTheme = _base(
   Brightness.dark,
   const ColorScheme(
     brightness: Brightness.dark,
-    surface: Zinc.c950,
-    onSurface: Zinc.c50,
-    surfaceContainerHighest: Zinc.c800,
-    surfaceContainerLow: Zinc.c900,
-    surfaceContainerHigh: Zinc.c900,
-    onSurfaceVariant: Zinc.c400,
-    primary: Zinc.c200,
-    onPrimary: Zinc.c950,
-    primaryContainer: Zinc.c800,
-    onPrimaryContainer: Zinc.c50,
-    secondary: Zinc.c800,
-    onSecondary: Zinc.c50,
-    secondaryContainer: Zinc.c800,
-    onSecondaryContainer: Zinc.c50,
-    error: Color(0xFFFF6467),
-    onError: Zinc.c950,
-    outline: Zinc.c800,
-    outlineVariant: Zinc.c800,
-    shadow: Color(0x33000000),
-    scrim: Color(0x33000000),
+    surface: Dk.bg,
+    onSurface: Dk.t1,
+    surfaceContainerLowest: Dk.bg,
+    surfaceContainerLow: Dk.p1,
+    surfaceContainer: Dk.p1,
+    surfaceContainerHigh: Dk.p2,
+    surfaceContainerHighest: Dk.p3,
+    onSurfaceVariant: Dk.t2,
+    primary: Dk.t1,
+    onPrimary: Dk.bg,
+    primaryContainer: Dk.p3,
+    onPrimaryContainer: Dk.t1,
+    secondary: Dk.p3,
+    onSecondary: Dk.t1,
+    secondaryContainer: Dk.p3,
+    onSecondaryContainer: Dk.t1,
+    tertiary: Dk.signal,
+    onTertiary: Dk.signalInk,
+    tertiaryContainer: Dk.signalSoft,
+    onTertiaryContainer: Dk.t1,
+    error: Dk.danger,
+    onError: Dk.bg,
+    outline: Dk.line2,
+    outlineVariant: Dk.line,
+    shadow: Color(0x66000000),
+    scrim: Color(0x99000000),
   ),
 );
+
+/// Kept for callers that still name it; the console is dark only.
+final ThemeData lightTheme = darkTheme;

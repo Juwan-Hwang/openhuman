@@ -12,13 +12,8 @@
 /// ```
 library;
 
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:openhuman_client/features/chat/chat_theme.dart';
 import 'package:openhuman_client/app/theme.dart';
-import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
-import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
@@ -31,6 +26,7 @@ import 'chat_controller.dart';
 import 'conversation_sidebar.dart';
 import 'room_composer.dart';
 import 'room_panel.dart';
+import 'stream/message_stream.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -87,7 +83,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
     });
 
-    final theme = Theme.of(context);
     final controller = ref.read(chatControllerProvider.notifier);
     final humanUser = controller.humanUser;
 
@@ -119,235 +114,142 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ref.watch(roomOwnershipProvider(activeConvId));
     final showOwnerControls = !isGroup || isRoomOwner;
 
+    final waitingOnMe = !_turnEnded &&
+        messages.isNotEmpty &&
+        messages.first.author.id != humanUser.id;
+    final mentionNames = isGroup && activeConvId != null
+        ? roomMemberNames(
+            ref.watch(roomInfoProvider(activeConvId)).valueOrNull,
+          )
+        : const <String>[];
+
     return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          icon:
-              Icon(_showSidebar ? Icons.menu_open_rounded : Icons.menu_rounded),
-          onPressed: () => setState(() => _showSidebar = !_showSidebar),
-          tooltip: 'Conversations',
-        ),
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(human?.displayName ?? 'OpenHuman'),
-            const SizedBox(height: 2),
-            Text(
-              _connectionStateLabel(connState, human),
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: _connectionStateColor(connState, theme),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          // ── Reconnect ──
-          // The socket is reclaimed upstream when it idles, so being
-          // dropped is routine. Without this the only way back is a
-          // restart, which also throws away the loaded history.
-          if (connState != oh.ConnectionState.connected)
-            IconButton(
-              onPressed: _reconnecting ? null : _reconnect,
-              icon: _reconnecting
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh_rounded),
-              tooltip: 'Reconnect',
-            ),
-          // ── End Turn button (owner-only in rooms, §10.6) ──
-          if (!showOwnerControls)
-            const SizedBox.shrink()
-          else if (_turnEnded)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: ActionChip(
-                label: const Text('Turn ended'),
-                avatar: const Icon(Icons.check_circle, size: 16),
-                onPressed: () => setState(() => _turnEnded = false),
-              ),
-            )
-          else
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: TextButton.icon(
-                onPressed: () => _endTurn(),
-                icon: const Icon(Icons.check_circle_outline, size: 18),
-                label: const Text('End Turn'),
-              ),
-            ),
-          // ── Room panel (members / invites / connection / settings) ──
-          if (isGroup && activeConvId != null)
-            IconButton(
-              onPressed: () => RoomPanel.show(context, activeConvId),
-              icon: const Icon(Icons.groups_outlined),
-              tooltip: '群聊管理',
-            ),
-          // ── Toggle Runtime Panel (owner-only in rooms, §10.6) ──
-          if (showOwnerControls)
-            IconButton(
-              onPressed: () =>
-                  setState(() => _showRuntimePanel = !_showRuntimePanel),
-              icon: Icon(
-                _showRuntimePanel
-                    ? Icons.view_sidebar_rounded
-                    : Icons.view_sidebar_outlined,
-              ),
-              tooltip: 'Agent Runtime',
-            ),
-          // ── Agent Integration Guide ──
-          IconButton(
-            onPressed: () => AgentIntegrationSheet.show(context),
-            icon: const Icon(Icons.integration_instructions_outlined),
-            tooltip: 'Agent 接入配置与指南',
-          ),
-          // ── Connection dot ──
-          Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: Center(
-              child: Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: _connectionStateDotColor(connState, theme),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+      backgroundColor: Dk.bg,
       body: SafeArea(
         bottom: false,
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // ── Conversation Sidebar ──
-            if (_showSidebar) const ConversationSidebar(),
-            // ── Chat area ──
+            AnimatedSize(
+              duration: Mo.base,
+              curve: Mo.expo,
+              alignment: Alignment.centerLeft,
+              child: _showSidebar
+                  ? const DecoratedBox(
+                      decoration: BoxDecoration(
+                        border: Border(right: BorderSide(color: Dk.line)),
+                      ),
+                      child: ConversationSidebar(),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+            // ── Stream ──
             Expanded(
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Turn-ended banner
-                  if (_turnEnded)
-                    Material(
-                      color: theme.colorScheme.tertiaryContainer
-                          .withValues(alpha: 0.3),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 8),
-                        child: Row(
+                  _TopBar(
+                    title:
+                        activeInfo?.title ?? human?.displayName ?? 'OpenHuman',
+                    subtitle: _connectionStateLabel(connState, human),
+                    conn: connState,
+                    state: _turnEnded
+                        ? _TurnState.ended
+                        : waitingOnMe
+                            ? _TurnState.yours
+                            : messages.isEmpty
+                                ? _TurnState.idle
+                                : _TurnState.theirs,
+                    sidebarOpen: _showSidebar,
+                    onSidebar: () =>
+                        setState(() => _showSidebar = !_showSidebar),
+                    actions: [
+                      if (connState != oh.ConnectionState.connected)
+                        _BarIcon(
+                          icon: Icons.refresh_rounded,
+                          tooltip: '重新连接',
+                          busy: _reconnecting,
+                          onTap: _reconnecting ? null : _reconnect,
+                        ),
+                      if (isGroup && activeConvId != null)
+                        _BarIcon(
+                          icon: Icons.groups_outlined,
+                          tooltip: '群聊管理',
+                          onTap: () => RoomPanel.show(context, activeConvId),
+                        ),
+                      if (showOwnerControls)
+                        _BarIcon(
+                          icon: _showRuntimePanel
+                              ? Icons.view_sidebar_rounded
+                              : Icons.view_sidebar_outlined,
+                          tooltip: 'AI 运行信息',
+                          active: _showRuntimePanel,
+                          onTap: () => setState(
+                            () => _showRuntimePanel = !_showRuntimePanel,
+                          ),
+                        ),
+                      _BarIcon(
+                        icon: Icons.integration_instructions_outlined,
+                        tooltip: 'AI 接入配置与指南',
+                        onTap: () => AgentIntegrationSheet.show(context),
+                      ),
+                    ],
+                  ),
+                  Expanded(
+                    // A reading column: on a wide window the stream keeps
+                    // its measure instead of flinging replies to the edge.
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: Sp.column),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            Icon(Icons.flag_outlined,
-                                size: 18, color: theme.colorScheme.tertiary),
-                            const SizedBox(width: 8),
                             Expanded(
-                              child: Text(
-                                'Turn ended — your replies will be batched '
-                                'and sent when you start a new turn.',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: theme.colorScheme.onTertiaryContainer,
-                                ),
+                              child: MessageStream(
+                                messages: messages,
+                                meId: humanUser.id,
+                                mentions: mentionNames,
+                                waitingOnMe: waitingOnMe,
                               ),
+                            ),
+                            if (_turnEnded)
+                              _EndedStrip(
+                                onResume: () =>
+                                    setState(() => _turnEnded = false),
+                              ),
+                            Composer(
+                              enabled: !_turnEnded,
+                              onSend: sendText,
+                              onEndTurn: showOwnerControls && !_turnEnded
+                                  ? _endTurn
+                                  : null,
+                              mentionNames: mentionNames,
                             ),
                           ],
                         ),
                       ),
-                    ),
-                  // Chat messages
-                  Expanded(
-                    child: Chat(
-                      messages: messages,
-                      onSendPressed: _turnEnded
-                          ? (_) {} // disabled
-                          : (partialText) => sendText(partialText.text),
-                      user: humanUser,
-                      // Without this the chat kept the library's own
-                      // theme and the console looked half restyled.
-                      theme: buildChatTheme(
-                        isDark: theme.brightness == Brightness.dark,
-                      ),
-                      showUserNames: true,
-                      // Agents commonly send inline images as
-                      // `data:image/...;base64,` URLs, which the default
-                      // network image provider cannot load.
-                      imageMessageBuilder: _buildImageMessage,
-                      // §10.4 group rooms: "@name" completion composer and
-                      // highlighted mention spans. 1:1 chats keep the
-                      // library's default input and bubble.
-                      customBottomWidget: isGroup && activeConvId != null
-                          ? RoomComposer(
-                              roomId: activeConvId,
-                              enabled: !_turnEnded,
-                              onSend: sendText,
-                            )
-                          : null,
-                      textMessageBuilder: isGroup && activeConvId != null
-                          ? (msg, {required messageWidth, required showName}) =>
-                              buildMentionTextMessage(
-                                context,
-                                msg,
-                                messageWidth: messageWidth,
-                                showName: showName,
-                                memberNames: roomMemberNames(
-                                  ref
-                                      .read(roomInfoProvider(activeConvId))
-                                      .valueOrNull,
-                                ),
-                              )
-                          : null,
                     ),
                   ),
                 ],
               ),
             ),
             // ── Agent Runtime Panel ──
-            if (_showRuntimePanel && showOwnerControls)
-              const AgentRuntimePanel(),
+            AnimatedSize(
+              duration: Mo.base,
+              curve: Mo.expo,
+              alignment: Alignment.centerRight,
+              child: _showRuntimePanel && showOwnerControls
+                  ? const DecoratedBox(
+                      decoration: BoxDecoration(
+                        border: Border(left: BorderSide(color: Dk.line)),
+                      ),
+                      child: AgentRuntimePanel(),
+                    )
+                  : const SizedBox.shrink(),
+            ),
           ],
-        ),
-      ),
-    );
-  }
-
-  /// Renders an image message, including inline `data:` URLs.
-  ///
-  /// The default builder hands the URI to a network image provider, which
-  /// fails on the base64 payloads agents actually send.
-  Widget _buildImageMessage(
-    types.ImageMessage message, {
-    required int messageWidth,
-  }) {
-    const maxHeight = 320.0;
-    final uri = message.uri;
-
-    ImageProvider? provider;
-    if (uri.startsWith('data:')) {
-      final comma = uri.indexOf(',');
-      if (comma != -1 && comma < uri.length - 1) {
-        final bytes = base64Decode(uri.substring(comma + 1));
-        provider = MemoryImage(bytes);
-      }
-    } else if (uri.startsWith('http://') || uri.startsWith('https://')) {
-      provider = NetworkImage(uri);
-    }
-
-    if (provider == null) {
-      return const SizedBox.shrink();
-    }
-
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxHeight: maxHeight),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        child: Image(
-          image: provider,
-          fit: BoxFit.contain,
-          errorBuilder: (_, __, ___) => const Padding(
-            padding: EdgeInsets.all(12),
-            child: Text('图片无法显示'),
-          ),
         ),
       ),
     );
@@ -368,7 +270,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('No active conversation to end.'),
+            content: Text('当前没有可结束的会话。'),
             duration: Duration(seconds: 2),
           ),
         );
@@ -384,47 +286,236 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   ) {
     switch (state) {
       case oh.ConnectionState.idle:
-        return 'Not connected';
+        return '未连接';
       case oh.ConnectionState.connecting:
-        return 'Connecting…';
+        return '连接中…';
       case oh.ConnectionState.connected:
-        return human != null ? 'Connected as ${human.id}' : 'Connected';
+        return human != null ? '已连接 · ${human.id}' : '已连接';
       case oh.ConnectionState.reconnecting:
-        return 'Reconnecting…';
+        return '重连中…';
       case oh.ConnectionState.disconnected:
-        return 'Disconnected';
+        return '已断开';
       case oh.ConnectionState.error:
-        return 'Connection error';
+        return '连接出错';
     }
   }
+}
 
-  Color _connectionStateDotColor(oh.ConnectionState state, ThemeData theme) {
-    switch (state) {
-      case oh.ConnectionState.connected:
-        return const Color(0xFF639922);
-      case oh.ConnectionState.connecting:
-      case oh.ConnectionState.reconnecting:
-        return const Color(0xFF8A7355);
-      case oh.ConnectionState.disconnected:
-      case oh.ConnectionState.idle:
-        return theme.colorScheme.outline;
-      case oh.ConnectionState.error:
-        return theme.colorScheme.error;
-    }
+/// Whose move it is, as the top bar shows it.
+enum _TurnState { yours, theirs, ended, idle }
+
+/// The stream's header: title, the turn state pill, window actions.
+class _TopBar extends StatelessWidget {
+  const _TopBar({
+    required this.title,
+    required this.subtitle,
+    required this.conn,
+    required this.state,
+    required this.sidebarOpen,
+    required this.onSidebar,
+    required this.actions,
+  });
+
+  final String title;
+  final String subtitle;
+  final oh.ConnectionState conn;
+  final _TurnState state;
+  final bool sidebarOpen;
+  final VoidCallback onSidebar;
+  final List<Widget> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    final connColor = switch (conn) {
+      oh.ConnectionState.connected => Dk.ok,
+      oh.ConnectionState.connecting ||
+      oh.ConnectionState.reconnecting =>
+        const Color(0xFFE0B252),
+      oh.ConnectionState.error => Dk.danger,
+      _ => Dk.t3,
+    };
+    return Container(
+      height: 72,
+      padding: const EdgeInsets.only(left: Sp.x4, right: Sp.x6),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: Dk.line)),
+      ),
+      child: Row(
+        children: [
+          _BarIcon(
+            icon: sidebarOpen ? Icons.menu_open_rounded : Icons.menu_rounded,
+            tooltip: '会话列表',
+            active: sidebarOpen,
+            onTap: onSidebar,
+          ),
+          const SizedBox(width: Sp.x4),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Ty.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                          shape: BoxShape.circle, color: connColor),
+                    ),
+                    const SizedBox(width: 7),
+                    Flexible(
+                      child: Text(
+                        subtitle,
+                        style: Ty.meta.copyWith(color: Dk.t3),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: Sp.x5),
+          AnimatedSwitcher(
+            duration: Mo.base,
+            child: _StatePill(key: ValueKey(state), state: state),
+          ),
+          const SizedBox(width: Sp.x4),
+          const Spacer(),
+          ...actions,
+        ],
+      ),
+    );
   }
+}
 
-  Color _connectionStateColor(oh.ConnectionState state, ThemeData theme) {
-    switch (state) {
-      case oh.ConnectionState.connected:
-        return const Color(0xFF639922);
-      case oh.ConnectionState.connecting:
-      case oh.ConnectionState.reconnecting:
-        return const Color(0xFF8A7355);
-      case oh.ConnectionState.disconnected:
-      case oh.ConnectionState.idle:
-        return theme.colorScheme.onSurfaceVariant;
-      case oh.ConnectionState.error:
-        return theme.colorScheme.error;
-    }
+class _StatePill extends StatelessWidget {
+  const _StatePill({super.key, required this.state});
+  final _TurnState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final (label, fg, bg) = switch (state) {
+      _TurnState.yours => ('等你回复', Dk.signal, Dk.signalSoft),
+      _TurnState.theirs => ('AI 处理中', Dk.ok, Dk.okSoft),
+      _TurnState.ended => ('本轮已结束', Dk.t2, Dk.p3),
+      _TurnState.idle => ('空闲', Dk.t3, Dk.p2),
+    };
+    return Container(
+      padding: const EdgeInsets.fromLTRB(11, 6, 13, 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(Rd.pill),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: fg,
+              boxShadow: state == _TurnState.yours
+                  ? const [BoxShadow(color: Dk.signalRing, spreadRadius: 4)]
+                  : null,
+            ),
+          ),
+          const SizedBox(width: 9),
+          Text(
+            label,
+            style: Ty.name.copyWith(fontSize: 12.5, color: fg),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BarIcon extends StatelessWidget {
+  const _BarIcon({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+    this.active = false,
+    this.busy = false,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onTap;
+  final bool active;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Padding(
+        padding: const EdgeInsets.only(left: 2),
+        child: Material(
+          color: active ? Dk.p3 : Colors.transparent,
+          borderRadius: BorderRadius.circular(Rd.md),
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(Rd.md),
+            hoverColor: Dk.p2,
+            child: SizedBox(
+              width: 36,
+              height: 36,
+              child: Center(
+                child: busy
+                    ? const SizedBox(
+                        width: 15,
+                        height: 15,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.6,
+                          color: Dk.t2,
+                        ),
+                      )
+                    : Icon(icon, size: 18, color: active ? Dk.t1 : Dk.t2),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _EndedStrip extends StatelessWidget {
+  const _EndedStrip({required this.onResume});
+  final VoidCallback onResume;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Sp.gutter, 0, Sp.x9, Sp.x2),
+      child: Row(
+        children: [
+          const Icon(Icons.flag_outlined, size: 14, color: Dk.t3),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '本轮已结束。之后的回复会攒到下一轮一起发出。',
+              style: Ty.small.copyWith(fontSize: 12),
+            ),
+          ),
+          TextButton(
+            onPressed: onResume,
+            child: Text('继续本轮', style: Ty.small.copyWith(color: Dk.t1)),
+          ),
+        ],
+      ),
+    );
   }
 }

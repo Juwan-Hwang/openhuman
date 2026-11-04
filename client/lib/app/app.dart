@@ -21,10 +21,8 @@ class OpenHumanApp extends ConsumerWidget {
       title: 'OpenHuman',
       theme: lightTheme,
       darkTheme: darkTheme,
-      // Pinned rather than ThemeMode.system: the two themes are tuned
-      // as a pair, and following the OS here makes the console change
-      // underneath someone mid-conversation.
-      themeMode: ThemeMode.light,
+      // Dark only: the Darkroom palette is built around a dark floor.
+      themeMode: ThemeMode.dark,
       routerConfig: router,
       debugShowCheckedModeBanner: false,
       // ThemeData has no fontFamilyFallback, so anything that inherits
@@ -33,7 +31,7 @@ class OpenHumanApp extends ConsumerWidget {
       // the two scripts would stop looking like one product.
       builder: (context, child) => DefaultTextStyle(
         style: (Theme.of(context).textTheme.bodyMedium ?? const TextStyle())
-            .copyWith(fontFamilyFallback: const ['PingFangSF']),
+            .copyWith(fontFamilyFallback: const ['NotoSansSC']),
         child: child!,
       ),
     );

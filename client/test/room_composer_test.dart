@@ -12,7 +12,7 @@ void main() {
       (tester) async {
     String? sent;
     await tester.pumpWidget(
-      _wrap(RoomComposer(roomId: 'r1', enabled: true, onSend: (t) => sent = t)),
+      _wrap(Composer(enabled: true, onSend: (t) => sent = t)),
     );
     await tester.enterText(find.byType(TextField), 'hello @ki');
     await tester.pump();
@@ -20,7 +20,7 @@ void main() {
     // is acceptable. Type a plain message and send it.
     await tester.enterText(find.byType(TextField), 'hello @kimi 你好');
     await tester.pump();
-    await tester.tap(find.byIcon(Icons.send_rounded));
+    await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
     await tester.pump();
     expect(sent, 'hello @kimi 你好');
   });
@@ -29,11 +29,11 @@ void main() {
     String? sent;
     await tester.pumpWidget(
       _wrap(
-        RoomComposer(roomId: 'r1', enabled: false, onSend: (t) => sent = t),
+        Composer(enabled: false, onSend: (t) => sent = t),
       ),
     );
     expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
-    await tester.tap(find.byIcon(Icons.send_rounded));
+    await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
     await tester.pump();
     expect(sent, isNull);
   });

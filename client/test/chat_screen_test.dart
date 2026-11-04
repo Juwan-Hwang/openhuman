@@ -61,7 +61,8 @@ class _FakeClient extends oh.OpenHumanClient {
   List<String> get activeConversations => ['cnv_demo_001'];
 
   @override
-  Future<void> sendReply(String conversationId, String text, {String? invocationId}) async {
+  Future<void> sendReply(String conversationId, String text,
+      {String? invocationId}) async {
     sentConversationId = conversationId;
     sentText = text;
   }
@@ -124,7 +125,7 @@ void main() {
 
     testWidgets('renders connection state indicator', (tester) async {
       await pumpChatScreen(tester);
-      expect(find.textContaining('Connected'), findsWidgets);
+      expect(find.textContaining('已连接'), findsWidgets);
     });
 
     testWidgets('renders chat input field', (tester) async {
@@ -197,20 +198,12 @@ void main() {
       expect(input, findsWidgets);
       await tester.enterText(input.first, 'Looks good!');
 
-      // Try to find and tap the send button.
-      // Flyer Chat may use Icons.send or a custom icon.
-      // We check using `findsWidgets` matcher and only tap if found.
-      final sendFinder = find.byIcon(Icons.send);
-      try {
-        expect(sendFinder, findsWidgets);
-        await tester.tap(sendFinder.first);
-        await tester.pumpAndSettle(const Duration(milliseconds: 200));
-        expect(fakeClient.sentText, 'Looks good!');
-        expect(fakeClient.sentConversationId, 'cnv_demo_001');
-      } on TestFailure {
-        // Send button not found with Icons.send — try Icons.arrow_upward
-        // or just skip this assertion (Flyer Chat version-dependent).
-      }
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('composer-send')));
+      await tester.pumpAndSettle(const Duration(milliseconds: 200));
+      expect(fakeClient.sentText, 'Looks good!');
+      // The reply goes to the conversation the request came from.
+      expect(fakeClient.sentConversationId, 'cnv_test');
     });
   });
 }
