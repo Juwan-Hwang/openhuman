@@ -388,9 +388,8 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
       backgroundColor: Dk.p1,
       surfaceTintColor: Colors.transparent,
       modalBarrierColor: Color(0xB3050506),
-      showDragHandle: true,
-      dragHandleColor: Dk.line2,
-      dragHandleSize: Size(36, 4),
+      // Sheets that want a handle draw their own.
+      showDragHandle: false,
       constraints: BoxConstraints(maxWidth: 640),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(Rd.xl)),

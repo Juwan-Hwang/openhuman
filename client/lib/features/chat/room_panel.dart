@@ -85,9 +85,10 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
             if (room == null) {
               return const Center(child: Text('这不是一个群聊会话'));
             }
-            final members =
-                (room['members'] as List?)?.whereType<Map<String, dynamic>>().toList() ??
-                    const <Map<String, dynamic>>[];
+            final members = (room['members'] as List?)
+                    ?.whereType<Map<String, dynamic>>()
+                    .toList() ??
+                const <Map<String, dynamic>>[];
             final metadata =
                 (room['metadata'] as Map?)?.cast<String, dynamic>() ??
                     const <String, dynamic>{};
@@ -143,8 +144,8 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                         onPressed: () => _run(() async {
                           final client = ref.read(openHumanClientProvider);
                           final res = await client.mintInvite(widget.roomId);
-                          setState(() =>
-                              _lastInviteCode = res['code'] as String?);
+                          setState(
+                              () => _lastInviteCode = res['code'] as String?);
                         }),
                         icon: const Icon(Icons.link, size: 16),
                         label: const Text('生成邀请码'),
@@ -310,8 +311,9 @@ class _CopyRow extends StatelessWidget {
           Expanded(
             child: Text(
               value,
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(fontFamily: 'monospace'),
+              style: theme.textTheme.bodySmall?.copyWith(
+                  fontFamily: 'GeistMono',
+                  fontFamilyFallback: const ['NotoSansSC']),
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -468,9 +470,10 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
     );
   }
 
-  Future<void> _invoke(BuildContext context, Map<String, dynamic> caller) async {
-    final tools =
-        (caller['tools'] as List?)?.whereType<String>().toList() ?? const <String>[];
+  Future<void> _invoke(
+      BuildContext context, Map<String, dynamic> caller) async {
+    final tools = (caller['tools'] as List?)?.whereType<String>().toList() ??
+        const <String>[];
     var tool = tools.first;
     final input = TextEditingController(text: '{}');
     final ok = await showDialog<bool>(

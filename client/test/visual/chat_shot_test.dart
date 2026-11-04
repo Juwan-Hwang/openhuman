@@ -240,6 +240,16 @@ void main() {
         matchesGoldenFile('shots/chat_menu.png'),
       );
     }
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('AI 接入配置与指南'));
+    await tester.pumpAndSettle();
+    if (enabled) {
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('shots/integration.png'),
+      );
+    }
   }, skip: !enabled);
 
   testWidgets('auth shot', (tester) async {

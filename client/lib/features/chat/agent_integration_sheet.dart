@@ -228,8 +228,7 @@ export OPENAI_API_KEY="$apiKey"''';
                     title: 'Model Name (模型标识)',
                     subtitle: '标准人类专家路由模型',
                     value: modelName,
-                    onCopy: () =>
-                        _copyToClipboard(context, modelName, '模型标识'),
+                    onCopy: () => _copyToClipboard(context, modelName, '模型标识'),
                   ),
                   const SizedBox(height: 12),
 
@@ -245,7 +244,7 @@ export OPENAI_API_KEY="$apiKey"''';
                         ? '${fcmToken.substring(0, 16)}...${fcmToken.substring(fcmToken.length - 12)}'
                         : '未生成 Device Token',
                     valueColor: fcmToken != null
-                        ? const Color(0xFF639922)
+                        ? Dk.ok
                         : theme.colorScheme.onSurfaceVariant,
                     onCopy: fcmToken != null
                         ? () => _copyToClipboard(
@@ -365,7 +364,8 @@ export OPENAI_API_KEY="$apiKey"''';
           SelectableText(
             value,
             style: theme.textTheme.bodyMedium?.copyWith(
-              fontFamily: 'monospace',
+              fontFamily: 'GeistMono',
+              fontFamilyFallback: const ['NotoSansSC'],
               color: valueColor ?? theme.colorScheme.onSurface,
               fontWeight: FontWeight.w500,
             ),

@@ -863,11 +863,11 @@ class _StatusDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = switch (status) {
-      'success' => const Color(0xFF639922),
+      'success' => Dk.ok,
       'error' => Theme.of(context).colorScheme.error,
-      'timeout' => const Color(0xFF8A7355),
-      'pending' => const Color(0xFF5B7C99),
-      _ => const Color(0xFF71717B),
+      'timeout' => const Color(0xFFE0B252),
+      'pending' => Dk.blue,
+      _ => Dk.t3,
     };
     final icon = switch (status) {
       'success' => Icons.check_circle,
@@ -921,8 +921,10 @@ class _ResultView extends StatelessWidget {
             const SizedBox(height: 4),
             SelectableText(
               _formatOutput(state.output),
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(fontFamily: 'monospace', fontSize: 11),
+              style: theme.textTheme.bodySmall?.copyWith(
+                  fontFamily: 'GeistMono',
+                  fontFamilyFallback: const ['NotoSansSC'],
+                  fontSize: 11),
               maxLines: 8,
             ),
           ],
@@ -1010,7 +1012,8 @@ class _SystemPromptFullScreen extends StatelessWidget {
           child: SelectableText(
             prompt,
             style: theme.textTheme.bodyMedium?.copyWith(
-              fontFamily: 'monospace',
+              fontFamily: 'GeistMono',
+              fontFamilyFallback: const ['NotoSansSC'],
               fontSize: 13,
               height: 1.7,
             ),
