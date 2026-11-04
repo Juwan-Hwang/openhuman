@@ -10,6 +10,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:openhuman_client/widgets/brand.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
 
@@ -72,7 +73,7 @@ void main() {
   group('AuthScreen UI', () {
     testWidgets('renders OpenHuman title', (tester) async {
       await pumpAuthScreen(tester);
-      expect(find.text('OpenHuman'), findsOneWidget);
+      expect(find.byType(BrandWordmark), findsOneWidget);
     });
 
     testWidgets('renders Server URL text field', (tester) async {

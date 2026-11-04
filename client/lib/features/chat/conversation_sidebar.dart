@@ -11,6 +11,8 @@ import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
 
 import '../../app/theme.dart';
 import '../../core/sdk_provider.dart';
+import '../../app/adaptive.dart';
+import '../../widgets/brand.dart';
 import '../../widgets/monogram.dart';
 
 /// Sidebar width limits; the pane is resizable from its right edge.
@@ -23,9 +25,17 @@ const double kSidebarDefault = 284;
 final sidebarSearchFocus = FocusNode(debugLabel: 'sidebar-search');
 
 class ConversationSidebar extends ConsumerStatefulWidget {
-  const ConversationSidebar({super.key, this.width = kSidebarDefault});
+  const ConversationSidebar({
+    super.key,
+    this.width = kSidebarDefault,
+    this.onPicked,
+  });
 
   final double width;
+
+  /// Called after a conversation is opened from the list, so a phone
+  /// layout can move from the list to the stream.
+  final VoidCallback? onPicked;
 
   @override
   ConsumerState<ConversationSidebar> createState() =>
@@ -69,6 +79,7 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
     if (e.logicalKey == LogicalKeyboardKey.enter && shown.isNotEmpty) {
       final pick = shown[_cursor < 0 ? 0 : _cursor];
       ref.read(conversationListProvider.notifier).selectConversation(pick.id);
+      widget.onPicked?.call();
       _query.clear();
       setState(() => _cursor = -1);
       node.unfocus();
@@ -117,6 +128,7 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
             ref
                 .read(conversationListProvider.notifier)
                 .selectConversation(conv.id);
+            widget.onPicked?.call();
           },
           onRename: () => _askForName(context, ref, conv),
           onDelete: () => _confirmDelete(context, ref, conv),
@@ -140,10 +152,18 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // ── Phone: the list is the home screen, so it wears the brand.
+            if (widget.onPicked != null)
+              Container(
+                height: 60,
+                padding: const EdgeInsets.fromLTRB(Sp.x4, Sp.x2, Sp.x2, 0),
+                alignment: Alignment.centerLeft,
+                child: const BrandLockup(height: 20, wink: BrandWink.once),
+              ),
             // ── Filter: sits in a header as tall as the stream's top bar,
             // so the two hairlines meet across the divider.
             Container(
-              height: 72,
+              height: widget.onPicked != null ? 64 : 72,
               padding: const EdgeInsets.symmetric(horizontal: 12),
               alignment: Alignment.center,
               decoration: const BoxDecoration(
@@ -193,13 +213,18 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
             ),
             // ── Footer ──
             Container(
-              padding: const EdgeInsets.fromLTRB(6, 6, 6, 8),
+              padding: EdgeInsets.fromLTRB(
+                6,
+                6,
+                6,
+                8 + MediaQuery.viewPaddingOf(context).bottom,
+              ),
               decoration: const BoxDecoration(
                 border: Border(top: BorderSide(color: Dk.line)),
               ),
               child: Row(
                 children: [
-                  const _CreateRoomButton(),
+                  _CreateRoomButton(onPicked: widget.onPicked),
                   const Spacer(),
                   _FootButton(
                     icon: Icons.delete_outline_rounded,
@@ -224,8 +249,9 @@ class _SearchField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final touch = Touch.primary;
     return SizedBox(
-      height: 34,
+      height: touch ? 42 : 34,
       child: TextField(
         controller: controller,
         focusNode: sidebarSearchFocus,
@@ -241,21 +267,25 @@ class _SearchField extends StatelessWidget {
           prefixIcon: const Icon(Icons.search_rounded, size: 16, color: Dk.t3),
           prefixIconConstraints:
               const BoxConstraints(minWidth: 34, minHeight: 34),
-          suffixIcon: Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: Center(
-              widthFactor: 1,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Dk.line2),
-                  borderRadius: BorderRadius.circular(4),
+          suffixIcon: touch
+              ? null
+              : Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Center(
+                    widthFactor: 1,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Dk.line2),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child:
+                          Text('Ctrl K', style: Ty.meta.copyWith(fontSize: 10)),
+                    ),
+                  ),
                 ),
-                child: Text('Ctrl K', style: Ty.meta.copyWith(fontSize: 10)),
-              ),
-            ),
-          ),
-          contentPadding: const EdgeInsets.symmetric(vertical: 8),
+          contentPadding: EdgeInsets.symmetric(vertical: touch ? 12 : 8),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(Rd.md),
             borderSide: const BorderSide(color: Dk.line),
@@ -305,7 +335,8 @@ Future<void> _openTrash(BuildContext context) {
 
 /// Create a group room (§10.5): name it, then it appears in the list.
 class _CreateRoomButton extends ConsumerWidget {
-  const _CreateRoomButton();
+  const _CreateRoomButton({this.onPicked});
+  final VoidCallback? onPicked;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -349,6 +380,7 @@ class _CreateRoomButton extends ConsumerWidget {
       ref.read(conversationListProvider.notifier).retry();
       if (roomId != null) {
         ref.read(activeConversationIdProvider.notifier).state = roomId;
+        onPicked?.call();
       }
     } catch (e) {
       if (context.mounted) {
@@ -910,7 +942,10 @@ class _ConversationTileState extends State<_ConversationTile> {
     final c = widget.conversation;
     final active = widget.isActive;
     final lit = active || widget.isCursor;
-    final showMenu = active || _hover || _menuOpen;
+    // A phone has no hover: its row menu opens on a long press, and the
+    // row keeps showing its time.
+    final touch = Touch.primary;
+    final showMenu = touch ? _menuOpen : (active || _hover || _menuOpen);
     final time = c.lastMessageTime == null
         ? null
         : rowTime(c.lastMessageTime!.toLocal(), DateTime.now());
@@ -920,6 +955,7 @@ class _ConversationTileState extends State<_ConversationTile> {
       onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
         onSecondaryTapDown: (d) => _menu(d.globalPosition),
+        onLongPressStart: touch ? (d) => _menu(d.globalPosition) : null,
         child: Material(
           color: Colors.transparent,
           child: InkWell(
@@ -929,15 +965,21 @@ class _ConversationTileState extends State<_ConversationTile> {
             splashFactory: NoSplash.splashFactory,
             child: AnimatedContainer(
               duration: Mo.fast,
-              padding: const EdgeInsets.fromLTRB(10, 9, 6, 9),
+              padding: touch
+                  ? const EdgeInsets.fromLTRB(12, 12, 10, 12)
+                  : const EdgeInsets.fromLTRB(10, 9, 6, 9),
               decoration: BoxDecoration(
                 color: lit ? Dk.p3 : Colors.transparent,
                 borderRadius: BorderRadius.circular(Rd.md),
               ),
               child: Row(
                 children: [
-                  Monogram(c.displayName, size: 30, group: c.isGroup),
-                  const SizedBox(width: 11),
+                  Monogram(
+                    c.displayName,
+                    size: touch ? 38 : 30,
+                    group: c.isGroup,
+                  ),
+                  SizedBox(width: touch ? 14 : 11),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -948,8 +990,7 @@ class _ConversationTileState extends State<_ConversationTile> {
                               child: Text(
                                 c.displayName,
                                 style: Ty.name.copyWith(
-                                  color:
-                                      active ? Dk.t1 : const Color(0xFFDAD7D0),
+                                  color: active ? Dk.t1 : Dk.t1Soft,
                                 ),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
@@ -981,7 +1022,7 @@ class _ConversationTileState extends State<_ConversationTile> {
                   ),
                   const SizedBox(width: 6),
                   SizedBox(
-                    width: 34,
+                    width: touch ? 44 : 34,
                     child: showMenu
                         ? Builder(
                             builder: (bctx) => IconButton(

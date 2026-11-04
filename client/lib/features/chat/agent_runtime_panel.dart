@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 
 import 'tool_labels.dart';
 import 'package:openhuman_client/app/theme.dart';
+import 'package:openhuman_client/widgets/brand.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
@@ -83,9 +84,17 @@ const double kRuntimeMax = 520;
 const double kRuntimeDefault = 360;
 
 class AgentRuntimePanel extends ConsumerWidget {
-  const AgentRuntimePanel({super.key, this.width = kRuntimeDefault});
+  const AgentRuntimePanel({
+    super.key,
+    this.width = kRuntimeDefault,
+    this.onClose,
+  });
 
   final double width;
+
+  /// Shown as a close button when the pane floats (tablet overlay, phone
+  /// sheet) instead of sitting in the window.
+  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -124,7 +133,18 @@ class AgentRuntimePanel extends ConsumerWidget {
                     ],
                   ),
                   const Spacer(),
-                  Text('Ctrl I', style: Ty.meta.copyWith(color: Dk.t4)),
+                  if (onClose != null)
+                    IconButton(
+                      tooltip: '关闭',
+                      onPressed: onClose,
+                      icon: const Icon(
+                        Icons.close_rounded,
+                        size: 18,
+                        color: Dk.t2,
+                      ),
+                    )
+                  else
+                    Text('Ctrl I', style: Ty.meta.copyWith(color: Dk.t4)),
                 ],
               ),
             ),
@@ -148,8 +168,14 @@ class AgentRuntimePanel extends ConsumerWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.memory_rounded, size: 20, color: Dk.t3),
-              const SizedBox(height: Sp.x3),
+              // The mark, dimmed and winking now and then: waiting.
+              const BrandMark(
+                size: 40,
+                wink: BrandWink.idle,
+                chevron: Dk.t3,
+                human: Dk.t4,
+              ),
+              const SizedBox(height: Sp.x4),
               Text('还没有工具信息', style: Ty.small.copyWith(color: Dk.t2)),
               const SizedBox(height: 6),
               Text(
@@ -181,9 +207,7 @@ class AgentRuntimePanel extends ConsumerWidget {
         ),
         const SizedBox(height: 8),
         if (data.capabilities.isEmpty)
-          Text('这个 agent 没有声明工具',
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant))
+          Text('这个 agent 没有声明工具', style: Ty.small.copyWith(color: Dk.t2))
         else
           ...data.capabilities.map((cap) => _ToolCard(
                 capability: cap,
@@ -321,7 +345,7 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
           // ── Header (always visible) ──
           InkWell(
             onTap: () => setState(() => _expanded = !_expanded),
-            borderRadius: BorderRadius.circular(AppRadius.md),
+            borderRadius: BorderRadius.circular(Rd.md),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               child: Row(
@@ -422,9 +446,7 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
     final properties = _properties;
     if (properties.isEmpty) {
       return [
-        Text('这个工具不需要填写参数',
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+        Text('这个工具不需要填写参数', style: Ty.small.copyWith(color: Dk.t2)),
       ];
     }
 
@@ -635,7 +657,7 @@ class _OptionalSection extends StatelessWidget {
       children: [
         InkWell(
           onTap: onToggle,
-          borderRadius: BorderRadius.circular(AppRadius.sm),
+          borderRadius: BorderRadius.circular(Rd.sm),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: Row(
@@ -643,13 +665,14 @@ class _OptionalSection extends StatelessWidget {
                 Icon(
                   expanded ? Icons.expand_less : Icons.expand_more,
                   size: 16,
-                  color: theme.colorScheme.onSurfaceVariant,
+                  color: Dk.t2,
                 ),
                 const SizedBox(width: 4),
                 Text(
                   '更多选项（可选 · $count 项）',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
+                  style: Ty.small.copyWith(
+                    fontSize: 11.5,
+                    color: Dk.t2,
                   ),
                 ),
               ],
@@ -711,9 +734,9 @@ class _FormField extends StatelessWidget {
             Flexible(
               child: Text(
                 translated,
-                style: theme.textTheme.bodySmall?.copyWith(
+                style: Ty.small.copyWith(
                   fontWeight: FontWeight.w600,
-                  color: theme.colorScheme.onSurface,
+                  color: Dk.t1,
                 ),
               ),
             ),
@@ -721,10 +744,10 @@ class _FormField extends StatelessWidget {
               const SizedBox(width: 6),
               Text(
                 name,
-                style: theme.textTheme.labelSmall?.copyWith(
+                style: Ty.small.copyWith(
                   fontFamily: 'GeistMono',
                   fontSize: 10,
-                  color: theme.colorScheme.onSurfaceVariant,
+                  color: Dk.t2,
                 ),
               ),
             ],
@@ -732,9 +755,9 @@ class _FormField extends StatelessWidget {
             if (isRequired)
               Text(
                 '必填',
-                style: theme.textTheme.labelSmall?.copyWith(
+                style: Ty.small.copyWith(
                   fontSize: 10,
-                  color: theme.colorScheme.error,
+                  color: Dk.danger,
                 ),
               ),
           ],
@@ -744,8 +767,8 @@ class _FormField extends StatelessWidget {
         if (description != null) ...[
           const SizedBox(height: 2),
           Text(description!,
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+              style: Ty.small.copyWith(
+                color: Dk.t2,
                 fontSize: 11,
                 height: 1.4,
               )),
@@ -770,11 +793,11 @@ class _FormField extends StatelessWidget {
           isDense: true,
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(AppRadius.sm)),
+          border:
+              OutlineInputBorder(borderRadius: BorderRadius.circular(Rd.sm)),
           hintText: '请选择…',
         ),
-        style: theme.textTheme.bodySmall,
+        style: Ty.small,
         items: enumValues!
             .map((v) => DropdownMenuItem(value: v, child: Text(v)))
             .toList(),
@@ -798,8 +821,8 @@ class _FormField extends StatelessWidget {
             const SizedBox(width: 8),
             Text(
               boolValue == true ? '是' : '否',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+              style: Ty.small.copyWith(
+                color: Dk.t2,
               ),
             ),
           ],
@@ -813,11 +836,11 @@ class _FormField extends StatelessWidget {
             isDense: true,
             contentPadding:
                 const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(AppRadius.sm)),
+            border:
+                OutlineInputBorder(borderRadius: BorderRadius.circular(Rd.sm)),
             hintText: '0',
           ),
-          style: theme.textTheme.bodySmall,
+          style: Ty.small,
           onChanged: (_) => onChanged(),
         );
       case 'array':
@@ -827,11 +850,11 @@ class _FormField extends StatelessWidget {
             isDense: true,
             contentPadding:
                 const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(AppRadius.sm)),
+            border:
+                OutlineInputBorder(borderRadius: BorderRadius.circular(Rd.sm)),
             hintText: '多个用逗号分隔，如 a, b',
           ),
-          style: theme.textTheme.bodySmall,
+          style: Ty.small,
           onChanged: (_) => onChanged(),
         );
       default: // string
@@ -841,11 +864,11 @@ class _FormField extends StatelessWidget {
             isDense: true,
             contentPadding:
                 const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(AppRadius.sm)),
+            border:
+                OutlineInputBorder(borderRadius: BorderRadius.circular(Rd.sm)),
             hintText: '请输入…',
           ),
-          style: theme.textTheme.bodySmall,
+          style: Ty.small,
           onChanged: (_) => onChanged(),
         );
     }
@@ -864,8 +887,8 @@ class _StatusDot extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = switch (status) {
       'success' => Dk.ok,
-      'error' => Theme.of(context).colorScheme.error,
-      'timeout' => const Color(0xFFE0B252),
+      'error' => Dk.danger,
+      'timeout' => Dk.warn,
       'pending' => Dk.blue,
       _ => Dk.t3,
     };
@@ -895,9 +918,9 @@ class _ResultView extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerLowest,
-        borderRadius: BorderRadius.circular(AppRadius.sm),
-        border: Border.all(color: theme.colorScheme.outlineVariant),
+        color: Dk.codeFloor,
+        borderRadius: BorderRadius.circular(Rd.sm),
+        border: Border.all(color: Dk.line),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -907,21 +930,19 @@ class _ResultView extends StatelessWidget {
               _StatusDot(status: state.status),
               const SizedBox(width: 6),
               Text('执行结果 · ${statusLabel(state.status)}',
-                  style: theme.textTheme.labelSmall
-                      ?.copyWith(fontWeight: FontWeight.w600)),
+                  style: Ty.small
+                      .copyWith(fontSize: 11.5, fontWeight: FontWeight.w600)),
             ],
           ),
           if (state.error != null) ...[
             const SizedBox(height: 4),
-            Text(state.error!,
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.error)),
+            Text(state.error!, style: Ty.small.copyWith(color: Dk.danger)),
           ],
           if (state.output != null) ...[
             const SizedBox(height: 4),
             SelectableText(
               _formatOutput(state.output),
-              style: theme.textTheme.bodySmall?.copyWith(
+              style: Ty.small.copyWith(
                   fontFamily: 'GeistMono',
                   fontFamilyFallback: const ['NotoSansSC'],
                   fontSize: 11),
@@ -959,8 +980,7 @@ class _SystemPromptButton extends StatelessWidget {
       width: double.infinity,
       child: OutlinedButton.icon(
         onPressed: () => _openFullScreen(context),
-        icon: Icon(Icons.description_outlined,
-            size: 18, color: theme.colorScheme.primary),
+        icon: const Icon(Icons.description_outlined, size: 18, color: Dk.t2),
         label: Text('查看完整提示词（$lineCount 行）'),
         style: OutlinedButton.styleFrom(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -986,7 +1006,6 @@ class _SystemPromptFullScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
         title: const Text('系统提示词'),
@@ -1011,7 +1030,7 @@ class _SystemPromptFullScreen extends StatelessWidget {
           padding: const EdgeInsets.all(24),
           child: SelectableText(
             prompt,
-            style: theme.textTheme.bodyMedium?.copyWith(
+            style: Ty.body.copyWith(
               fontFamily: 'GeistMono',
               fontFamilyFallback: const ['NotoSansSC'],
               fontSize: 13,

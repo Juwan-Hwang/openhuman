@@ -15,7 +15,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
 
+import '../../../app/adaptive.dart';
 import '../../../app/tokens.dart';
+import '../../../widgets/brand.dart';
 import '../../../widgets/monogram.dart';
 import 'rich_text.dart';
 
@@ -142,6 +144,7 @@ class _MessageStreamState extends State<MessageStream> {
   @override
   Widget build(BuildContext context) {
     if (widget.messages.isEmpty) return const _EmptyStream();
+    final m = StreamScope.of(context);
     final rows = buildRows(widget.messages);
     final now = DateTime.now();
     String? newestAgentId;
@@ -155,12 +158,13 @@ class _MessageStreamState extends State<MessageStream> {
     return Stack(
       children: [
         // The rail runs the full height behind the rows.
-        const Positioned(
-          left: Sp.gutter - 17,
-          top: 0,
-          bottom: 0,
-          child: SizedBox(width: 1, child: ColoredBox(color: Dk.line)),
-        ),
+        if (m.rail)
+          Positioned(
+            left: m.gutter - 17,
+            top: 0,
+            bottom: 0,
+            child: const SizedBox(width: 1, child: ColoredBox(color: Dk.line)),
+          ),
         ScrollConfiguration(
           behavior: ScrollConfiguration.of(context).copyWith(scrollbars: true),
           child: ListView.builder(
@@ -198,7 +202,7 @@ class _MessageStreamState extends State<MessageStream> {
           ),
         ),
         Positioned(
-          right: Sp.x9,
+          right: m.right,
           bottom: Sp.x4,
           child: AnimatedSwitcher(
             duration: Mo.base,
@@ -232,27 +236,37 @@ class _Row extends StatelessWidget {
   Widget build(BuildContext context) {
     final m = row.message;
     final t = DateTime.fromMillisecondsSinceEpoch(m.createdAt ?? 0);
-    final body = mine ? _mineBody(m) : _agentBody(m);
+    final g = StreamScope.of(context);
+    final body = mine ? _mineBody(m, g, _hm(t)) : _agentBody(m, g);
 
     Widget content = Padding(
       padding: EdgeInsets.only(
-        right: Sp.x9,
+        right: g.right,
+        // A phone gives the human's bubbles room on the left so they never
+        // run the full width and read like an agent card.
+        left: g.rail || !mine ? 0 : Sp.x9,
         top: row.head ? Sp.x5 : Sp.x2,
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: Sp.gutter,
-            child:
-                row.head ? _Gutter(time: _hm(t), mine: mine, hot: hot) : null,
+            width: g.gutter,
+            child: row.head && g.rail
+                ? _Gutter(time: _hm(t), mine: mine, hot: hot)
+                : null,
           ),
           Expanded(
             child: Column(
               crossAxisAlignment:
                   mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
               children: [
-                if (row.head && !mine) _Who(author: m.author),
+                if (row.head && !mine)
+                  _Who(
+                    author: m.author,
+                    time: g.rail ? null : _hm(t),
+                    hot: hot && !g.rail,
+                  ),
                 body,
               ],
             ),
@@ -279,7 +293,7 @@ class _Row extends StatelessWidget {
     return content;
   }
 
-  Widget _agentBody(types.Message m) {
+  Widget _agentBody(types.Message m, StreamMetrics g) {
     if (m is types.ImageMessage) {
       return Align(
         alignment: Alignment.centerLeft,
@@ -289,11 +303,16 @@ class _Row extends StatelessWidget {
     final text = m is types.TextMessage ? m.text : '';
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: Sp.measure + 50),
-      child: _RequestCard(hot: hot, text: text, mentions: mentions),
+      child: _RequestCard(
+        hot: hot,
+        text: text,
+        mentions: mentions,
+        padding: g.cardPad,
+      ),
     );
   }
 
-  Widget _mineBody(types.Message m) {
+  Widget _mineBody(types.Message m, StreamMetrics g, String time) {
     if (m is types.ImageMessage) return _ImageTile(uri: m.uri);
     final text = m is types.TextMessage ? m.text : '';
     final sending = m.status == types.Status.sending;
@@ -331,7 +350,11 @@ class _Row extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(top: 6, right: 2),
             child: Text(
-              sending ? '发送中…' : '已送达',
+              sending
+                  ? '发送中…'
+                  : g.rail
+                      ? '已送达'
+                      : '已送达 · $time',
               style: Ty.small.copyWith(fontSize: 11, color: Dk.t3),
             ),
           ),
@@ -472,8 +495,14 @@ class _NodeState extends State<_Node> with SingleTickerProviderStateMixin {
 }
 
 class _Who extends StatelessWidget {
-  const _Who({required this.author});
+  const _Who({required this.author, this.time, this.hot = false});
   final types.User author;
+
+  /// Shown beside the name when there is no gutter clock (phones).
+  final String? time;
+
+  /// Waiting on the human, on a layout with no rail node to say so.
+  final bool hot;
 
   @override
   Widget build(BuildContext context) {
@@ -490,7 +519,14 @@ class _Who extends StatelessWidget {
         children: [
           Monogram(name),
           const SizedBox(width: 10),
-          Text(name, style: Ty.name),
+          Flexible(
+            child: Text(
+              name,
+              style: Ty.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
           if (tag != null) ...[
             const SizedBox(width: 8),
             Container(
@@ -501,6 +537,14 @@ class _Who extends StatelessWidget {
               ),
               child: Text(tag, style: Ty.meta.copyWith(color: Dk.t2)),
             ),
+          ],
+          if (time != null) ...[
+            const SizedBox(width: 8),
+            Text(time!, style: Ty.meta),
+          ],
+          if (hot) ...[
+            const SizedBox(width: 8),
+            const _Node(mine: false, hot: true),
           ],
         ],
       ),
@@ -513,10 +557,12 @@ class _RequestCard extends StatelessWidget {
     required this.hot,
     required this.text,
     required this.mentions,
+    required this.padding,
   });
   final bool hot;
   final String text;
   final List<String> mentions;
+  final EdgeInsets padding;
 
   @override
   Widget build(BuildContext context) {
@@ -531,12 +577,12 @@ class _RequestCard extends StatelessWidget {
         ),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: hot ? const Color(0x55FF5B1F) : Dk.line,
+          color: hot ? Dk.signalEdge : Dk.line,
         ),
         boxShadow: hot
             ? const [
                 BoxShadow(
-                  color: Color(0x14FF5B1F),
+                  color: Dk.signalGlow,
                   blurRadius: 32,
                   spreadRadius: -6,
                 ),
@@ -546,7 +592,7 @@ class _RequestCard extends StatelessWidget {
       child: Stack(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
+            padding: padding,
             child: RichMessageText(text, style: Ty.prose, mentions: mentions),
           ),
           Positioned(
@@ -604,7 +650,7 @@ class _ImageTile extends StatelessWidget {
       child: GestureDetector(
         onTap: () => showDialog<void>(
           context: context,
-          barrierColor: const Color(0xE6000000),
+          barrierColor: Dk.scrimDeep,
           builder: (c) => GestureDetector(
             onTap: () => Navigator.of(c).pop(),
             child: InteractiveViewer(
@@ -640,30 +686,45 @@ class _DayMarker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final g = StreamScope.of(context);
+    final pill = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: Dk.bg,
+        border: Border.all(color: Dk.line),
+        borderRadius: BorderRadius.circular(Rd.pill),
+      ),
+      child: Text(label, style: Ty.small.copyWith(fontSize: 11)),
+    );
+    const rule = Divider(height: 1, color: Dk.line);
+    if (!g.rail) {
+      // No rail to hang the pill on: centre it between two rules.
+      return Padding(
+        padding: EdgeInsets.fromLTRB(g.gutter, Sp.x6, g.right, Sp.x1),
+        child: Row(
+          children: [
+            const Expanded(child: rule),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: Sp.x3),
+              child: pill,
+            ),
+            const Expanded(child: rule),
+          ],
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.only(top: Sp.x6, bottom: Sp.x1),
       child: Row(
         children: [
           SizedBox(
-            width: Sp.gutter - 17 + 0.5,
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                margin: const EdgeInsets.only(right: 0),
-                decoration: BoxDecoration(
-                  color: Dk.bg,
-                  border: Border.all(color: Dk.line),
-                  borderRadius: BorderRadius.circular(Rd.pill),
-                ),
-                child: Text(label, style: Ty.small.copyWith(fontSize: 11)),
-              ),
-            ),
+            width: g.gutter - 17 + 0.5,
+            child: Align(alignment: Alignment.centerRight, child: pill),
           ),
-          const Expanded(
+          Expanded(
             child: Padding(
-              padding: EdgeInsets.only(left: Sp.x3, right: Sp.x9),
-              child: Divider(height: 1, color: Dk.line),
+              padding: EdgeInsets.only(left: Sp.x3, right: g.right),
+              child: rule,
             ),
           ),
         ],
@@ -724,40 +785,30 @@ class _EmptyStream extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            width: 44,
-            height: 44,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                Container(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Dk.line2, width: 2),
-                  ),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(Sp.x6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 220,
+              height: 150,
+              child: BrandHalo(
+                radius: 110,
+                child: Center(
+                  child: BrandMark(size: 64, wink: BrandWink.idle),
                 ),
-                Container(
-                  width: 14,
-                  height: 14,
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Dk.t4,
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
-          const SizedBox(height: Sp.x5),
-          Text('还没有请求', style: Ty.title.copyWith(fontSize: 17)),
-          const SizedBox(height: Sp.x2),
-          Text(
-            'AI 发来的第一条请求会出现在这里。',
-            style: Ty.small.copyWith(fontSize: 13),
-          ),
-        ],
+            Text('还没有请求', style: Ty.title.copyWith(fontSize: 17)),
+            const SizedBox(height: Sp.x2),
+            Text(
+              'AI 发来的第一条请求会出现在这里。',
+              textAlign: TextAlign.center,
+              style: Ty.small.copyWith(fontSize: 13),
+            ),
+          ],
+        ),
       ),
     );
   }

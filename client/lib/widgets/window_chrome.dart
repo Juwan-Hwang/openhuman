@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../app/tokens.dart';
+import 'brand.dart';
 
 class WindowChrome extends StatelessWidget {
   const WindowChrome({super.key, required this.child});
@@ -104,22 +105,10 @@ class _TitleBarState extends State<TitleBar> with WindowListener {
                 padding: const EdgeInsets.only(left: 14),
                 child: Row(
                   children: [
-                    Container(
-                      width: 12,
-                      height: 12,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: ink, width: 1.3),
-                      ),
-                      child: Container(
-                        width: 4,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: _focused ? Dk.signal : Dk.t4,
-                        ),
-                      ),
+                    AnimatedOpacity(
+                      duration: Mo.base,
+                      opacity: _focused ? 1 : 0.45,
+                      child: const BrandMark(size: 16),
                     ),
                     const SizedBox(width: 9),
                     Text(
@@ -192,7 +181,7 @@ class _CaptionButtonState extends State<_CaptionButton> {
     final bg = !_hover
         ? Colors.transparent
         : widget.danger
-            ? const Color(0xFFC42B1C)
+            ? Dk.closeRed
             : Dk.p3;
     final fg = _hover ? Dk.t1 : widget.ink;
     return Tooltip(

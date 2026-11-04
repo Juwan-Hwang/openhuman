@@ -17,6 +17,7 @@ library;
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:openhuman_client/app/theme.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -71,7 +72,6 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final roomAsync = ref.watch(roomInfoProvider(widget.roomId));
     final isOwner = ref.watch(roomOwnershipProvider(widget.roomId));
 
@@ -99,7 +99,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
               children: [
                 Row(
                   children: [
-                    Text(title, style: theme.textTheme.titleMedium),
+                    Text(title, style: Ty.title.copyWith(fontSize: 16)),
                     const Spacer(),
                     if (_busy)
                       const SizedBox(
@@ -113,7 +113,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
 
                 // ── 成员 ──
                 Text('成员（${members.length}）',
-                    style: theme.textTheme.titleSmall),
+                    style: Ty.name.copyWith(fontSize: 13.5)),
                 const SizedBox(height: 8),
                 for (final m in members)
                   ListTile(
@@ -134,7 +134,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
 
                 if (isOwner) ...[
                   // ── 邀请 ──
-                  Text('邀请', style: theme.textTheme.titleSmall),
+                  Text('邀请', style: Ty.name.copyWith(fontSize: 13.5)),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
@@ -170,7 +170,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                   const Divider(height: 32),
 
                   // ── 连接配置 ──
-                  Text('连接配置', style: theme.textTheme.titleSmall),
+                  Text('连接配置', style: Ty.name.copyWith(fontSize: 13.5)),
                   const SizedBox(height: 8),
                   _CopyRow(
                     label: 'Base URL',
@@ -193,15 +193,15 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                     Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(8),
+                        color: Dk.p3,
+                        borderRadius: BorderRadius.circular(Rd.sm),
                       ),
                       child: Row(
                         children: [
                           Expanded(
                             child: Text(
                               _lastCallerKey!,
-                              style: theme.textTheme.bodySmall,
+                              style: Ty.small,
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
@@ -222,7 +222,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                   const Divider(height: 32),
 
                   // ── 设置 ──
-                  Text('房间设置', style: theme.textTheme.titleSmall),
+                  Text('房间设置', style: Ty.name.copyWith(fontSize: 13.5)),
                   const SizedBox(height: 8),
                   _SettingsEditor(
                     idleSecs: metadata['room_idle_secs'] as int?,
@@ -239,8 +239,8 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                 ] else ...[
                   Text(
                     '邀请、连接配置与房间设置仅房主可见。',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
+                    style: Ty.small.copyWith(
+                      color: Dk.t2,
                     ),
                   ),
                 ],
@@ -299,19 +299,18 @@ class _CopyRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
           SizedBox(
             width: 80,
-            child: Text(label, style: theme.textTheme.bodySmall),
+            child: Text(label, style: Ty.small),
           ),
           Expanded(
             child: Text(
               value,
-              style: theme.textTheme.bodySmall?.copyWith(
+              style: Ty.small.copyWith(
                   fontFamily: 'GeistMono',
                   fontFamilyFallback: const ['NotoSansSC']),
               overflow: TextOverflow.ellipsis,
@@ -405,13 +404,12 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
-            Text('已连接的 AI', style: theme.textTheme.titleSmall),
+            Text('已连接的 AI', style: Ty.name.copyWith(fontSize: 13.5)),
             const Spacer(),
             IconButton(
               icon: const Icon(Icons.refresh, size: 18),
@@ -432,9 +430,9 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
             if (snap.hasError) return Text('加载失败：${snap.error}');
             final callers = snap.data ?? const [];
             if (callers.isEmpty) {
-              return Text(
+              return const Text(
                 '还没有 AI 接入这个房间。',
-                style: theme.textTheme.bodySmall,
+                style: Ty.small,
               );
             }
             return Column(
@@ -446,9 +444,7 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
                     leading: Icon(
                       Icons.smart_toy_outlined,
                       size: 20,
-                      color: c['live'] == true
-                          ? theme.colorScheme.primary
-                          : theme.colorScheme.onSurfaceVariant,
+                      color: c['live'] == true ? Dk.t1 : Dk.t2,
                     ),
                     title: Text(c['display_name'] as String? ?? '?'),
                     subtitle: Text(

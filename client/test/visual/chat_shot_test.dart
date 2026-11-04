@@ -20,6 +20,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:openhuman_client/widgets/window_chrome.dart';
 import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
 
+import 'harness.dart' show settleImages;
+
 class _Fake extends oh.OpenHumanClient {
   final msgs = StreamController<oh.MessageReceivedData>.broadcast();
   @override
@@ -285,6 +287,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('连接'));
     await tester.pumpAndSettle();
+    await settleImages(tester);
     await expectLater(
       find.byType(WindowChrome),
       matchesGoldenFile('shots/auth.png'),

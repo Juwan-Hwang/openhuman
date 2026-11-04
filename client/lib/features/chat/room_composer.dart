@@ -8,6 +8,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../app/adaptive.dart';
 import '../../app/tokens.dart';
 
 /// Member display names of a room, for completion + highlight.
@@ -150,8 +151,17 @@ class _ComposerState extends State<Composer> {
     final canSend = widget.enabled && _controller.text.trim().isNotEmpty;
     final focused = _focus.hasFocus;
 
+    final g = StreamScope.of(context);
+    final touch = Touch.primary;
+    final phone = !g.rail;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(Sp.gutter, 0, Sp.x9, Sp.x5),
+      padding: EdgeInsets.fromLTRB(
+        phone ? Sp.x3 : g.gutter,
+        0,
+        phone ? Sp.x3 : g.right,
+        // Clear a phone's home indicator.
+        (phone ? Sp.x3 : Sp.x5) + MediaQuery.viewPaddingOf(context).bottom,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -171,7 +181,7 @@ class _ComposerState extends State<Composer> {
                 ),
                 boxShadow: const [
                   BoxShadow(
-                    color: Color(0xE60A0A0B),
+                    color: Dk.bgFade,
                     blurRadius: 50,
                     offset: Offset(0, -20),
                   ),
@@ -181,13 +191,16 @@ class _ComposerState extends State<Composer> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+                    padding: EdgeInsets.fromLTRB(phone ? 16 : 20, 14, 20, 0),
                     child: TextField(
                       controller: _controller,
                       focusNode: _focus,
                       enabled: widget.enabled,
                       minLines: 1,
-                      maxLines: 8,
+                      maxLines: phone ? 5 : 8,
+                      textInputAction: touch
+                          ? TextInputAction.newline
+                          : TextInputAction.none,
                       style: Ty.prose.copyWith(color: Dk.t1),
                       cursorColor: Dk.signal,
                       cursorWidth: 2,
@@ -210,15 +223,19 @@ class _ComposerState extends State<Composer> {
                     ),
                   ),
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 8, 10, 10),
+                    padding: EdgeInsets.fromLTRB(phone ? 12 : 20, 8, 10, 10),
                     child: Row(
                       children: [
-                        const _Kbd('↵', '发送'),
-                        const SizedBox(width: Sp.x4),
-                        const _Kbd('Shift ↵', '换行'),
-                        if (widget.onEndTurn != null) ...[
+                        // Keyboard hints only where there is a keyboard,
+                        // and only when there is room to read them.
+                        if (!touch && !phone) ...[
+                          const _Kbd('↵', '发送'),
                           const SizedBox(width: Sp.x4),
-                          const _Kbd('Ctrl ↵', '结束本轮'),
+                          const _Kbd('Shift ↵', '换行'),
+                          if (widget.onEndTurn != null && g.gutter > 90) ...[
+                            const SizedBox(width: Sp.x4),
+                            const _Kbd('Ctrl ↵', '结束本轮'),
+                          ],
                         ],
                         const Spacer(),
                         if (widget.onEndTurn != null && widget.enabled) ...[
@@ -286,7 +303,10 @@ class _GhostButton extends StatelessWidget {
         borderRadius: BorderRadius.circular(Rd.md),
         hoverColor: Dk.p3,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          padding: EdgeInsets.symmetric(
+            horizontal: 14,
+            vertical: Touch.primary ? 13 : 8,
+          ),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(Rd.md),
             border: Border.all(color: Dk.line2),
@@ -322,7 +342,8 @@ class _SendButton extends StatelessWidget {
             onTap: enabled ? onTap : null,
             borderRadius: BorderRadius.circular(Rd.md),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 14, 8),
+              padding: EdgeInsets.fromLTRB(
+                  16, Touch.primary ? 13 : 8, 14, Touch.primary ? 13 : 8),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -372,7 +393,7 @@ class _Suggestions extends StatelessWidget {
         borderRadius: BorderRadius.circular(Rd.lg),
         border: Border.all(color: Dk.line2),
         boxShadow: const [
-          BoxShadow(color: Color(0x80000000), blurRadius: 24),
+          BoxShadow(color: Dk.shadow, blurRadius: 24),
         ],
       ),
       child: Column(

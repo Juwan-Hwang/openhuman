@@ -14,34 +14,54 @@ import 'package:flutter/material.dart';
 
 /// Colours.
 class Dk {
-  // Surfaces, from the window floor up.
-  static const Color bg = Color(0xFF0A0A0B);
-  static const Color p1 = Color(0xFF111113); // side panes
-  static const Color p2 = Color(0xFF17171A); // cards, composer
-  static const Color p3 = Color(0xFF1E1E22); // selected row, chips
-  static const Color p4 = Color(0xFF26262B); // hover on p3, code
+  // Brand (assets/brand): Ink, Apricot, Paper. Apricot is "the human" in
+  // the mark, so in the console it is exactly the human's colour: it lights
+  // up when the human is the one being waited on, and nowhere else.
+  static const Color ink = Color(0xFF16171C);
+  static const Color apricot = Color(0xFFFF8A5C);
+  static const Color paper = Color(0xFFF7F2EA);
+
+  // Surfaces, from the window floor up. Built on Ink, a cool near-black.
+  static const Color bg = Color(0xFF0F1014);
+  static const Color p1 = Color(0xFF131418); // side panes
+  static const Color p2 = ink; // cards, composer
+  static const Color p3 = Color(0xFF1E1F25); // selected row, chips
+  static const Color p4 = Color(0xFF272830); // hover on p3, code
 
   // Hairlines.
-  static const Color line = Color(0xFF26262B);
-  static const Color line2 = Color(0xFF33333A);
+  static const Color line = Color(0xFF23242B);
+  static const Color line2 = Color(0xFF30313A);
 
-  // Text, warm white down to a quiet grey.
-  static const Color t1 = Color(0xFFF2F0EB);
-  static const Color t2 = Color(0xFFA5A39E);
-  static const Color t3 = Color(0xFF6B6A67);
-  static const Color t4 = Color(0xFF4A4A50);
-  static const Color prose = Color(0xFFE9E6DF); // long agent text
+  // Text, warm paper down to a quiet grey.
+  static const Color t1 = paper;
+  static const Color t2 = Color(0xFFA9A59E);
+  static const Color t3 = Color(0xFF706E6A);
+  static const Color t4 = Color(0xFF4B4B53);
+  static const Color prose = Color(0xFFECE7DE); // long agent text
 
-  /// "Your move." The one loud colour.
-  static const Color signal = Color(0xFFFF5B1F);
-  static const Color signalSoft = Color(0x1FFF5B1F); // 12 %
-  static const Color signalRing = Color(0x2EFF5B1F); // 18 %
-  static const Color signalInk = Color(0xFF140701); // text on signal
-  static const Color signalCode = Color(0xFFFFC9A8);
+  /// Scrim behind modal sheets and overlay panes.
+  static const Color scrim = Color(0xB3060709);
+
+  /// Long soft shadow under floating things (menus, composer).
+  static const Color shadow = Color(0x99000000);
+
+  /// "Your move." The one loud colour: the brand's Apricot.
+  static const Color signal = apricot;
+  static const Color signalSoft = Color(0x1FFF8A5C); // 12 %
+  static const Color signalRing = Color(0x2EFF8A5C); // 18 %
+  static const Color signalEdge = Color(0x59FF8A5C); // 35 %, card border
+  static const Color signalGlow = Color(0x17FF8A5C); // 9 %, card halo
+  static const Color signalInk = Color(0xFF1F0D05); // text on signal
+  static const Color signalCode = Color(0xFFFFD2BF);
 
   /// Agent running / success.
   static const Color ok = Color(0xFF9BE15D);
   static const Color okSoft = Color(0x1A9BE15D);
+  static const Color okEdge = Color(0x479BE15D);
+
+  /// Connecting, retrying.
+  static const Color warn = Color(0xFFE0B252);
+  static const Color warnSoft = Color(0x1AE0B252);
 
   /// API task, links, tools.
   static const Color blue = Color(0xFF7AA7FF);
@@ -51,11 +71,45 @@ class Dk {
 
   static const Color danger = Color(0xFFFF6B6B);
   static const Color dangerSoft = Color(0x1AFF6B6B);
+  static const Color dangerEdge = Color(0x47FF6B6B);
 
-  /// The human's own bubble: inverted paper.
-  static const Color mine = t1;
-  static const Color onMine = Color(0xFF121212);
-  static const Color mineCode = Color(0xFFE3DFD6);
+  /// The human's own bubble: the brand's Paper.
+  static const Color mine = paper;
+  static const Color onMine = ink;
+  static const Color mineCode = Color(0xFFE8E1D5);
+  static const Color mineMuted = Color(0xFF6E6A62);
+
+  /// Text a step under t1, for unread-looking rows.
+  static const Color t1Soft = Color(0xFFDCD7CE);
+
+  /// The window floor at 90 %: the fade the composer floats on.
+  static const Color bgFade = Color(0xE60F1014);
+
+  /// Near-black behind a full-screen image.
+  static const Color scrimDeep = Color(0xEB050506);
+
+  /// Code blocks: body and header strip.
+  static const Color codeFloor = Color(0xFF0C0D10);
+  static const Color codeHead = Color(0xFF121317);
+  static const Color codeInk = Color(0xFFBDBAB3);
+  static const Color diffAdd = Color(0xFFB6EC86);
+  static const Color diffDel = Color(0xFFFF8F8F);
+  static const Color dangerInk = Color(0xFFFFB3B3);
+
+  /// Windows' own close-button red, so the caption reads as native.
+  static const Color closeRed = Color(0xFFC42B1C);
+
+  /// Identity hues for agents. None sits near Apricot: that hue belongs
+  /// to the human alone.
+  static const List<Color> hues = [
+    Color(0xFF6E8BE0), // slate blue
+    Color(0xFF8BBF5E), // moss
+    Color(0xFFC9A44A), // brass
+    Color(0xFFB07AD6), // lilac
+    Color(0xFF4FB3A9), // teal
+    Color(0xFFC77C9A), // rose
+  ];
+  static const Color onHue = Color(0xFF111216);
 }
 
 /// Spacing on a 4 px grid.
@@ -96,6 +150,16 @@ class Mo {
   static const Duration slow = Duration(milliseconds: 420);
   static const Cubic expo = Cubic(0.16, 1, 0.3, 1);
   static const Cubic soft = Cubic(0.22, 1, 0.36, 1);
+
+  /// Ambient motion: loops that run on their own (the mark's wink, the
+  /// breathing state dot). Off under test, so frames can settle; the
+  /// platform's "reduce motion" switch turns them off too.
+  static bool ambient = true;
+
+  static bool get loops =>
+      ambient &&
+      !WidgetsBinding
+          .instance.platformDispatcher.accessibilityFeatures.disableAnimations;
 }
 
 /// Type.
@@ -163,6 +227,6 @@ class Ty {
     fontFamilyFallback: cjk,
     fontSize: 12.5,
     height: 1.8,
-    color: Color(0xFFBDBAB3),
+    color: Dk.codeInk,
   );
 }

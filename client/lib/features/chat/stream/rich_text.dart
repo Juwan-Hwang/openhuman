@@ -231,7 +231,7 @@ class RichMessageText extends StatelessWidget {
     super.key,
     required this.style,
     this.codeInk = Dk.signalCode,
-    this.codeFloor = const Color(0xFF24242A),
+    this.codeFloor = Dk.p4,
     this.mentions = const [],
     this.inverted = false,
   });
@@ -300,7 +300,7 @@ class RichMessageText extends StatelessWidget {
                         style: Ty.meta.copyWith(
                           fontSize: 12,
                           height: (style.fontSize! * style.height!) / 12,
-                          color: inverted ? const Color(0xFF6E6A62) : Dk.t3,
+                          color: inverted ? Dk.mineMuted : Dk.t3,
                         ),
                       ),
                     ),
@@ -338,7 +338,7 @@ class _CodePanelState extends State<CodePanel> {
 
   @override
   Widget build(BuildContext context) {
-    final floor = widget.inverted ? const Color(0xFF1A1A1C) : Dk.bg;
+    final floor = widget.inverted ? Dk.ink : Dk.codeFloor;
     final lines = widget.code.split('\n');
     return Container(
       width: double.infinity,
@@ -354,7 +354,7 @@ class _CodePanelState extends State<CodePanel> {
           Container(
             padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
             decoration: const BoxDecoration(
-              color: Color(0xFF141417),
+              color: Dk.codeHead,
               border: Border(bottom: BorderSide(color: Dk.line)),
             ),
             child: Row(
@@ -409,10 +409,10 @@ class _CodePanelState extends State<CodePanel> {
     if (widget.lang == 'diff' || widget.lang.isEmpty) {
       if (line.startsWith('+') && !line.startsWith('+++')) {
         tint = Dk.okSoft;
-        ink = const Color(0xFFB6EC86);
+        ink = Dk.diffAdd;
       } else if (line.startsWith('-') && !line.startsWith('---')) {
         tint = Dk.dangerSoft;
-        ink = const Color(0xFFFF8F8F);
+        ink = Dk.diffDel;
       }
     }
     final w = total >= 100 ? 40.0 : 30.0;

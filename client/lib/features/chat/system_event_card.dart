@@ -40,8 +40,7 @@ class SystemEventCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final effectiveColor = color ?? theme.colorScheme.onSurfaceVariant;
+    final effectiveColor = color ?? Dk.t2;
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 24),
@@ -49,8 +48,8 @@ class SystemEventCard extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHigh,
-            borderRadius: BorderRadius.circular(AppRadius.md),
+            color: Dk.p3,
+            borderRadius: BorderRadius.circular(Rd.md),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -60,7 +59,8 @@ class SystemEventCard extends StatelessWidget {
               Flexible(
                 child: Text(
                   text,
-                  style: theme.textTheme.labelSmall?.copyWith(
+                  style: Ty.small.copyWith(
+                    fontSize: 11.5,
                     color: effectiveColor,
                   ),
                   overflow: TextOverflow.ellipsis,

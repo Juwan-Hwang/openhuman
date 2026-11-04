@@ -17,6 +17,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/notification_service.dart';
 import '../../core/sdk_provider.dart';
+import '../../app/adaptive.dart';
+import '../../widgets/brand.dart';
 
 /// Screen for entering server URL and API key.
 class AuthScreen extends ConsumerStatefulWidget {
@@ -195,236 +197,208 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
         },
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(Sp.x8),
+            padding: EdgeInsets.symmetric(
+              horizontal:
+                  MediaQuery.sizeOf(context).width < 480 ? Sp.x4 : Sp.x8,
+              vertical: Sp.x8,
+            ),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 440),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Dk.p1,
-                  borderRadius: BorderRadius.circular(Rd.xl),
-                  border: Border.all(color: Dk.line),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x66000000),
-                      blurRadius: 80,
-                      spreadRadius: -10,
-                    ),
-                  ],
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // ── Header ──
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(28, 28, 28, 22),
-                      child: Row(
-                        children: [
-                          const _BigMark(),
-                          const SizedBox(width: Sp.x4),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'OpenHuman',
-                                  style: Ty.title.copyWith(fontSize: 19),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  '连接服务器，AI 需要你时会在这里找到你',
-                                  style: Ty.small.copyWith(fontSize: 12.5),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // ── Hero: the mark winks while it waits for the server.
+                  SizedBox(
+                    height: 132,
+                    child: BrandHalo(
+                      radius: 120,
+                      child: Center(
+                        child: BrandMark(
+                          size: 76,
+                          wink: _connecting ? BrandWink.busy : BrandWink.once,
+                        ),
                       ),
                     ),
-                    const Divider(height: 1, color: Dk.line),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(28, 22, 28, 26),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          const _FieldLabel('服务器地址'),
-                          _Field(
-                            controller: _urlController,
-                            hint: 'wss://your-server.com/ws',
-                            icon: Icons.dns_outlined,
-                            enabled: !_connecting,
-                            autofocus: true,
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            '公网用 wss://，本机或局域网可用 ws://',
-                            style: Ty.small.copyWith(
-                              fontSize: 11.5,
-                              color: Dk.t3,
-                            ),
-                          ),
-                          const SizedBox(height: Sp.x5),
-                          const _FieldLabel('API 密钥'),
-                          _Field(
-                            controller: _apiKeyController,
-                            hint: 'ohk_xxxxxxxxxxxx',
-                            icon: Icons.key_outlined,
-                            enabled: !_connecting,
-                            obscure: _obscureApiKey,
-                            trailing: IconButton(
-                              tooltip: _obscureApiKey ? '显示' : '隐藏',
-                              iconSize: 17,
-                              icon: Icon(
-                                _obscureApiKey
-                                    ? Icons.visibility_outlined
-                                    : Icons.visibility_off_outlined,
-                                color: Dk.t3,
+                  ),
+                  const Center(child: BrandWordmark(height: 26)),
+                  const SizedBox(height: Sp.x3),
+                  Text(
+                    '连接服务器，AI 需要你时会在这里找到你',
+                    textAlign: TextAlign.center,
+                    style: Ty.small.copyWith(fontSize: 13),
+                  ),
+                  const SizedBox(height: Sp.x8),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Dk.p1,
+                      borderRadius: BorderRadius.circular(Rd.xl),
+                      border: Border.all(color: Dk.line),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Dk.shadow,
+                          blurRadius: 80,
+                          spreadRadius: -10,
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(28, 22, 28, 26),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              const _FieldLabel('服务器地址'),
+                              _Field(
+                                controller: _urlController,
+                                hint: 'wss://your-server.com/ws',
+                                icon: Icons.dns_outlined,
+                                enabled: !_connecting,
+                                autofocus: true,
                               ),
-                              onPressed: () => setState(
-                                () => _obscureApiKey = !_obscureApiKey,
+                              const SizedBox(height: 6),
+                              Text(
+                                '公网用 wss://，本机或局域网可用 ws://',
+                                style: Ty.small.copyWith(
+                                  fontSize: 11.5,
+                                  color: Dk.t3,
+                                ),
                               ),
-                            ),
-                          ),
-                          const SizedBox(height: Sp.x6),
+                              const SizedBox(height: Sp.x5),
+                              const _FieldLabel('API 密钥'),
+                              _Field(
+                                controller: _apiKeyController,
+                                hint: 'ohk_xxxxxxxxxxxx',
+                                icon: Icons.key_outlined,
+                                enabled: !_connecting,
+                                obscure: _obscureApiKey,
+                                trailing: IconButton(
+                                  tooltip: _obscureApiKey ? '显示' : '隐藏',
+                                  iconSize: 17,
+                                  icon: Icon(
+                                    _obscureApiKey
+                                        ? Icons.visibility_outlined
+                                        : Icons.visibility_off_outlined,
+                                    color: Dk.t3,
+                                  ),
+                                  onPressed: () => setState(
+                                    () => _obscureApiKey = !_obscureApiKey,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: Sp.x6),
 
-                          // ── Error ──
-                          AnimatedSize(
-                            duration: Mo.base,
-                            curve: Mo.expo,
-                            child: _error == null
-                                ? const SizedBox(width: double.infinity)
-                                : Container(
-                                    margin:
-                                        const EdgeInsets.only(bottom: Sp.x4),
-                                    padding: const EdgeInsets.fromLTRB(
-                                      12,
-                                      10,
-                                      12,
-                                      10,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Dk.dangerSoft,
+                              // ── Error ──
+                              AnimatedSize(
+                                duration: Mo.base,
+                                curve: Mo.expo,
+                                child: _error == null
+                                    ? const SizedBox(width: double.infinity)
+                                    : Container(
+                                        margin: const EdgeInsets.only(
+                                            bottom: Sp.x4),
+                                        padding: const EdgeInsets.fromLTRB(
+                                          12,
+                                          10,
+                                          12,
+                                          10,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Dk.dangerSoft,
+                                          borderRadius:
+                                              BorderRadius.circular(Rd.md),
+                                          border: Border.all(
+                                            color: Dk.dangerEdge,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            const Padding(
+                                              padding: EdgeInsets.only(top: 1),
+                                              child: Icon(
+                                                Icons.error_outline_rounded,
+                                                color: Dk.danger,
+                                                size: 16,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: SelectableText(
+                                                _error!,
+                                                style: Ty.small.copyWith(
+                                                  color: Dk.dangerInk,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                              ),
+
+                              // ── Connect ──
+                              SizedBox(
+                                height: 42,
+                                child: FilledButton(
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: Dk.t1,
+                                    foregroundColor: Dk.ink,
+                                    disabledBackgroundColor: Dk.p3,
+                                    disabledForegroundColor: Dk.t2,
+                                    shape: RoundedRectangleBorder(
                                       borderRadius:
                                           BorderRadius.circular(Rd.md),
-                                      border: Border.all(
-                                        color: const Color(0x40FF6B6B),
-                                      ),
                                     ),
-                                    child: Row(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        const Padding(
-                                          padding: EdgeInsets.only(top: 1),
-                                          child: Icon(
-                                            Icons.error_outline_rounded,
-                                            color: Dk.danger,
-                                            size: 16,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Expanded(
-                                          child: SelectableText(
-                                            _error!,
-                                            style: Ty.small.copyWith(
-                                              color: const Color(0xFFFFB3B3),
-                                            ),
-                                          ),
-                                        ),
-                                      ],
+                                    textStyle: Ty.name.copyWith(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w700,
                                     ),
                                   ),
-                          ),
-
-                          // ── Connect ──
-                          SizedBox(
-                            height: 42,
-                            child: FilledButton(
-                              style: FilledButton.styleFrom(
-                                backgroundColor: Dk.signal,
-                                foregroundColor: Dk.signalInk,
-                                disabledBackgroundColor: Dk.p3,
-                                disabledForegroundColor: Dk.t2,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(Rd.md),
-                                ),
-                                textStyle: Ty.name.copyWith(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w700,
+                                  onPressed: _connecting ? null : _connect,
+                                  child: _connecting
+                                      ? Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const SizedBox(
+                                              height: 14,
+                                              width: 14,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 1.6,
+                                                color: Dk.t2,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 10),
+                                            Text('正在连接… $elapsed 秒'),
+                                          ],
+                                        )
+                                      : const Text('连接'),
                                 ),
                               ),
-                              onPressed: _connecting ? null : _connect,
-                              child: _connecting
-                                  ? Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const SizedBox(
-                                          height: 14,
-                                          width: 14,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 1.6,
-                                            color: Dk.t2,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 10),
-                                        Text('正在连接… $elapsed 秒'),
-                                      ],
-                                    )
-                                  : const Text('连接'),
-                            ),
-                          ),
-                          const SizedBox(height: Sp.x3),
-                          Center(
-                            child: Text(
-                              '按回车连接 · 成功后自动记住，下次启动直接连上',
-                              style: Ty.small.copyWith(
-                                fontSize: 11.5,
-                                color: Dk.t3,
+                              const SizedBox(height: Sp.x3),
+                              Center(
+                                child: Text(
+                                  Touch.primary
+                                      ? '连接成功后自动记住，下次打开直接连上'
+                                      : '按回车连接 · 成功后自动记住，下次启动直接连上',
+                                  style: Ty.small.copyWith(
+                                    fontSize: 11.5,
+                                    color: Dk.t3,
+                                  ),
+                                ),
                               ),
-                            ),
+                            ],
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _BigMark extends StatelessWidget {
-  const _BigMark();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 44,
-      height: 44,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: Dk.bg,
-        borderRadius: BorderRadius.circular(Rd.lg),
-        border: Border.all(color: Dk.line2),
-      ),
-      child: Container(
-        width: 22,
-        height: 22,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          border: Border.all(color: Dk.t1, width: 2),
-        ),
-        child: Container(
-          width: 8,
-          height: 8,
-          decoration: const BoxDecoration(
-            shape: BoxShape.circle,
-            color: Dk.signal,
           ),
         ),
       ),

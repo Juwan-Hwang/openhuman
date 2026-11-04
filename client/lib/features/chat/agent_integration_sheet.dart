@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/notification_service.dart';
 import '../../core/sdk_provider.dart';
+import '../../app/adaptive.dart';
+import '../../widgets/sheet.dart';
 
 /// Modal bottom sheet displaying OpenAI-compatible configuration and
 /// self-configuring prompts for AI agents (WorkBuddy, Trae, Cursor, Windsurf, Claude Code).
@@ -12,10 +14,9 @@ class AgentIntegrationSheet extends ConsumerStatefulWidget {
   const AgentIntegrationSheet({super.key});
 
   static void show(BuildContext context) {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
+    showDkSheet<void>(
+      context,
+      maxWidth: 640,
       builder: (ctx) => const AgentIntegrationSheet(),
     );
   }
@@ -102,275 +103,334 @@ export OPENAI_API_KEY="$apiKey"''';
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final serverConfig = ref.watch(serverConfigProvider);
     final baseUrl = _deriveBaseUrl(serverConfig.serverUrl);
     final apiKey = serverConfig.apiKey;
     const modelName = 'openhuman-human';
     final fcmToken = NotificationService.fcmToken;
+    final ready = baseUrl.isNotEmpty && apiKey.isNotEmpty;
 
-    return Container(
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.88,
-      ),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Drag handle
-          Center(
-            child: Container(
-              margin: const EdgeInsets.only(top: 12, bottom: 8),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: theme.colorScheme.outlineVariant,
-                borderRadius: BorderRadius.circular(AppRadius.sm),
-              ),
-            ),
-          ),
-          // Header
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.terminal_rounded,
-                  color: theme.colorScheme.primary,
-                  size: 28,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // ── Header ──
+        Padding(
+          padding: const EdgeInsets.fromLTRB(Sp.x6, Sp.x2, Sp.x3, Sp.x4),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('接入 AI', style: Ty.title.copyWith(fontSize: 18)),
+                    const SizedBox(height: 4),
+                    const Text(
+                      '把你自己当成一个兼容 OpenAI 的模型，交给任何 AI 工具调用。'
+                      'AI 需要你时，请求会出现在这个控制台。',
+                      style: Ty.small,
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                Expanded(
+              ),
+              IconButton(
+                tooltip: '关闭',
+                icon: const Icon(Icons.close_rounded, size: 18, color: Dk.t2),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ],
+          ),
+        ),
+        Flexible(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(Sp.x6, 0, Sp.x6, Sp.x6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // ── Spec sheet ──
+                Container(
+                  decoration: BoxDecoration(
+                    color: Dk.bg,
+                    borderRadius: BorderRadius.circular(Rd.lg),
+                    border: Border.all(color: Dk.line),
+                  ),
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'Agent 联系端点配置与指南',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
+                      _SpecRow(
+                        label: '接口地址',
+                        hint: '由服务器地址推导',
+                        value: baseUrl.isNotEmpty ? baseUrl : '未连接',
+                        empty: baseUrl.isEmpty,
+                        onCopy: baseUrl.isNotEmpty
+                            ? () => _copyToClipboard(context, baseUrl, '接口地址')
+                            : null,
                       ),
-                      Text(
-                        '将自身作为 API 端点，供其他人及其 Agent 随时与你取得联系',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
+                      _SpecRow(
+                        label: '密钥',
+                        hint: '当前连接使用的令牌',
+                        value: apiKey.isEmpty
+                            ? '未配置'
+                            : _showApiKey
+                                ? apiKey
+                                : '${apiKey.substring(0, apiKey.length.clamp(0, 4))}'
+                                    '••••••••••••••••',
+                        empty: apiKey.isEmpty,
+                        extra: apiKey.isEmpty
+                            ? null
+                            : _MiniIcon(
+                                icon: _showApiKey
+                                    ? Icons.visibility_off_outlined
+                                    : Icons.visibility_outlined,
+                                tooltip: _showApiKey ? '隐藏' : '显示',
+                                onTap: () =>
+                                    setState(() => _showApiKey = !_showApiKey),
+                              ),
+                        onCopy: apiKey.isNotEmpty
+                            ? () => _copyToClipboard(context, apiKey, '密钥')
+                            : null,
+                      ),
+                      _SpecRow(
+                        label: '模型名',
+                        hint: '调用时填写的 model',
+                        value: modelName,
+                        onCopy: () =>
+                            _copyToClipboard(context, modelName, '模型名'),
+                      ),
+                      _SpecRow(
+                        label: '手机推送',
+                        hint:
+                            fcmToken != null ? '已注册，锁屏也能收到请求' : '桌面与网页通过长连接接收',
+                        value: fcmToken != null
+                            ? '${fcmToken.substring(0, 10)}…'
+                                '${fcmToken.substring(fcmToken.length - 6)}'
+                            : '未注册',
+                        empty: fcmToken == null,
+                        good: fcmToken != null,
+                        last: true,
+                        onCopy: fcmToken != null
+                            ? () => _copyToClipboard(context, fcmToken, '推送令牌')
+                            : null,
                       ),
                     ],
                   ),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.of(context).pop(),
-                ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-
-          // Content body
-          Flexible(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // 1. OpenAI Compatible Base URL
-                  _buildConfigTile(
-                    theme: theme,
-                    icon: Icons.link_rounded,
-                    title: 'OpenAI Base URL (API 端点)',
-                    subtitle: '由输入的 WebSocket 地址自动推导',
-                    value: baseUrl.isNotEmpty ? baseUrl : '未连接或未配置',
-                    onCopy: baseUrl.isNotEmpty
-                        ? () => _copyToClipboard(context, baseUrl, 'API 端点')
-                        : null,
-                  ),
-                  const SizedBox(height: 12),
-
-                  // 2. API Key
-                  _buildConfigTile(
-                    theme: theme,
-                    icon: Icons.vpn_key_outlined,
-                    title: 'API Key (凭证密钥)',
-                    subtitle: '当前会话所用的 Bearer Token',
-                    value: apiKey.isNotEmpty
-                        ? (_showApiKey
-                            ? apiKey
-                            : '••••••••••••••••••••••••••••••••')
-                        : '未配置',
-                    trailingAction: apiKey.isNotEmpty
-                        ? IconButton(
-                            icon: Icon(
-                              _showApiKey
-                                  ? Icons.visibility_off_outlined
-                                  : Icons.visibility_outlined,
-                              size: 20,
-                            ),
-                            tooltip: _showApiKey ? '隐藏密钥' : '显示密钥',
-                            onPressed: () =>
-                                setState(() => _showApiKey = !_showApiKey),
-                          )
-                        : null,
-                    onCopy: apiKey.isNotEmpty
-                        ? () => _copyToClipboard(context, apiKey, 'API Key')
-                        : null,
-                  ),
-                  const SizedBox(height: 12),
-
-                  // 3. Model Name
-                  _buildConfigTile(
-                    theme: theme,
-                    icon: Icons.psychology_outlined,
-                    title: 'Model Name (模型标识)',
-                    subtitle: '标准人类专家路由模型',
-                    value: modelName,
-                    onCopy: () => _copyToClipboard(context, modelName, '模型标识'),
-                  ),
-                  const SizedBox(height: 12),
-
-                  // 4. FCM Device Token Status
-                  _buildConfigTile(
-                    theme: theme,
-                    icon: Icons.notifications_active_outlined,
-                    title: 'FCM 移动端推送通道',
-                    subtitle: fcmToken != null
-                        ? 'Google FCM Token 已注册，可接收锁屏离线唤醒'
-                        : '移动设备推送就绪 (桌面/Web 环境将走站内长连接)',
-                    value: fcmToken != null
-                        ? '${fcmToken.substring(0, 16)}...${fcmToken.substring(fcmToken.length - 12)}'
-                        : '未生成 Device Token',
-                    valueColor: fcmToken != null
-                        ? Dk.ok
-                        : theme.colorScheme.onSurfaceVariant,
-                    onCopy: fcmToken != null
-                        ? () => _copyToClipboard(
-                            context, fcmToken, 'FCM Device Token')
-                        : null,
-                  ),
-                  const SizedBox(height: 24),
-
-                  // Action Buttons
-                  FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(AppRadius.md),
-                      ),
-                    ),
-                    icon: const Icon(Icons.auto_awesome_rounded),
-                    label: const Text(
-                      '一键复制 Agent 联系端点配置提示词',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    onPressed: baseUrl.isNotEmpty && apiKey.isNotEmpty
-                        ? () {
-                            final prompt = _buildAgentPrompt(
+                const SizedBox(height: Sp.x5),
+                const Text('一键复制', style: Ty.label),
+                const SizedBox(height: Sp.x2),
+                _CopyAction(
+                  icon: Icons.chat_bubble_outline_rounded,
+                  title: '给 AI 的配置说明',
+                  detail: '粘贴给任意 AI 工具，它会把你配置成可联系的端点',
+                  primary: true,
+                  onTap: ready
+                      ? () => _copyToClipboard(
+                            context,
+                            _buildAgentPrompt(
                               baseUrl: baseUrl,
                               apiKey: apiKey,
                               modelName: modelName,
-                            );
-                            _copyToClipboard(
-                              context,
-                              prompt,
-                              'Agent 联系端点配置提示词',
-                            );
-                          }
-                        : null,
+                            ),
+                            '配置说明',
+                          )
+                      : null,
+                ),
+                const SizedBox(height: Sp.x2),
+                _CopyAction(
+                  icon: Icons.terminal_rounded,
+                  title: '终端环境变量',
+                  detail: 'OPENAI_BASE_URL 与 OPENAI_API_KEY',
+                  onTap: ready
+                      ? () => _copyToClipboard(
+                            context,
+                            _buildShellEnv(baseUrl: baseUrl, apiKey: apiKey),
+                            '环境变量',
+                          )
+                      : null,
+                ),
+                if (!ready) ...[
+                  const SizedBox(height: Sp.x3),
+                  Text(
+                    '连接服务器后才能复制。',
+                    style: Ty.small.copyWith(color: Dk.t3, fontSize: 12),
                   ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(AppRadius.md),
-                      ),
-                    ),
-                    icon: const Icon(Icons.terminal_rounded),
-                    label: const Text('一键复制 Shell 环境变量'),
-                    onPressed: baseUrl.isNotEmpty && apiKey.isNotEmpty
-                        ? () {
-                            final envCmd = _buildShellEnv(
-                              baseUrl: baseUrl,
-                              apiKey: apiKey,
-                            );
-                            _copyToClipboard(context, envCmd, 'Shell 环境变量');
-                          }
-                        : null,
-                  ),
-                  const SizedBox(height: 16),
                 ],
-              ),
+              ],
             ),
           ),
-        ],
+        ),
+      ],
+    );
+  }
+}
+
+/// One line of the spec sheet: label on the left, the value in mono, and
+/// a copy control that confirms in place.
+class _SpecRow extends StatelessWidget {
+  const _SpecRow({
+    required this.label,
+    required this.hint,
+    required this.value,
+    this.onCopy,
+    this.extra,
+    this.empty = false,
+    this.good = false,
+    this.last = false,
+  });
+
+  final String label;
+  final String hint;
+  final String value;
+  final VoidCallback? onCopy;
+  final Widget? extra;
+  final bool empty;
+  final bool good;
+  final bool last;
+
+  @override
+  Widget build(BuildContext context) {
+    final narrow = MediaQuery.sizeOf(context).width < 520;
+    final head = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: Ty.name),
+        const SizedBox(height: 2),
+        Text(hint, style: Ty.small.copyWith(fontSize: 11.5, color: Dk.t3)),
+      ],
+    );
+    final val = SelectableText(
+      value,
+      maxLines: 1,
+      style: Ty.code.copyWith(
+        height: 1.4,
+        fontSize: 12.5,
+        color: empty
+            ? Dk.t3
+            : good
+                ? Dk.ok
+                : Dk.t1,
+      ),
+    );
+    final actions = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (extra != null) extra!,
+        if (onCopy != null)
+          _MiniIcon(icon: Icons.copy_rounded, tooltip: '复制', onTap: onCopy!),
+      ],
+    );
+    return Container(
+      padding: const EdgeInsets.fromLTRB(Sp.x4, Sp.x3, Sp.x2, Sp.x3),
+      decoration: BoxDecoration(
+        border: last ? null : const Border(bottom: BorderSide(color: Dk.line)),
+      ),
+      child: narrow
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(children: [Expanded(child: head), actions]),
+                const SizedBox(height: Sp.x2),
+                val,
+              ],
+            )
+          : Row(
+              children: [
+                SizedBox(width: 150, child: head),
+                const SizedBox(width: Sp.x3),
+                Expanded(child: val),
+                actions,
+              ],
+            ),
+    );
+  }
+}
+
+class _MiniIcon extends StatelessWidget {
+  const _MiniIcon({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final edge = Touch.target;
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(Rd.sm),
+        hoverColor: Dk.p3,
+        child: SizedBox(
+          width: edge,
+          height: edge,
+          child: Icon(icon, size: 15, color: Dk.t2),
+        ),
       ),
     );
   }
+}
 
-  Widget _buildConfigTile({
-    required ThemeData theme,
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required String value,
-    Color? valueColor,
-    Widget? trailingAction,
-    VoidCallback? onCopy,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
-        borderRadius: BorderRadius.circular(AppRadius.lg),
-        border: Border.all(
-          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+/// A large copy target: what you get, and where it goes.
+class _CopyAction extends StatelessWidget {
+  const _CopyAction({
+    required this.icon,
+    required this.title,
+    required this.detail,
+    required this.onTap,
+    this.primary = false,
+  });
+  final IconData icon;
+  final String title;
+  final String detail;
+  final VoidCallback? onTap;
+  final bool primary;
+
+  @override
+  Widget build(BuildContext context) {
+    final on = onTap != null;
+    final fg = primary && on ? Dk.ink : (on ? Dk.t1 : Dk.t3);
+    return Material(
+      color: primary && on ? Dk.t1 : Dk.p2,
+      borderRadius: BorderRadius.circular(Rd.lg),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(Rd.lg),
+        hoverColor: primary ? Dk.mineCode : Dk.p3,
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(Sp.x4, Sp.x3, Sp.x4, Sp.x3),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(Rd.lg),
+            border: Border.all(
+              color: primary && on ? Colors.transparent : Dk.line2,
+            ),
+          ),
+          child: Row(
             children: [
-              Icon(icon, size: 20, color: theme.colorScheme.primary),
-              const SizedBox(width: 8),
-              Text(
-                title,
-                style: theme.textTheme.labelLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
+              Icon(icon, size: 18, color: fg),
+              const SizedBox(width: Sp.x3),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: Ty.name.copyWith(color: fg)),
+                    const SizedBox(height: 2),
+                    Text(
+                      detail,
+                      style: Ty.small.copyWith(
+                        fontSize: 12,
+                        color: primary && on ? Dk.mineMuted : Dk.t3,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const Spacer(),
-              if (trailingAction != null) trailingAction,
-              if (onCopy != null)
-                IconButton(
-                  icon: const Icon(Icons.copy_rounded, size: 18),
-                  tooltip: '复制',
-                  onPressed: onCopy,
-                ),
+              Icon(Icons.content_copy_rounded, size: 15, color: fg),
             ],
           ),
-          const SizedBox(height: 4),
-          Text(
-            subtitle,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 6),
-          SelectableText(
-            value,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              fontFamily: 'GeistMono',
-              fontFamilyFallback: const ['NotoSansSC'],
-              color: valueColor ?? theme.colorScheme.onSurface,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }

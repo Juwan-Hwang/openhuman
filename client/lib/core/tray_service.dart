@@ -13,6 +13,7 @@ import 'package:path/path.dart' as p;
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../app/tokens.dart';
 import '../widgets/window_chrome.dart';
 
 /// Owns the tray icon and intercepts the window's close event.
@@ -42,7 +43,7 @@ class TrayService with WindowListener, TrayListener {
       minimumSize: Size(880, 560),
       center: true,
       title: 'OpenHuman',
-      backgroundColor: Color(0xFF0A0A0B),
+      backgroundColor: Dk.bg,
       titleBarStyle: TitleBarStyle.hidden,
       windowButtonVisibility: false,
     );
