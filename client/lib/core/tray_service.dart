@@ -13,6 +13,8 @@ import 'package:path/path.dart' as p;
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../widgets/window_chrome.dart';
+
 /// Owns the tray icon and intercepts the window's close event.
 class TrayService with WindowListener, TrayListener {
   TrayService._();
@@ -28,14 +30,21 @@ class TrayService with WindowListener, TrayListener {
   Future<void> initialize() async {
     if (_initialised || !Platform.isWindows) return;
     _initialised = true;
+    WindowChrome.enabled = true;
 
     await windowManager.ensureInitialized();
 
+    // The console draws its own title bar (widgets/window_chrome.dart):
+    // the system caption is hidden, and the floor colour is set before
+    // the first frame so the window never flashes white.
     const options = WindowOptions(
-      size: Size(1180, 780),
-      minimumSize: Size(720, 520),
+      size: Size(1320, 840),
+      minimumSize: Size(880, 560),
       center: true,
       title: 'OpenHuman',
+      backgroundColor: Color(0xFF0A0A0B),
+      titleBarStyle: TitleBarStyle.hidden,
+      windowButtonVisibility: false,
     );
     await windowManager.waitUntilReadyToShow(options, () async {
       await windowManager.show();

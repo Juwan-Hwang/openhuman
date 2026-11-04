@@ -5,120 +5,290 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
 
 import '../../app/theme.dart';
 import '../../core/sdk_provider.dart';
+import '../../widgets/monogram.dart';
 
-class ConversationSidebar extends ConsumerWidget {
-  const ConversationSidebar({super.key});
+/// Sidebar width limits; the pane is resizable from its right edge.
+const double kSidebarMin = 232;
+const double kSidebarMax = 400;
+const double kSidebarDefault = 284;
+
+/// Keyboard focus target for the sidebar's filter, so Ctrl/⌘+K anywhere
+/// in the console can jump to it.
+final sidebarSearchFocus = FocusNode(debugLabel: 'sidebar-search');
+
+class ConversationSidebar extends ConsumerStatefulWidget {
+  const ConversationSidebar({super.key, this.width = kSidebarDefault});
+
+  final double width;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ConversationSidebar> createState() =>
+      _ConversationSidebarState();
+}
+
+class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
+  final _query = TextEditingController();
+  int _cursor = -1;
+
+  List<ConversationInfo> _filter(List<ConversationInfo> all) {
+    final q = _query.text.trim().toLowerCase();
+    if (q.isEmpty) return all;
+    return all
+        .where(
+          (c) =>
+              c.displayName.toLowerCase().contains(q) ||
+              (c.lastMessage ?? '').toLowerCase().contains(q),
+        )
+        .toList();
+  }
+
+  KeyEventResult _onSearchKey(
+    FocusNode node,
+    KeyEvent e,
+    List<ConversationInfo> shown,
+  ) {
+    if (e is! KeyDownEvent && e is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    if (e.logicalKey == LogicalKeyboardKey.arrowDown && shown.isNotEmpty) {
+      setState(() => _cursor = (_cursor + 1) % shown.length);
+      return KeyEventResult.handled;
+    }
+    if (e.logicalKey == LogicalKeyboardKey.arrowUp && shown.isNotEmpty) {
+      setState(
+        () => _cursor = (_cursor - 1 + shown.length) % shown.length,
+      );
+      return KeyEventResult.handled;
+    }
+    if (e.logicalKey == LogicalKeyboardKey.enter && shown.isNotEmpty) {
+      final pick = shown[_cursor < 0 ? 0 : _cursor];
+      ref.read(conversationListProvider.notifier).selectConversation(pick.id);
+      _query.clear();
+      setState(() => _cursor = -1);
+      node.unfocus();
+      return KeyEventResult.handled;
+    }
+    if (e.logicalKey == LogicalKeyboardKey.escape) {
+      _query.clear();
+      setState(() => _cursor = -1);
+      node.unfocus();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  @override
+  void dispose() {
+    _query.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final listState = ref.watch(conversationListProvider);
     final conversations = listState.entries;
+    final shown = _filter(conversations);
     final activeId = ref.watch(activeConversationIdProvider);
     // The socket gates the history fetch, so "not loaded yet" usually
     // means "not connected yet" — worth saying rather than spinning.
-    final connState =
-        ref.watch(connectionStateProvider).valueOrNull ?? oh.ConnectionState.idle;
+    final connState = ref.watch(connectionStateProvider).valueOrNull ??
+        oh.ConnectionState.idle;
     final theme = Theme.of(context);
+    final groups = shown.where((c) => c.isGroup).toList();
+    final direct = shown.where((c) => !c.isGroup).toList();
+    final ordered = [...direct, ...groups];
 
-    // A card resting on the surface rather than a panel bolted to the
-    // edge: inset from the window, rounded, and outlined instead of
-    // separated by a divider that runs the full height.
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 6, 12),
-      child: SizedBox(
-        width: 268,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(AppRadius.lg),
-            border: Border.all(color: theme.colorScheme.outlineVariant),
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(AppRadius.lg),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // ── Header ──
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 14, 12, 10),
-                  child: Row(
-                    children: [
-                      Icon(Icons.forum_outlined,
-                          size: 16, color: theme.colorScheme.onSurfaceVariant),
-                      const SizedBox(width: 8),
-                      Text('会话', style: theme.textTheme.titleSmall),
-                      const Spacer(),
-                      Text('${conversations.length}',
-                          style: theme.textTheme.labelSmall?.copyWith(
-                              color: theme.colorScheme.onSurfaceVariant)),
-                    ],
-                  ),
-                ),
-          // ── Trash + new room ──
-          Row(
-            children: [
-              Expanded(
-                child: _TrashButton(
-                  theme: theme,
-                  onOpen: () => _openTrash(context),
+    Widget tile(ConversationInfo conv) {
+      final i = ordered.indexOf(conv);
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 2),
+        child: _ConversationTile(
+          key: ValueKey('conv-${conv.id}'),
+          conversation: conv,
+          isActive: conv.id == activeId,
+          isCursor: i == _cursor,
+          onTap: () {
+            ref
+                .read(conversationListProvider.notifier)
+                .selectConversation(conv.id);
+          },
+          onRename: () => _askForName(context, ref, conv),
+          onDelete: () => _confirmDelete(context, ref, conv),
+          onSave: () async {
+            final ok = await ref
+                .read(conversationListProvider.notifier)
+                .saveConversation(conv.id);
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(ok ? '会话记录已保存' : '保存失败')),
+            );
+          },
+        ),
+      );
+    }
+
+    return SizedBox(
+      width: widget.width,
+      child: ColoredBox(
+        color: Dk.p1,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // ── Filter: sits in a header as tall as the stream's top bar,
+            // so the two hairlines meet across the divider.
+            Container(
+              height: 72,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              alignment: Alignment.center,
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: Dk.line)),
+              ),
+              child: Focus(
+                canRequestFocus: false,
+                onKeyEvent: (node, e) =>
+                    _onSearchKey(sidebarSearchFocus, e, ordered),
+                child: _SearchField(
+                  controller: _query,
+                  onChanged: () => setState(() => _cursor = -1),
                 ),
               ),
-              Expanded(child: _CreateRoomButton(theme: theme)),
-            ],
-          ),
-          // ── Conversation list ──
-          Expanded(
-            child: conversations.isEmpty
-                ? _ListPlaceholder(
-                    theme: theme,
-                    listState: listState,
-                    connState: connState,
-                    onRetry: () =>
-                        ref.read(conversationListProvider.notifier).retry(),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(8, 2, 8, 12),
-                    itemCount: conversations.length,
-                    itemBuilder: (context, index) {
-                      final conv = conversations[index];
-                      final isActive = conv.id == activeId;
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
-                        child: _ConversationTile(
-                          conversation: conv,
-                          isActive: isActive,
+            ),
+            const SizedBox(height: Sp.x2),
+            // ── Conversation list ──
+            Expanded(
+              child: conversations.isEmpty
+                  ? _ListPlaceholder(
+                      theme: theme,
+                      listState: listState,
+                      connState: connState,
+                      onRetry: () =>
+                          ref.read(conversationListProvider.notifier).retry(),
+                    )
+                  : shown.isEmpty
+                      ? _CenteredNote(
                           theme: theme,
-                          onTap: () {
-                            ref.read(conversationListProvider.notifier)
-                                .selectConversation(conv.id);
-                          },
-                          onRename: () => _askForName(context, ref, conv),
-                          onDelete: () => _confirmDelete(context, ref, conv),
-                          onSave: () async {
-                            final ok = await ref
-                                .read(conversationListProvider.notifier)
-                                .saveConversation(conv.id);
-                            if (!context.mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(ok ? '会话记录已保存' : '保存失败'),
-                              ),
-                            );
-                          },
+                          icon: Icons.search_off_rounded,
+                          title: '没有匹配「${_query.text.trim()}」的会话',
+                        )
+                      : ListView(
+                          padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
+                          children: [
+                            if (direct.isNotEmpty) ...[
+                              _SectionLabel('对话', direct.length),
+                              for (final c in direct) tile(c),
+                            ],
+                            if (groups.isNotEmpty) ...[
+                              const SizedBox(height: Sp.x2),
+                              _SectionLabel('群聊', groups.length),
+                              for (final c in groups) tile(c),
+                            ],
+                          ],
                         ),
-                      );
-                    },
+            ),
+            // ── Footer ──
+            Container(
+              padding: const EdgeInsets.fromLTRB(6, 6, 6, 8),
+              decoration: const BoxDecoration(
+                border: Border(top: BorderSide(color: Dk.line)),
+              ),
+              child: Row(
+                children: [
+                  const _CreateRoomButton(),
+                  const Spacer(),
+                  _FootButton(
+                    icon: Icons.delete_outline_rounded,
+                    label: '回收站',
+                    onTap: () => _openTrash(context),
                   ),
-          ),
-              ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SearchField extends StatelessWidget {
+  const _SearchField({required this.controller, required this.onChanged});
+
+  final TextEditingController controller;
+  final VoidCallback onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 34,
+      child: TextField(
+        controller: controller,
+        focusNode: sidebarSearchFocus,
+        onChanged: (_) => onChanged(),
+        style: Ty.small.copyWith(color: Dk.t1, fontSize: 13),
+        cursorColor: Dk.signal,
+        decoration: InputDecoration(
+          isDense: true,
+          filled: true,
+          fillColor: Dk.bg,
+          hintText: '搜索会话',
+          hintStyle: Ty.small.copyWith(color: Dk.t3, fontSize: 13),
+          prefixIcon: const Icon(Icons.search_rounded, size: 16, color: Dk.t3),
+          prefixIconConstraints:
+              const BoxConstraints(minWidth: 34, minHeight: 34),
+          suffixIcon: Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Center(
+              widthFactor: 1,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Dk.line2),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text('Ctrl K', style: Ty.meta.copyWith(fontSize: 10)),
+              ),
             ),
           ),
+          contentPadding: const EdgeInsets.symmetric(vertical: 8),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(Rd.md),
+            borderSide: const BorderSide(color: Dk.line),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(Rd.md),
+            borderSide: const BorderSide(color: Dk.line),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(Rd.md),
+            borderSide: const BorderSide(color: Dk.t4),
+          ),
         ),
+      ),
+    );
+  }
+}
+
+class _SectionLabel extends StatelessWidget {
+  const _SectionLabel(this.label, this.count);
+  final String label;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+      child: Row(
+        children: [
+          Text(label, style: Ty.label),
+          const SizedBox(width: 6),
+          Text('$count', style: Ty.meta.copyWith(color: Dk.t4)),
+        ],
       ),
     );
   }
@@ -135,20 +305,14 @@ Future<void> _openTrash(BuildContext context) {
 
 /// Create a group room (§10.5): name it, then it appears in the list.
 class _CreateRoomButton extends ConsumerWidget {
-  const _CreateRoomButton({required this.theme});
-
-  final ThemeData theme;
+  const _CreateRoomButton();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return TextButton.icon(
-      onPressed: () => _createRoom(context, ref),
-      icon: const Icon(Icons.group_add_outlined, size: 16),
-      label: const Text('新建群聊'),
-      style: TextButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        textStyle: theme.textTheme.bodySmall,
-      ),
+    return _FootButton(
+      icon: Icons.group_add_outlined,
+      label: '新建群聊',
+      onTap: () => _createRoom(context, ref),
     );
   }
 
@@ -196,21 +360,36 @@ class _CreateRoomButton extends ConsumerWidget {
   }
 }
 
-class _TrashButton extends StatelessWidget {
-  const _TrashButton({required this.theme, required this.onOpen});
+class _FootButton extends StatelessWidget {
+  const _FootButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
 
-  final ThemeData theme;
-  final VoidCallback onOpen;
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return TextButton.icon(
-      onPressed: onOpen,
-      icon: const Icon(Icons.restore_from_trash, size: 16),
-      label: const Text('回收站'),
-      style: TextButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        textStyle: theme.textTheme.bodySmall,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(Rd.md),
+        hoverColor: Dk.p2,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 15, color: Dk.t2),
+              const SizedBox(width: 8),
+              Text(label, style: Ty.small.copyWith(color: Dk.t2)),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -259,8 +438,7 @@ class _TrashSheetState extends ConsumerState<_TrashSheet> {
                   theme: theme,
                   status: trash.status,
                   error: trash.error,
-                  onRetry: () =>
-                      ref.read(trashListProvider.notifier).refresh(),
+                  onRetry: () => ref.read(trashListProvider.notifier).refresh(),
                 ),
               )
             else
@@ -299,8 +477,7 @@ class _TrashSheetState extends ConsumerState<_TrashSheet> {
                             icon: const Icon(Icons.delete_forever, size: 20),
                             tooltip: '彻底删除',
                             onPressed: () async {
-                              final confirmed =
-                                  await showDialog<bool>(
+                              final confirmed = await showDialog<bool>(
                                 context: context,
                                 builder: (dialogContext) => AlertDialog(
                                   title: const Text('彻底删除'),
@@ -422,9 +599,8 @@ Future<void> _confirmDelete(
 
   if (confirmed != true || !context.mounted) return;
 
-  final ok = await ref
-      .read(conversationListProvider.notifier)
-      .trash(conversation.id);
+  final ok =
+      await ref.read(conversationListProvider.notifier).trash(conversation.id);
 
   if (!context.mounted) return;
   ScaffoldMessenger.of(context).showSnackBar(
@@ -610,8 +786,7 @@ class _CenteredNote extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final style = theme.textTheme.bodySmall
-        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final style = Ty.small.copyWith(color: Dk.t2);
 
     return Center(
       child: Padding(
@@ -623,14 +798,13 @@ class _CenteredNote extends StatelessWidget {
               const SizedBox(
                 width: 20,
                 height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
+                child: CircularProgressIndicator(
+                  strokeWidth: 1.6,
+                  color: Dk.t2,
+                ),
               )
             else if (icon != null)
-              Icon(
-                icon,
-                size: 22,
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
+              Icon(icon, size: 20, color: Dk.t3),
             const SizedBox(height: 12),
             Text(title, textAlign: TextAlign.center, style: style),
             if (subtitle != null) ...[
@@ -638,7 +812,7 @@ class _CenteredNote extends StatelessWidget {
               Text(
                 subtitle!,
                 textAlign: TextAlign.center,
-                style: style?.copyWith(fontSize: 12),
+                style: style.copyWith(fontSize: 12, color: Dk.t3),
               ),
             ],
             if (action != null) ...[const SizedBox(height: 12), action!],
@@ -649,11 +823,36 @@ class _CenteredNote extends StatelessWidget {
   }
 }
 
-class _ConversationTile extends StatelessWidget {
+/// One line of a message for a list row: Markdown marks dropped,
+/// whitespace collapsed.
+String previewText(String text) => text
+    .replaceAll(RegExp(r'```[^\n]*'), ' ')
+    .replaceAll(RegExp(r'[`*#>]'), '')
+    .replaceAll(RegExp(r'\s+'), ' ')
+    .trim();
+
+/// Short, glanceable time for a list row.
+String rowTime(DateTime t, DateTime now) {
+  final d = DateTime(t.year, t.month, t.day);
+  final n = DateTime(now.year, now.month, now.day);
+  final diff = n.difference(d).inDays;
+  if (diff == 0) {
+    return '${t.hour.toString().padLeft(2, '0')}:'
+        '${t.minute.toString().padLeft(2, '0')}';
+  }
+  if (diff == 1) return '昨天';
+  if (diff < 7) {
+    return const ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][t.weekday - 1];
+  }
+  return '${t.month}/${t.day}';
+}
+
+class _ConversationTile extends StatefulWidget {
   const _ConversationTile({
+    super.key,
     required this.conversation,
     required this.isActive,
-    required this.theme,
+    required this.isCursor,
     required this.onTap,
     required this.onRename,
     required this.onDelete,
@@ -662,108 +861,162 @@ class _ConversationTile extends StatelessWidget {
 
   final ConversationInfo conversation;
   final bool isActive;
-  final ThemeData theme;
+
+  /// Highlighted by the keyboard while filtering.
+  final bool isCursor;
   final VoidCallback onTap;
   final VoidCallback onRename;
   final VoidCallback onDelete;
   final VoidCallback onSave;
 
   @override
+  State<_ConversationTile> createState() => _ConversationTileState();
+}
+
+class _ConversationTileState extends State<_ConversationTile> {
+  bool _hover = false;
+  bool _menuOpen = false;
+
+  Future<void> _menu(Offset at) async {
+    setState(() => _menuOpen = true);
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final value = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        at & const Size(1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: const [
+        PopupMenuItem(value: 'rename', height: 36, child: Text('重命名')),
+        // Messages are not kept on the server unless saved.
+        PopupMenuItem(value: 'save', height: 36, child: Text('保存会话记录')),
+        PopupMenuDivider(height: 8),
+        PopupMenuItem(value: 'delete', height: 36, child: Text('移到回收站')),
+      ],
+    );
+    if (mounted) setState(() => _menuOpen = false);
+    switch (value) {
+      case 'rename':
+        widget.onRename();
+      case 'save':
+        widget.onSave();
+      case 'delete':
+        widget.onDelete();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(AppRadius.md),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(10, 9, 8, 9),
-        decoration: BoxDecoration(
-          // The active row reads as a raised card inside the card, not as
-          // a stripe down the edge.
-          color: isActive ? theme.colorScheme.surface : Colors.transparent,
-          borderRadius: BorderRadius.circular(AppRadius.md),
-          border: Border.all(
-            color: isActive
-                ? theme.colorScheme.outlineVariant
-                : Colors.transparent,
-          ),
-        ),
-        child: Row(
-          children: [
-            // Group rooms carry a group marker; 1:1 keeps the initial.
-            CircleAvatar(
-              radius: 16,
-              backgroundColor: isActive
-                  ? theme.colorScheme.primaryContainer
-                  : theme.colorScheme.surfaceContainerHighest,
-              child: conversation.isGroup
-                  ? Icon(
-                      Icons.groups_rounded,
-                      size: 18,
-                      color: theme.colorScheme.onPrimaryContainer,
-                    )
-                  : Text(
-                      conversation.agentName.isNotEmpty
-                          ? conversation.agentName[0].toUpperCase()
-                          : '?',
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: theme.colorScheme.onPrimaryContainer,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+    final c = widget.conversation;
+    final active = widget.isActive;
+    final lit = active || widget.isCursor;
+    final showMenu = active || _hover || _menuOpen;
+    final time = c.lastMessageTime == null
+        ? null
+        : rowTime(c.lastMessageTime!.toLocal(), DateTime.now());
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onSecondaryTapDown: (d) => _menu(d.globalPosition),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.onTap,
+            borderRadius: BorderRadius.circular(Rd.md),
+            hoverColor: Dk.p2,
+            splashFactory: NoSplash.splashFactory,
+            child: AnimatedContainer(
+              duration: Mo.fast,
+              padding: const EdgeInsets.fromLTRB(10, 9, 6, 9),
+              decoration: BoxDecoration(
+                color: lit ? Dk.p3 : Colors.transparent,
+                borderRadius: BorderRadius.circular(Rd.md),
+              ),
+              child: Row(
                 children: [
-                  Text(
-                    conversation.isGroup &&
-                            conversation.memberCount != null
-                        ? '${conversation.displayName}（${conversation.memberCount} 人）'
-                        : conversation.displayName,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+                  Monogram(c.displayName, size: 30, group: c.isGroup),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                c.displayName,
+                                style: Ty.name.copyWith(
+                                  color:
+                                      active ? Dk.t1 : const Color(0xFFDAD7D0),
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (c.isGroup && c.memberCount != null) ...[
+                              const SizedBox(width: 6),
+                              Text(
+                                '${c.memberCount} 人',
+                                style: Ty.meta.copyWith(color: Dk.t3),
+                              ),
+                            ],
+                          ],
+                        ),
+                        if (c.lastMessage != null) ...[
+                          const SizedBox(height: 3),
+                          Text(
+                            previewText(c.lastMessage!),
+                            style: Ty.small.copyWith(
+                              fontSize: 12,
+                              color: active ? Dk.t2 : Dk.t3,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ],
                     ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
                   ),
-                  if (conversation.lastMessage != null) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      conversation.lastMessage!,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
+                  const SizedBox(width: 6),
+                  SizedBox(
+                    width: 34,
+                    child: showMenu
+                        ? Builder(
+                            builder: (bctx) => IconButton(
+                              key: ValueKey('conv-menu-${c.id}'),
+                              tooltip: '更多',
+                              iconSize: 16,
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              icon: const Icon(
+                                Icons.more_horiz_rounded,
+                                color: Dk.t2,
+                              ),
+                              onPressed: () {
+                                final box =
+                                    bctx.findRenderObject() as RenderBox;
+                                _menu(
+                                  box.localToGlobal(
+                                    Offset(0, box.size.height),
+                                  ),
+                                );
+                              },
+                            ),
+                          )
+                        : time == null
+                            ? null
+                            : Text(
+                                time,
+                                textAlign: TextAlign.right,
+                                style: Ty.meta.copyWith(fontSize: 10.5),
+                              ),
+                  ),
                 ],
               ),
             ),
-            // Only offered on the open conversation: a menu on every row
-            // turns the list into a wall of dots and makes the target
-            // easy to miss.
-            if (isActive)
-              PopupMenuButton<String>(
-                iconSize: 18,
-                padding: EdgeInsets.zero,
-                onSelected: (value) {
-                  if (value == 'rename') {
-                    onRename();
-                  } else if (value == 'save') {
-                    onSave();
-                  } else if (value == 'delete') {
-                    onDelete();
-                  }
-                },
-                itemBuilder: (context) => const [
-                  PopupMenuItem(value: 'rename', child: Text('重命名')),
-                  // Messages are not kept on the server unless saved.
-                  PopupMenuItem(value: 'save', child: Text('保存会话记录')),
-                  PopupMenuItem(value: 'delete', child: Text('移到回收站')),
-                ],
-              ),
-          ],
+          ),
         ),
       ),
     );

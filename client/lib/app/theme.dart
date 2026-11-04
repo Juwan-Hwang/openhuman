@@ -322,12 +322,15 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
     ),
 
     dialogTheme: DialogThemeData(
-      elevation: 0,
-      backgroundColor: scheme.surface,
+      elevation: 24,
+      shadowColor: const Color(0xCC000000),
+      backgroundColor: Dk.p1,
       surfaceTintColor: Colors.transparent,
+      barrierColor: const Color(0xB3050506),
+      insetPadding: const EdgeInsets.all(Sp.x8),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppRadius.xl),
-        side: BorderSide(color: scheme.outlineVariant),
+        side: const BorderSide(color: Dk.line2),
       ),
       titleTextStyle: TextStyle(
         fontFamily: _sans,
@@ -348,31 +351,50 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
       elevation: 0,
-      backgroundColor: isDark ? Zinc.c800 : Zinc.c900,
+      backgroundColor: Dk.p3,
+      actionTextColor: Dk.signal,
       contentTextStyle: TextStyle(
         fontFamily: _sans,
         fontFamilyFallback: _fallback,
         fontSize: 13,
         color: isDark ? Zinc.c50 : Zinc.c50,
       ),
+      width: 420,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppRadius.md),
+        side: const BorderSide(color: Dk.line2),
       ),
     ),
 
     popupMenuTheme: PopupMenuThemeData(
-      elevation: 0,
-      color: scheme.surface,
+      elevation: 6,
+      shadowColor: const Color(0x66000000),
+      color: Dk.p2,
       surfaceTintColor: Colors.transparent,
+      menuPadding: const EdgeInsets.all(4),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppRadius.md),
-        side: BorderSide(color: scheme.outlineVariant),
+        side: const BorderSide(color: Dk.line2),
       ),
       textStyle: TextStyle(
         fontFamily: _sans,
         fontFamilyFallback: _fallback,
         fontSize: 13,
         color: scheme.onSurface,
+      ),
+    ),
+
+    bottomSheetTheme: const BottomSheetThemeData(
+      backgroundColor: Dk.p1,
+      surfaceTintColor: Colors.transparent,
+      modalBarrierColor: Color(0xB3050506),
+      showDragHandle: true,
+      dragHandleColor: Dk.line2,
+      dragHandleSize: Size(36, 4),
+      constraints: BoxConstraints(maxWidth: 640),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(Rd.xl)),
+        side: BorderSide(color: Dk.line2),
       ),
     ),
 
@@ -394,8 +416,8 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
     // Selection is inverted rather than tinted, as in Aevum.
     textSelectionTheme: TextSelectionThemeData(
       selectionColor: (isDark ? Zinc.c50 : Zinc.c950).withValues(alpha: 0.18),
-      cursorColor: scheme.onSurface,
-      selectionHandleColor: scheme.onSurface,
+      cursorColor: Dk.signal,
+      selectionHandleColor: Dk.signal,
     ),
 
     splashFactory: NoSplash.splashFactory,

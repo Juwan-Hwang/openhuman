@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
 
 import '../../../app/tokens.dart';
+import '../../../widgets/monogram.dart';
 import 'rich_text.dart';
 
 /// Messages closer than this from one author fold into one turn.
@@ -487,7 +488,7 @@ class _Who extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _Monogram(name),
+          Monogram(name),
           const SizedBox(width: 10),
           Text(name, style: Ty.name),
           if (tag != null) ...[
@@ -502,50 +503,6 @@ class _Who extends StatelessWidget {
             ),
           ],
         ],
-      ),
-    );
-  }
-}
-
-/// A two-letter monogram on a hue derived from the name, so the same
-/// caller always wears the same colour across sessions.
-class _Monogram extends StatelessWidget {
-  const _Monogram(this.name);
-  final String name;
-
-  static const _hues = [
-    Color(0xFFD97757), // warm clay
-    Color(0xFF6E8BE0),
-    Color(0xFF8BBF5E),
-    Color(0xFFC9A44A),
-    Color(0xFFB07AD6),
-    Color(0xFF4FB3A9),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    final h = name.codeUnits.fold<int>(0, (a, c) => (a * 31 + c) & 0xffff);
-    final hue = _hues[h % _hues.length];
-    final latin = RegExp(r'[A-Za-z0-9]').allMatches(name).toList();
-    final letters = latin.isNotEmpty
-        ? latin.take(2).map((m) => m.group(0)!).join().toUpperCase()
-        : name.characters.take(1).toString();
-    return Container(
-      width: 22,
-      height: 22,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: hue,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        letters,
-        style: Ty.name.copyWith(
-          fontSize: 10,
-          color: const Color(0xFF14110E),
-          fontWeight: FontWeight.w800,
-          letterSpacing: -0.2,
-        ),
       ),
     );
   }

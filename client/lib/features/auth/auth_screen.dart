@@ -5,7 +5,10 @@
 /// on success.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:openhuman_client/app/theme.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -32,6 +35,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   bool _obscureApiKey = true;
   bool _connecting = false;
   String? _error;
+  DateTime? _startedAt;
+  Timer? _ticker;
 
   @override
   void initState() {
@@ -64,8 +69,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     // Credentials are remembered, so make the remembered state real.
     // Otherwise every launch drops the console back to "Not connected"
     // with an empty conversation list until someone clicks Connect.
-    final hasBoth = (savedUrl?.isNotEmpty ?? false) &&
-        (savedKey?.isNotEmpty ?? false);
+    final hasBoth =
+        (savedUrl?.isNotEmpty ?? false) && (savedKey?.isNotEmpty ?? false);
     if (hasBoth && mounted) {
       await _connect();
     }
@@ -73,6 +78,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
 
   @override
   void dispose() {
+    _ticker?.cancel();
     _urlController.dispose();
     _apiKeyController.dispose();
     super.dispose();
@@ -83,7 +89,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     final apiKey = _apiKeyController.text.trim();
 
     if (url.isEmpty || apiKey.isEmpty) {
-      setState(() => _error = 'Please enter both URL and API key.');
+      setState(() => _error = '请填写服务器地址和 API 密钥。');
       return;
     }
 
@@ -96,6 +102,15 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     setState(() {
       _connecting = true;
       _error = null;
+      _startedAt = DateTime.now();
+    });
+    _ticker?.cancel();
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || !_connecting) {
+        _ticker?.cancel();
+        return;
+      }
+      setState(() {});
     });
 
     final client = ref.read(openHumanClientProvider);
@@ -130,8 +145,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
         if (mounted) {
           setState(() {
             _connecting = false;
-            _error =
-                'Connection failed (status: ${client.currentState.name}). Check URL & Key.';
+            _error = '连接失败（状态：${client.currentState.name}）。请检查地址和密钥。';
           });
         }
       }
@@ -140,7 +154,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       if (mounted) {
         setState(() {
           _connecting = false;
-          _error = 'Connection error: $e';
+          _error = '连接出错：$e';
         });
       }
     }
@@ -167,122 +181,321 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final elapsed = _startedAt == null
+        ? 0
+        : DateTime.now().difference(_startedAt!).inSeconds;
 
     return Scaffold(
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(32),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 400),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // ── Logo / Title ──
-                Icon(
-                  Icons.hub_outlined,
-                  size: 64,
-                  color: theme.colorScheme.primary,
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'OpenHuman',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.headlineMedium,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Human-as-an-API Runtime',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyLarge?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: 32),
-
-                // ── Server URL ──
-                TextField(
-                  controller: _urlController,
-                  decoration: const InputDecoration(
-                    labelText: 'Server URL',
-                    hintText: '例如: wss://your-server.com/ws',
-                    helperText: '支持公网 wss:// 或本地 ws:// 协议地址',
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.dns_outlined),
-                  ),
-                  enabled: !_connecting,
-                ),
-                const SizedBox(height: 16),
-
-                // ── API Key ──
-                TextField(
-                  controller: _apiKeyController,
-                  decoration: InputDecoration(
-                    labelText: 'API Key',
-                    hintText: '例如: ohk_xxxxxxxxxxxx',
-                    border: const OutlineInputBorder(),
-                    prefixIcon: const Icon(Icons.key_outlined),
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscureApiKey
-                            ? Icons.visibility_outlined
-                            : Icons.visibility_off_outlined,
-                      ),
-                      onPressed: () =>
-                          setState(() => _obscureApiKey = !_obscureApiKey),
+      backgroundColor: Dk.bg,
+      body: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.enter): () {
+            if (!_connecting) _connect();
+          },
+        },
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(Sp.x8),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 440),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Dk.p1,
+                  borderRadius: BorderRadius.circular(Rd.xl),
+                  border: Border.all(color: Dk.line),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x66000000),
+                      blurRadius: 80,
+                      spreadRadius: -10,
                     ),
-                  ),
-                  obscureText: _obscureApiKey,
-                  enabled: !_connecting,
+                  ],
                 ),
-                const SizedBox(height: 24),
-
-                // ── Error message ──
-                if (_error != null) ...[
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.errorContainer,
-                      borderRadius: BorderRadius.circular(AppRadius.md),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.error_outline,
-                          color: theme.colorScheme.onErrorContainer,
-                          size: 20,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _error!,
-                            style: TextStyle(
-                              color: theme.colorScheme.onErrorContainer,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // ── Header ──
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(28, 28, 28, 22),
+                      child: Row(
+                        children: [
+                          const _BigMark(),
+                          const SizedBox(width: Sp.x4),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'OpenHuman',
+                                  style: Ty.title.copyWith(fontSize: 19),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '连接服务器，AI 需要你时会在这里找到你',
+                                  style: Ty.small.copyWith(fontSize: 12.5),
+                                ),
+                              ],
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                ],
+                    const Divider(height: 1, color: Dk.line),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(28, 22, 28, 26),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const _FieldLabel('服务器地址'),
+                          _Field(
+                            controller: _urlController,
+                            hint: 'wss://your-server.com/ws',
+                            icon: Icons.dns_outlined,
+                            enabled: !_connecting,
+                            autofocus: true,
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            '公网用 wss://，本机或局域网可用 ws://',
+                            style: Ty.small.copyWith(
+                              fontSize: 11.5,
+                              color: Dk.t3,
+                            ),
+                          ),
+                          const SizedBox(height: Sp.x5),
+                          const _FieldLabel('API 密钥'),
+                          _Field(
+                            controller: _apiKeyController,
+                            hint: 'ohk_xxxxxxxxxxxx',
+                            icon: Icons.key_outlined,
+                            enabled: !_connecting,
+                            obscure: _obscureApiKey,
+                            trailing: IconButton(
+                              tooltip: _obscureApiKey ? '显示' : '隐藏',
+                              iconSize: 17,
+                              icon: Icon(
+                                _obscureApiKey
+                                    ? Icons.visibility_outlined
+                                    : Icons.visibility_off_outlined,
+                                color: Dk.t3,
+                              ),
+                              onPressed: () => setState(
+                                () => _obscureApiKey = !_obscureApiKey,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: Sp.x6),
 
-                // ── Connect button ──
-                FilledButton(
-                  onPressed: _connecting ? null : _connect,
-                  child: _connecting
-                      ? const SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Connect'),
+                          // ── Error ──
+                          AnimatedSize(
+                            duration: Mo.base,
+                            curve: Mo.expo,
+                            child: _error == null
+                                ? const SizedBox(width: double.infinity)
+                                : Container(
+                                    margin:
+                                        const EdgeInsets.only(bottom: Sp.x4),
+                                    padding: const EdgeInsets.fromLTRB(
+                                      12,
+                                      10,
+                                      12,
+                                      10,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Dk.dangerSoft,
+                                      borderRadius:
+                                          BorderRadius.circular(Rd.md),
+                                      border: Border.all(
+                                        color: const Color(0x40FF6B6B),
+                                      ),
+                                    ),
+                                    child: Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const Padding(
+                                          padding: EdgeInsets.only(top: 1),
+                                          child: Icon(
+                                            Icons.error_outline_rounded,
+                                            color: Dk.danger,
+                                            size: 16,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: SelectableText(
+                                            _error!,
+                                            style: Ty.small.copyWith(
+                                              color: const Color(0xFFFFB3B3),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                          ),
+
+                          // ── Connect ──
+                          SizedBox(
+                            height: 42,
+                            child: FilledButton(
+                              style: FilledButton.styleFrom(
+                                backgroundColor: Dk.signal,
+                                foregroundColor: Dk.signalInk,
+                                disabledBackgroundColor: Dk.p3,
+                                disabledForegroundColor: Dk.t2,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(Rd.md),
+                                ),
+                                textStyle: Ty.name.copyWith(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              onPressed: _connecting ? null : _connect,
+                              child: _connecting
+                                  ? Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const SizedBox(
+                                          height: 14,
+                                          width: 14,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 1.6,
+                                            color: Dk.t2,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Text('正在连接… $elapsed 秒'),
+                                      ],
+                                    )
+                                  : const Text('连接'),
+                            ),
+                          ),
+                          const SizedBox(height: Sp.x3),
+                          Center(
+                            child: Text(
+                              '按回车连接 · 成功后自动记住，下次启动直接连上',
+                              style: Ty.small.copyWith(
+                                fontSize: 11.5,
+                                color: Dk.t3,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _BigMark extends StatelessWidget {
+  const _BigMark();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 44,
+      height: 44,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: Dk.bg,
+        borderRadius: BorderRadius.circular(Rd.lg),
+        border: Border.all(color: Dk.line2),
+      ),
+      child: Container(
+        width: 22,
+        height: 22,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: Dk.t1, width: 2),
+        ),
+        child: Container(
+          width: 8,
+          height: 8,
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            color: Dk.signal,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FieldLabel extends StatelessWidget {
+  const _FieldLabel(this.text);
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(
+        text,
+        style: Ty.name.copyWith(fontSize: 12.5, color: Dk.t2),
+      ),
+    );
+  }
+}
+
+class _Field extends StatelessWidget {
+  const _Field({
+    required this.controller,
+    required this.hint,
+    required this.icon,
+    required this.enabled,
+    this.obscure = false,
+    this.autofocus = false,
+    this.trailing,
+  });
+
+  final TextEditingController controller;
+  final String hint;
+  final IconData icon;
+  final bool enabled;
+  final bool obscure;
+  final bool autofocus;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    OutlineInputBorder edge(Color c) => OutlineInputBorder(
+          borderRadius: BorderRadius.circular(Rd.md),
+          borderSide: BorderSide(color: c),
+        );
+    return TextField(
+      controller: controller,
+      enabled: enabled,
+      obscureText: obscure,
+      autofocus: autofocus,
+      style: Ty.code.copyWith(fontSize: 13, color: Dk.t1, height: 1.4),
+      cursorColor: Dk.signal,
+      decoration: InputDecoration(
+        isDense: true,
+        filled: true,
+        fillColor: Dk.bg,
+        hintText: hint,
+        hintStyle: Ty.code.copyWith(fontSize: 13, color: Dk.t4, height: 1.4),
+        prefixIcon: Icon(icon, size: 16, color: Dk.t3),
+        suffixIcon: trailing,
+        suffixIconConstraints:
+            const BoxConstraints(minWidth: 40, minHeight: 20, maxHeight: 40),
+        prefixIconConstraints: const BoxConstraints(minWidth: 40),
+        contentPadding: const EdgeInsets.symmetric(vertical: 13),
+        border: edge(Dk.line2),
+        enabledBorder: edge(Dk.line2),
+        disabledBorder: edge(Dk.line),
+        focusedBorder: edge(Dk.t3),
       ),
     );
   }

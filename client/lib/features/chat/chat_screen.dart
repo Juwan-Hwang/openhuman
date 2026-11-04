@@ -13,6 +13,8 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
 import 'package:openhuman_client/app/theme.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -27,6 +29,7 @@ import 'conversation_sidebar.dart';
 import 'room_composer.dart';
 import 'room_panel.dart';
 import 'stream/message_stream.dart';
+import '../../widgets/pane_divider.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -38,6 +41,28 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _showRuntimePanel = false;
   bool _showSidebar = false;
+  bool _sidebarDecided = false;
+  double _sidebarWidth = kSidebarDefault;
+  double _runtimeWidth = kRuntimeDefault;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // A desktop window wide enough for both panes opens with the list
+    // showing; a narrow one keeps the stream to itself.
+    if (!_sidebarDecided) {
+      _sidebarDecided = true;
+      _showSidebar = MediaQuery.sizeOf(context).width >= 1100;
+    }
+  }
+
+  void _focusSearch() {
+    setState(() => _showSidebar = true);
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => sidebarSearchFocus.requestFocus(),
+    );
+  }
+
   bool _turnEnded = false;
   bool _reconnecting = false;
 
@@ -123,6 +148,54 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           )
         : const <String>[];
 
+    final shortcuts = <ShortcutActivator, VoidCallback>{
+      for (final mod in const [true, false]) ...{
+        SingleActivator(LogicalKeyboardKey.keyK, control: mod, meta: !mod):
+            _focusSearch,
+        SingleActivator(LogicalKeyboardKey.keyB, control: mod, meta: !mod):
+            () => setState(() => _showSidebar = !_showSidebar),
+        if (showOwnerControls)
+          SingleActivator(LogicalKeyboardKey.keyI, control: mod, meta: !mod):
+              () => setState(() => _showRuntimePanel = !_showRuntimePanel),
+      },
+    };
+
+    return CallbackShortcuts(
+      bindings: shortcuts,
+      child: Focus(
+        autofocus: true,
+        child: _scaffold(
+          context,
+          messages: messages,
+          connState: connState,
+          human: human,
+          humanUser: humanUser,
+          activeConvId: activeConvId,
+          activeInfo: activeInfo,
+          isGroup: isGroup,
+          showOwnerControls: showOwnerControls,
+          sendText: sendText,
+          waitingOnMe: waitingOnMe,
+          mentionNames: mentionNames,
+        ),
+      ),
+    );
+  }
+
+  Widget _scaffold(
+    BuildContext context, {
+    required List<types.Message> messages,
+    required oh.ConnectionState connState,
+    required oh.HumanSession? human,
+    required types.User humanUser,
+    required String? activeConvId,
+    required ConversationInfo? activeInfo,
+    required bool isGroup,
+    required bool showOwnerControls,
+    required void Function(String) sendText,
+    required bool waitingOnMe,
+    required List<String> mentionNames,
+  }) {
     return Scaffold(
       backgroundColor: Dk.bg,
       body: SafeArea(
@@ -136,22 +209,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               curve: Mo.expo,
               alignment: Alignment.centerLeft,
               child: _showSidebar
-                  ? const DecoratedBox(
-                      decoration: BoxDecoration(
-                        border: Border(right: BorderSide(color: Dk.line)),
-                      ),
-                      child: ConversationSidebar(),
-                    )
+                  ? ConversationSidebar(width: _sidebarWidth)
                   : const SizedBox.shrink(),
             ),
+            if (_showSidebar)
+              PaneDivider(
+                onDrag: (dx) => setState(
+                  () => _sidebarWidth =
+                      (_sidebarWidth + dx).clamp(kSidebarMin, kSidebarMax),
+                ),
+                onReset: () => setState(() => _sidebarWidth = kSidebarDefault),
+              ),
             // ── Stream ──
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   _TopBar(
-                    title:
-                        activeInfo?.title ?? human?.displayName ?? 'OpenHuman',
+                    title: activeInfo?.displayName ??
+                        human?.displayName ??
+                        'OpenHuman',
                     subtitle: _connectionStateLabel(connState, human),
                     conn: connState,
                     state: _turnEnded
@@ -183,7 +260,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           icon: _showRuntimePanel
                               ? Icons.view_sidebar_rounded
                               : Icons.view_sidebar_outlined,
-                          tooltip: 'AI 运行信息',
+                          tooltip: 'AI 运行信息  Ctrl I',
                           active: _showRuntimePanel,
                           onTap: () => setState(
                             () => _showRuntimePanel = !_showRuntimePanel,
@@ -241,11 +318,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               curve: Mo.expo,
               alignment: Alignment.centerRight,
               child: _showRuntimePanel && showOwnerControls
-                  ? const DecoratedBox(
-                      decoration: BoxDecoration(
-                        border: Border(left: BorderSide(color: Dk.line)),
-                      ),
-                      child: AgentRuntimePanel(),
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        PaneDivider(
+                          invert: true,
+                          onDrag: (dx) => setState(
+                            () => _runtimeWidth = (_runtimeWidth + dx)
+                                .clamp(kRuntimeMin, kRuntimeMax),
+                          ),
+                          onReset: () => setState(
+                            () => _runtimeWidth = kRuntimeDefault,
+                          ),
+                        ),
+                        AgentRuntimePanel(width: _runtimeWidth),
+                      ],
                     )
                   : const SizedBox.shrink(),
             ),

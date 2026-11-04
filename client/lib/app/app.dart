@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'routes.dart';
+import '../widgets/window_chrome.dart';
 import 'theme.dart';
 
 /// The root widget of the OpenHuman client app.
@@ -32,7 +33,7 @@ class OpenHumanApp extends ConsumerWidget {
       builder: (context, child) => DefaultTextStyle(
         style: (Theme.of(context).textTheme.bodyMedium ?? const TextStyle())
             .copyWith(fontFamilyFallback: const ['NotoSansSC']),
-        child: child!,
+        child: WindowChrome(child: child!),
       ),
     );
   }

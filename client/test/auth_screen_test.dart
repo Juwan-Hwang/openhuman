@@ -77,17 +77,17 @@ void main() {
 
     testWidgets('renders Server URL text field', (tester) async {
       await pumpAuthScreen(tester);
-      expect(find.text('Server URL'), findsOneWidget);
+      expect(find.text('服务器地址'), findsOneWidget);
     });
 
     testWidgets('renders API Key text field', (tester) async {
       await pumpAuthScreen(tester);
-      expect(find.text('API Key'), findsOneWidget);
+      expect(find.text('API 密钥'), findsOneWidget);
     });
 
     testWidgets('renders Connect button', (tester) async {
       await pumpAuthScreen(tester);
-      expect(find.text('Connect'), findsOneWidget);
+      expect(find.text('连接'), findsOneWidget);
     });
   });
 
@@ -103,10 +103,10 @@ void main() {
         'ohk_demo_alice_codex',
       );
 
-      await tester.tap(find.text('Connect'));
+      await tester.tap(find.text('连接'));
       await tester.pump();
 
-      expect(find.textContaining('Please enter both'), findsOneWidget);
+      expect(find.textContaining('请填写'), findsOneWidget);
     });
 
     testWidgets('shows error when API key is empty', (tester) async {
@@ -118,10 +118,10 @@ void main() {
         'ws://localhost:8080/ws',
       );
 
-      await tester.tap(find.text('Connect'));
+      await tester.tap(find.text('连接'));
       await tester.pump();
 
-      expect(find.textContaining('Please enter both'), findsOneWidget);
+      expect(find.textContaining('请填写'), findsOneWidget);
     });
   });
 
@@ -144,7 +144,7 @@ void main() {
 
       // Tap Connect — use runAsync to allow the real async timeout
       // timer to run. We then pump to flush, and immediately check.
-      await tester.tap(find.text('Connect'));
+      await tester.tap(find.text('连接'));
 
       // Pump a few frames to let the connect() call execute.
       await tester.pump();

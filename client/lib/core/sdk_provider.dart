@@ -236,7 +236,9 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
             agentId: c.agentId ?? '',
             agentName: c.agentName ?? c.agentId ?? 'Agent',
             lastMessage: old?.lastMessage,
-            lastMessageTime: old?.lastMessageTime,
+            // History knows when the last message landed even before
+            // this session has seen one, so the row can show a time.
+            lastMessageTime: old?.lastMessageTime ?? c.lastMessageAt,
             isGroup: c.isGroup,
             title: c.title,
             memberCount: c.memberCount,

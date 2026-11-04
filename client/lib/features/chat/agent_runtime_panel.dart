@@ -23,7 +23,8 @@ import '../../core/sdk_provider.dart';
 
 /// A pending tool invocation result, tracked by invocation_id.
 class ToolInvocationState {
-  ToolInvocationState({required this.toolId, required this.toolName, this.status = 'pending'});
+  ToolInvocationState(
+      {required this.toolId, required this.toolName, this.status = 'pending'});
 
   final String toolId;
   final String toolName;
@@ -33,12 +34,13 @@ class ToolInvocationState {
 }
 
 /// Provider tracking pending tool invocations.
-final toolInvocationsProvider =
-    StateNotifierProvider<ToolInvocationNotifier, Map<String, ToolInvocationState>>((ref) {
+final toolInvocationsProvider = StateNotifierProvider<ToolInvocationNotifier,
+    Map<String, ToolInvocationState>>((ref) {
   return ToolInvocationNotifier(ref);
 });
 
-class ToolInvocationNotifier extends StateNotifier<Map<String, ToolInvocationState>> {
+class ToolInvocationNotifier
+    extends StateNotifier<Map<String, ToolInvocationState>> {
   ToolInvocationNotifier(this._ref) : super(const {}) {
     _sub = _ref.read(openHumanClientProvider).toolResults.listen(_onResult);
   }
@@ -75,8 +77,15 @@ class ToolInvocationNotifier extends StateNotifier<Map<String, ToolInvocationSta
 //  Agent Runtime Panel
 // ═══════════════════════════════════════════════════════════════
 
+/// Runtime pane width limits; resizable from its left edge.
+const double kRuntimeMin = 300;
+const double kRuntimeMax = 520;
+const double kRuntimeDefault = 360;
+
 class AgentRuntimePanel extends ConsumerWidget {
-  const AgentRuntimePanel({super.key});
+  const AgentRuntimePanel({super.key, this.width = kRuntimeDefault});
+
+  final double width;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -84,39 +93,43 @@ class AgentRuntimePanel extends ConsumerWidget {
     final data = ref.watch(capabilityCacheProvider);
     final theme = Theme.of(context);
 
-    // Same treatment as the conversation sidebar: a card inset from the
-    // window rather than a panel divided off by a full-height rule.
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(6, 12, 12, 12),
-      child: SizedBox(
-        width: 348,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerLow,
-            borderRadius: BorderRadius.circular(AppRadius.lg),
-            border: Border.all(color: theme.colorScheme.outlineVariant),
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(AppRadius.lg),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // ── Header ──
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 14, 12, 10),
-                  child: Row(
+    return SizedBox(
+      width: width,
+      child: ColoredBox(
+        color: Dk.p1,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // ── Header ──
+            Container(
+              height: 72,
+              padding: const EdgeInsets.symmetric(horizontal: Sp.x5),
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: Dk.line)),
+              ),
+              child: Row(
+                children: [
+                  Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.smart_toy_outlined,
-                          size: 16, color: theme.colorScheme.onSurfaceVariant),
-                      const SizedBox(width: 8),
-                      Text('工具', style: theme.textTheme.titleSmall),
+                      Text('AI 运行信息', style: Ty.name.copyWith(fontSize: 14)),
+                      const SizedBox(height: 4),
+                      Text(
+                        data == null
+                            ? '等待 AI 上报'
+                            : '${data.capabilities.length} 个工具',
+                        style: Ty.meta,
+                      ),
                     ],
                   ),
-                ),
-                Expanded(child: _buildContent(context, ref, data, theme)),
-              ],
+                  const Spacer(),
+                  Text('Ctrl I', style: Ty.meta.copyWith(color: Dk.t4)),
+                ],
+              ),
             ),
-          ),
+            Expanded(child: _buildContent(context, ref, data, theme)),
+          ],
         ),
       ),
     );
@@ -129,10 +142,23 @@ class AgentRuntimePanel extends ConsumerWidget {
     ThemeData theme,
   ) {
     if (data == null) {
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text('还没有工具信息', textAlign: TextAlign.center),
+          padding: const EdgeInsets.all(Sp.x6),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.memory_rounded, size: 20, color: Dk.t3),
+              const SizedBox(height: Sp.x3),
+              Text('还没有工具信息', style: Ty.small.copyWith(color: Dk.t2)),
+              const SizedBox(height: 6),
+              Text(
+                'AI 连上并上报工具后会显示在这里',
+                textAlign: TextAlign.center,
+                style: Ty.small.copyWith(fontSize: 12, color: Dk.t3),
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -229,8 +255,7 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
       widget.capability['name'] as String? ??
       widget.capability['id'] as String? ??
       'unknown';
-  String get _toolId =>
-      widget.capability['id'] as String? ?? _toolName;
+  String get _toolId => widget.capability['id'] as String? ?? _toolName;
 
   /// What the tool is for, in words, plus how much it wants from you.
   String get _toolGloss {
@@ -277,17 +302,17 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        color: _expanded ? Dk.p2 : Dk.p1,
+        borderRadius: BorderRadius.circular(Rd.lg),
         border: Border.all(
-          // Status has to stay readable at a glance, but the default
-          // Material green and red are far louder than anything else in
-          // the console. Muted to sit inside the zinc palette.
+          // Status stays readable at a glance without shouting.
           color: invState?.status == 'success'
-              ? const Color(0xFF639922).withValues(alpha: 0.45)
+              ? Dk.ok.withValues(alpha: 0.35)
               : invState?.status == 'error'
-                  ? theme.colorScheme.error.withValues(alpha: 0.45)
-                  : theme.colorScheme.outlineVariant.withValues(alpha: 0.3),
+                  ? Dk.danger.withValues(alpha: 0.4)
+                  : _expanded
+                      ? Dk.line2
+                      : Dk.line,
         ),
       ),
       child: Column(
@@ -301,24 +326,39 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               child: Row(
                 children: [
-                  Icon(_categoryIcon(category), size: 18, color: theme.colorScheme.primary),
-                  const SizedBox(width: 10),
+                  Container(
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      color: Dk.blueFloor,
+                      borderRadius: BorderRadius.circular(Rd.sm),
+                      border: Border.all(color: Dk.blueLine),
+                    ),
+                    child: Icon(
+                      _categoryIcon(category),
+                      size: 15,
+                      color: Dk.blue,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
                   // The tool's own identifier stays — it is how the
                   // agent names it — with a plain-language gloss beneath.
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(_toolName,
-                            style: theme.textTheme.bodyMedium
-                                ?.copyWith(fontWeight: FontWeight.w500)),
-                        const SizedBox(height: 1),
+                        Text(
+                          _toolName,
+                          style: Ty.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 3),
                         Text(
                           _toolGloss,
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            fontSize: 10,
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
+                          style: Ty.meta.copyWith(fontSize: 10.5),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
@@ -327,10 +367,15 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
                     _StatusDot(status: invState.status),
                     const SizedBox(width: 6),
                   ],
-                  Icon(
-                    _expanded ? Icons.expand_less : Icons.expand_more,
-                    size: 20,
-                    color: theme.colorScheme.onSurfaceVariant,
+                  AnimatedRotation(
+                    turns: _expanded ? 0.5 : 0,
+                    duration: Mo.base,
+                    curve: Mo.expo,
+                    child: const Icon(
+                      Icons.expand_more_rounded,
+                      size: 18,
+                      color: Dk.t3,
+                    ),
                   ),
                 ],
               ),
@@ -338,7 +383,7 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
           ),
           // ── Expanded form ──
           if (_expanded) ...[
-            Divider(height: 1, color: theme.colorScheme.outlineVariant),
+            const Divider(height: 1, color: Dk.line),
             Padding(
               padding: const EdgeInsets.all(12),
               child: Column(
@@ -409,9 +454,8 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
         .map((e) => field(e.key, e.value as Map<String, dynamic>))
         .toList();
 
-    final optional = properties.entries
-        .where((e) => !_required.contains(e.key))
-        .toList();
+    final optional =
+        properties.entries.where((e) => !_required.contains(e.key)).toList();
 
     if (optional.isEmpty) return required;
 
@@ -478,13 +522,18 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
       } else if (type == 'integer' || type == 'number') {
         final text = _controllerFor(name).text.trim();
         if (text.isNotEmpty) {
-          input[name] = type == 'integer' ? int.tryParse(text) : double.tryParse(text);
+          input[name] =
+              type == 'integer' ? int.tryParse(text) : double.tryParse(text);
         }
       } else if (type == 'array') {
         // Arrays are entered as comma-separated values
         final text = _controllerFor(name).text.trim();
         if (text.isNotEmpty) {
-          input[name] = text.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+          input[name] = text
+              .split(',')
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList();
         }
       } else {
         final text = _controllerFor(name).text.trim();
@@ -497,7 +546,9 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
     final invId = 'inv_${DateTime.now().microsecondsSinceEpoch}';
     setState(() => _invocationId = invId);
 
-    ref.read(toolInvocationsProvider.notifier).addPending(invId, _toolId, _toolName);
+    ref
+        .read(toolInvocationsProvider.notifier)
+        .addPending(invId, _toolId, _toolName);
 
     // `invokeTool` is async, so a failure arrives as a rejected Future —
     // without the await this try/catch never sees it, and an unhandled
@@ -530,16 +581,26 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
 
   IconData _categoryIcon(String? category) {
     switch (category) {
-      case 'terminal': return Icons.terminal;
-      case 'filesystem': return Icons.folder_outlined;
-      case 'web': return Icons.language;
-      case 'subagent': return Icons.account_tree_outlined;
-      case 'task_management': return Icons.task_alt;
-      case 'ui': return Icons.web_outlined;
-      case 'communication': return Icons.chat_outlined;
-      case 'skill': return Icons.school_outlined;
-      case 'scheduling': return Icons.schedule_outlined;
-      default: return Icons.build_outlined;
+      case 'terminal':
+        return Icons.terminal;
+      case 'filesystem':
+        return Icons.folder_outlined;
+      case 'web':
+        return Icons.language;
+      case 'subagent':
+        return Icons.account_tree_outlined;
+      case 'task_management':
+        return Icons.task_alt;
+      case 'ui':
+        return Icons.web_outlined;
+      case 'communication':
+        return Icons.chat_outlined;
+      case 'skill':
+        return Icons.school_outlined;
+      case 'scheduling':
+        return Icons.schedule_outlined;
+      default:
+        return Icons.build_outlined;
     }
   }
 }
@@ -699,10 +760,10 @@ class _FormField extends StatelessWidget {
     // A fixed set of choices is a menu, not a box to type into.
     if (enumValues != null && enumValues!.isNotEmpty) {
       return DropdownButtonFormField<String>(
-        initialValue: enumValues!.contains(controller.text) &&
-                controller.text.isNotEmpty
-            ? controller.text
-            : null,
+        initialValue:
+            enumValues!.contains(controller.text) && controller.text.isNotEmpty
+                ? controller.text
+                : null,
         isDense: true,
         isExpanded: true,
         decoration: InputDecoration(
@@ -750,8 +811,10 @@ class _FormField extends StatelessWidget {
           keyboardType: TextInputType.number,
           decoration: InputDecoration(
             isDense: true,
-            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.sm)),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(AppRadius.sm)),
             hintText: '0',
           ),
           style: theme.textTheme.bodySmall,
@@ -762,8 +825,10 @@ class _FormField extends StatelessWidget {
           controller: controller,
           decoration: InputDecoration(
             isDense: true,
-            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.sm)),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(AppRadius.sm)),
             hintText: '多个用逗号分隔，如 a, b',
           ),
           style: theme.textTheme.bodySmall,
@@ -774,8 +839,10 @@ class _FormField extends StatelessWidget {
           controller: controller,
           decoration: InputDecoration(
             isDense: true,
-            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.sm)),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(AppRadius.sm)),
             hintText: '请输入…',
           ),
           style: theme.textTheme.bodySmall,
@@ -840,19 +907,22 @@ class _ResultView extends StatelessWidget {
               _StatusDot(status: state.status),
               const SizedBox(width: 6),
               Text('执行结果 · ${statusLabel(state.status)}',
-                  style: theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w600)),
+                  style: theme.textTheme.labelSmall
+                      ?.copyWith(fontWeight: FontWeight.w600)),
             ],
           ),
           if (state.error != null) ...[
             const SizedBox(height: 4),
             Text(state.error!,
-                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error)),
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.error)),
           ],
           if (state.output != null) ...[
             const SizedBox(height: 4),
             SelectableText(
               _formatOutput(state.output),
-              style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace', fontSize: 11),
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(fontFamily: 'monospace', fontSize: 11),
               maxLines: 8,
             ),
           ],
@@ -887,7 +957,8 @@ class _SystemPromptButton extends StatelessWidget {
       width: double.infinity,
       child: OutlinedButton.icon(
         onPressed: () => _openFullScreen(context),
-        icon: Icon(Icons.description_outlined, size: 18, color: theme.colorScheme.primary),
+        icon: Icon(Icons.description_outlined,
+            size: 18, color: theme.colorScheme.primary),
         label: Text('查看完整提示词（$lineCount 行）'),
         style: OutlinedButton.styleFrom(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -955,50 +1026,57 @@ class _SystemPromptFullScreen extends StatelessWidget {
 // ═══════════════════════════════════════════════════════════════
 
 class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({required this.title, required this.icon, required this.theme});
+  const _SectionHeader({
+    required this.title,
+    required this.icon,
+    required this.theme,
+  });
   final String title;
   final IconData icon;
   final ThemeData theme;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, size: 16, color: theme.colorScheme.onSurfaceVariant),
-        const SizedBox(width: 6),
-        Text(title,
-            style: theme.textTheme.labelMedium
-                ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-      ],
+    return Padding(
+      padding: const EdgeInsets.only(left: 2, top: 4),
+      child: Text(title, style: Ty.label),
     );
   }
 }
 
 class _InfoRow extends StatelessWidget {
-  const _InfoRow({required this.label, required this.value, required this.icon});
+  const _InfoRow({
+    required this.label,
+    required this.value,
+    required this.icon,
+  });
   final String label;
   final String value;
   final IconData icon;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Row(
-      children: [
-        Icon(icon, size: 16, color: theme.colorScheme.onSurfaceVariant),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label,
-                  style: theme.textTheme.labelSmall
-                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-              Text(value, style: theme.textTheme.bodyMedium),
-            ],
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      decoration: BoxDecoration(
+        color: Dk.bg,
+        borderRadius: BorderRadius.circular(Rd.md),
+        border: Border.all(color: Dk.line),
+      ),
+      child: Row(
+        children: [
+          Text(label, style: Ty.label),
+          const SizedBox(width: Sp.x3),
+          Expanded(
+            child: SelectableText(
+              value,
+              style: Ty.code.copyWith(color: Dk.t1, height: 1.3),
+              maxLines: 1,
+            ),
           ),
-        ),
-      ],
+          Icon(icon, size: 14, color: Dk.t4),
+        ],
+      ),
     );
   }
 }
