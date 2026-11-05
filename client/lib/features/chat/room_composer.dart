@@ -1,8 +1,16 @@
 /// The composer, and room mention helpers (design doc §10.4).
 ///
-/// One composer for 1:1 and group rooms. In a room, typing "@" opens
-/// member completion above the field; picking a name inserts "@名字 ".
-/// Enter sends, Shift+Enter breaks the line, Ctrl/⌘+Enter ends the turn.
+/// One composer for 1:1 chats and group rooms.
+///
+/// * Enter sends, Shift+Enter breaks the line.
+/// * Ctrl/⌘+Enter is 发送完毕: sends what is typed, then tells the other
+///   person's tool I am done for now, so their window stops waiting.
+///   After that the composer says so and offers 继续说 to reopen.
+/// * In a room, "@" opens member completion above the field; picking a
+///   name inserts "@名字 ".
+/// * When the other person asked for files (a picture, a recording),
+///   the attach control adds them as chips and they go with the words.
+/// * Offline, the words stay in the field and send is held back.
 library;
 
 import 'package:flutter/material.dart';
@@ -10,6 +18,12 @@ import 'package:flutter/services.dart';
 
 import '../../app/adaptive.dart';
 import '../../app/tokens.dart';
+import '../../core/files_io.dart';
+import '../../core/tasks.dart';
+import '../../widgets/controls.dart';
+import '../../widgets/glyphs.dart';
+import '../../widgets/motion.dart';
+import 'stream/attachments.dart';
 
 /// Member display names of a room, for completion + highlight.
 List<String> roomMemberNames(Map<String, dynamic>? room) {
@@ -28,18 +42,44 @@ class Composer extends StatefulWidget {
     required this.enabled,
     required this.onSend,
     this.onEndTurn,
+    this.onReopen,
     this.mentionNames = const [],
+    this.to,
+    this.waitingOnMe = false,
+    this.offline = false,
+    this.fileTypes,
+    this.onSendFiles,
   });
 
-  /// False after the human ended the turn.
+  /// False after I ended the turn ([onReopen] opens it again).
   final bool enabled;
   final void Function(String text) onSend;
 
-  /// Null hides the end-turn control (non-owners in a room, §10.6).
+  /// 发送完毕. Null hides it (nothing to end yet, or not mine to end in a
+  /// room, §10.6).
   final VoidCallback? onEndTurn;
+
+  /// 继续说: undo [onEndTurn] and keep writing in the same turn.
+  final VoidCallback? onReopen;
 
   /// Room member names for "@" completion; empty in 1:1 chats.
   final List<String> mentionNames;
+
+  /// Who I am writing to, for the placeholder.
+  final String? to;
+
+  /// The other person is waiting on me.
+  final bool waitingOnMe;
+
+  /// No connection: typing is fine, sending waits.
+  final bool offline;
+
+  /// File types the other person asked for; null when they can only
+  /// take words (plain chat), which disables attaching.
+  final List<String>? fileTypes;
+
+  /// Send words with files.
+  final void Function(String text, List<OutgoingFile> files)? onSendFiles;
 
   @override
   State<Composer> createState() => _ComposerState();
@@ -48,7 +88,10 @@ class Composer extends StatefulWidget {
 class _ComposerState extends State<Composer> {
   final _controller = TextEditingController();
   late final FocusNode _focus = FocusNode(onKeyEvent: _onKey);
+  final _files = <OutgoingFile>[];
   int _pick = 0;
+
+  bool get _canAttach => widget.fileTypes != null && widget.onSendFiles != null;
 
   /// The "@..." token under the caret, if any: (start index, query).
   (int, String)? _activeToken() {
@@ -90,13 +133,42 @@ class _ComposerState extends State<Composer> {
     setState(() => _pick = 0);
   }
 
-  void _send() {
-    if (!widget.enabled) return;
+  bool get _hasDraft => _controller.text.trim().isNotEmpty || _files.isNotEmpty;
+
+  bool get _canSend => widget.enabled && !widget.offline && _hasDraft;
+
+  /// Sends the draft. Returns whether anything went.
+  bool _send() {
+    if (!_canSend) return false;
     final text = _controller.text.trim();
-    if (text.isEmpty) return;
-    widget.onSend(text);
+    if (_files.isNotEmpty && _canAttach) {
+      widget.onSendFiles!(text, List.of(_files));
+    } else if (text.isNotEmpty) {
+      widget.onSend(text);
+    } else {
+      return false;
+    }
     _controller.clear();
-    setState(() {});
+    setState(_files.clear);
+    return true;
+  }
+
+  /// 发送完毕: whatever is typed goes first.
+  void _finish() {
+    if (widget.onEndTurn == null || !widget.enabled) return;
+    if (_hasDraft && !_send()) return;
+    widget.onEndTurn!();
+  }
+
+  Future<void> _attach() async {
+    try {
+      final picked = await FilesIo.pick(widget.fileTypes ?? const []);
+      if (!mounted || picked.isEmpty) return;
+      setState(() => _files.addAll(picked));
+      _focus.requestFocus();
+    } catch (_) {
+      if (mounted) toast(context, '没能打开文件选择');
+    }
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent e) {
@@ -123,7 +195,7 @@ class _ComposerState extends State<Composer> {
     if (e.logicalKey == LogicalKeyboardKey.enter ||
         e.logicalKey == LogicalKeyboardKey.numpadEnter) {
       if (keys.isControlPressed || keys.isMetaPressed) {
-        widget.onEndTurn?.call();
+        _finish();
         return KeyEventResult.handled;
       }
       if (keys.isShiftPressed) return KeyEventResult.ignored;
@@ -145,23 +217,140 @@ class _ComposerState extends State<Composer> {
     super.dispose();
   }
 
+  String get _hint {
+    if (widget.offline) return '没连上服务器，连上后才能发送';
+    final to = widget.to;
+    if (widget.mentionNames.isNotEmpty) return '发到群里…  输入 @ 提及成员';
+    return to == null ? '写点什么…' : '写给 $to…';
+  }
+
   @override
   Widget build(BuildContext context) {
-    final sugg = _suggestions();
-    final canSend = widget.enabled && _controller.text.trim().isNotEmpty;
-    final focused = _focus.hasFocus;
-
     final g = StreamScope.of(context);
     final touch = Touch.primary;
-    final phone = !g.rail;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(
-        phone ? Sp.x3 : g.gutter,
-        0,
-        phone ? Sp.x3 : g.right,
-        // Clear a phone's home indicator.
-        (phone ? Sp.x3 : Sp.x5) + MediaQuery.viewPaddingOf(context).bottom,
+    final phone = g.phone;
+    final pad = EdgeInsets.fromLTRB(
+      g.side,
+      0,
+      g.side,
+      // Clear a phone's home indicator.
+      (phone ? Sp.x3 : Sp.x5) + MediaQuery.viewPaddingOf(context).bottom,
+    );
+
+    if (!widget.enabled) {
+      return Padding(
+        padding: pad,
+        child: _Ended(onReopen: widget.onReopen),
+      );
+    }
+
+    final sugg = _suggestions();
+    final focused = _focus.hasFocus;
+    final hot = widget.waitingOnMe && !widget.offline;
+
+    final field = TextField(
+      controller: _controller,
+      focusNode: _focus,
+      minLines: 1,
+      maxLines: phone ? 5 : 8,
+      textInputAction: touch ? TextInputAction.newline : TextInputAction.none,
+      style: Ty.prose.copyWith(color: Dk.t1, fontSize: 14.5, height: 1.6),
+      cursorColor: Dk.signal,
+      cursorWidth: 2,
+      onChanged: (_) => setState(() => _pick = 0),
+      decoration: InputDecoration(
+        hintText: _hint,
+        hintStyle: Ty.prose.copyWith(
+          color: Dk.t3,
+          fontSize: 14.5,
+          height: 1.6,
+        ),
+        filled: false,
+        isDense: true,
+        border: InputBorder.none,
+        enabledBorder: InputBorder.none,
+        focusedBorder: InputBorder.none,
+        disabledBorder: InputBorder.none,
+        contentPadding: const EdgeInsets.symmetric(vertical: Sp.x1),
       ),
+    );
+
+    final bar = Row(
+      children: [
+        DkIconButton(
+          key: const ValueKey('composer-attach'),
+          glyph: Glyph.attach,
+          label: _canAttach ? '添加文件' : '对方那边只收文字，这里发不了文件',
+          onTap: _canAttach ? _attach : null,
+        ),
+        const SizedBox(width: Sp.x2),
+        Expanded(
+          child: Swap(
+            value: hot,
+            alignment: Alignment.centerLeft,
+            child: hot
+                ? Row(
+                    key: const ValueKey('composer-waiting'),
+                    children: [
+                      const BreathingDot(color: Dk.signal, size: Sz.dotSm),
+                      const SizedBox(width: Sp.x2),
+                      Flexible(
+                        child: Text(
+                          widget.mentionNames.isEmpty ? '对方在等你回复' : '群里有人在等你回复',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Ty.small.copyWith(
+                            fontSize: 12,
+                            color: Dk.signal,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                : !touch && !phone
+                    ? Row(
+                        children: [
+                          const Kbd('↵', label: '发送'),
+                          const SizedBox(width: Sp.x3),
+                          const Kbd('Shift ↵', label: '换行'),
+                          if (widget.onEndTurn != null) ...[
+                            const SizedBox(width: Sp.x3),
+                            Kbd(shortcutLabel('↵'), label: '发送完毕'),
+                          ],
+                        ],
+                      )
+                    : const SizedBox.shrink(),
+          ),
+        ),
+        if (widget.onEndTurn != null) ...[
+          Tooltip(
+            message:
+                touch ? '告诉对方你这一轮说完了' : '告诉对方你这一轮说完了  ${shortcutLabel('↵')}',
+            child: DkButton(
+              key: const ValueKey('composer-end-turn'),
+              label: '发送完毕',
+              glyph: Glyph.done,
+              kind: DkButtonKind.quiet,
+              dense: !touch,
+              onTap: widget.offline ? null : _finish,
+            ),
+          ),
+          const SizedBox(width: Sp.x15),
+        ],
+        DkButton(
+          key: const ValueKey('composer-send'),
+          label: '发送',
+          trailing: Glyph.send,
+          kind: hot ? DkButtonKind.signal : DkButtonKind.primary,
+          dense: !touch,
+          onTap: _canSend ? _send : null,
+        ),
+      ],
+    );
+
+    return Padding(
+      padding: pad,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -172,87 +361,65 @@ class _ComposerState extends State<Composer> {
             canRequestFocus: false,
             onFocusChange: (_) => setState(() {}),
             child: AnimatedContainer(
-              duration: Mo.fast,
+              duration: Mo.of(context, Mo.fast),
               decoration: BoxDecoration(
-                color: widget.enabled ? Dk.p2 : Dk.p1,
-                borderRadius: BorderRadius.circular(Rd.xl),
+                color: Dk.p2,
+                borderRadius: BorderRadius.circular(Rd.lg),
                 border: Border.all(
-                  color: focused && widget.enabled ? Dk.t4 : Dk.line2,
+                  color: focused
+                      ? Dk.focus
+                      : hot
+                          ? Dk.signalRing
+                          : Dk.line2,
                 ),
                 boxShadow: const [
                   BoxShadow(
                     color: Dk.bgFade,
-                    blurRadius: 50,
-                    offset: Offset(0, -20),
+                    blurRadius: 40,
+                    offset: Offset(0, -16),
                   ),
                 ],
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(phone ? 16 : 20, 14, 20, 0),
-                    child: TextField(
-                      controller: _controller,
-                      focusNode: _focus,
-                      enabled: widget.enabled,
-                      minLines: 1,
-                      maxLines: phone ? 5 : 8,
-                      textInputAction: touch
-                          ? TextInputAction.newline
-                          : TextInputAction.none,
-                      style: Ty.prose.copyWith(color: Dk.t1),
-                      cursorColor: Dk.signal,
-                      cursorWidth: 2,
-                      onChanged: (_) => setState(() => _pick = 0),
-                      decoration: InputDecoration(
-                        hintText: widget.enabled
-                            ? (widget.mentionNames.isEmpty
-                                ? '回复 AI 的请求…'
-                                : '回复…  输入 @ 提及成员')
-                            : '本轮已结束，下一条请求到达时自动恢复',
-                        hintStyle: Ty.prose.copyWith(color: Dk.t3),
-                        filled: false,
-                        isDense: true,
-                        border: InputBorder.none,
-                        enabledBorder: InputBorder.none,
-                        focusedBorder: InputBorder.none,
-                        disabledBorder: InputBorder.none,
-                        contentPadding: const EdgeInsets.symmetric(vertical: 6),
+                  if (_files.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(
+                        Sp.x3,
+                        Sp.x3,
+                        Sp.x3,
+                        0,
+                      ),
+                      child: Wrap(
+                        spacing: Sp.x15,
+                        runSpacing: Sp.x15,
+                        children: [
+                          for (final f in _files)
+                            DraftChip(
+                              file: f,
+                              onRemove: () => setState(() => _files.remove(f)),
+                            ),
+                        ],
                       ),
                     ),
+                  Padding(
+                    padding: EdgeInsets.fromLTRB(
+                      phone ? Sp.x35 : Sp.x4,
+                      Sp.x3,
+                      phone ? Sp.x35 : Sp.x4,
+                      0,
+                    ),
+                    child: field,
                   ),
                   Padding(
-                    padding: EdgeInsets.fromLTRB(phone ? 12 : 20, 8, 10, 10),
-                    child: Row(
-                      children: [
-                        // Keyboard hints only where there is a keyboard,
-                        // and only when there is room to read them.
-                        if (!touch && !phone) ...[
-                          const _Kbd('↵', '发送'),
-                          const SizedBox(width: Sp.x4),
-                          const _Kbd('Shift ↵', '换行'),
-                          if (widget.onEndTurn != null && g.gutter > 90) ...[
-                            const SizedBox(width: Sp.x4),
-                            const _Kbd('Ctrl ↵', '结束本轮'),
-                          ],
-                        ],
-                        const Spacer(),
-                        if (widget.onEndTurn != null && widget.enabled) ...[
-                          _GhostButton(
-                            key: const ValueKey('composer-end-turn'),
-                            label: '结束本轮',
-                            onTap: widget.onEndTurn!,
-                          ),
-                          const SizedBox(width: Sp.x2),
-                        ],
-                        _SendButton(
-                          key: const ValueKey('composer-send'),
-                          enabled: canSend,
-                          onTap: _send,
-                        ),
-                      ],
+                    padding: const EdgeInsets.fromLTRB(
+                      Sp.x15,
+                      Sp.x15,
+                      Sp.x2,
+                      Sp.x2,
                     ),
+                    child: bar,
                   ),
                 ],
               ),
@@ -264,108 +431,42 @@ class _ComposerState extends State<Composer> {
   }
 }
 
-class _Kbd extends StatelessWidget {
-  const _Kbd(this.keys, this.label);
-  final String keys;
-  final String label;
+/// The composer after 发送完毕.
+class _Ended extends StatelessWidget {
+  const _Ended({required this.onReopen});
+  final VoidCallback? onReopen;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-          decoration: BoxDecoration(
-            border: Border.all(color: Dk.line2),
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: Text(keys, style: Ty.meta.copyWith(fontSize: 10.5)),
-        ),
-        const SizedBox(width: 6),
-        Text(label, style: Ty.small.copyWith(fontSize: 11.5, color: Dk.t3)),
-      ],
-    );
-  }
-}
-
-class _GhostButton extends StatelessWidget {
-  const _GhostButton({super.key, required this.label, required this.onTap});
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(Rd.md),
-        hoverColor: Dk.p3,
-        child: Container(
-          padding: EdgeInsets.symmetric(
-            horizontal: 14,
-            vertical: Touch.primary ? 13 : 8,
-          ),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(Rd.md),
-            border: Border.all(color: Dk.line2),
-          ),
-          child: Text(
-            label,
-            style: Ty.name.copyWith(fontSize: 13),
-          ),
-        ),
+    return Container(
+      key: const ValueKey('composer-ended'),
+      padding: const EdgeInsets.fromLTRB(Sp.x4, Sp.x2, Sp.x2, Sp.x2),
+      decoration: BoxDecoration(
+        color: Dk.p1,
+        borderRadius: BorderRadius.circular(Rd.lg),
+        border: Border.all(color: Dk.line),
       ),
-    );
-  }
-}
-
-class _SendButton extends StatelessWidget {
-  const _SendButton({super.key, required this.enabled, required this.onTap});
-  final bool enabled;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Tooltip(
-      message: '发送',
-      child: AnimatedContainer(
-        duration: Mo.fast,
-        decoration: BoxDecoration(
-          color: enabled ? Dk.signal : Dk.p3,
-          borderRadius: BorderRadius.circular(Rd.md),
-        ),
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            onTap: enabled ? onTap : null,
-            borderRadius: BorderRadius.circular(Rd.md),
-            child: Padding(
-              padding: EdgeInsets.fromLTRB(
-                  16, Touch.primary ? 13 : 8, 14, Touch.primary ? 13 : 8),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '发送',
-                    style: Ty.name.copyWith(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: enabled ? Dk.signalInk : Dk.t3,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Icon(
-                    Icons.arrow_upward_rounded,
-                    size: 15,
-                    color: enabled ? Dk.signalInk : Dk.t3,
-                  ),
-                ],
-              ),
+      child: Row(
+        children: [
+          const GlyphIcon(Glyph.done, size: Sz.glyphSm, color: Dk.t3),
+          const SizedBox(width: Sp.x25),
+          Expanded(
+            child: Text(
+              '这一轮你说完了。对方再发消息时会自动打开。',
+              style: Ty.small.copyWith(fontSize: 12.5),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
-        ),
+          if (onReopen != null)
+            DkButton(
+              key: const ValueKey('composer-reopen'),
+              label: '继续说',
+              kind: DkButtonKind.secondary,
+              dense: !Touch.primary,
+              onTap: onReopen,
+            ),
+        ],
       ),
     );
   }
@@ -383,46 +484,50 @@ class _Suggestions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: Sp.x2),
-      padding: const EdgeInsets.all(4),
-      constraints: const BoxConstraints(maxWidth: 320),
+    return Align(
       alignment: Alignment.centerLeft,
-      decoration: BoxDecoration(
-        color: Dk.p2,
-        borderRadius: BorderRadius.circular(Rd.lg),
-        border: Border.all(color: Dk.line2),
-        boxShadow: const [
-          BoxShadow(color: Dk.shadow, blurRadius: 24),
-        ],
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (var i = 0; i < names.length; i++)
-            InkWell(
-              key: ValueKey('mention-${names[i]}'),
-              onTap: () => onPick(names[i]),
-              borderRadius: BorderRadius.circular(Rd.sm),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                decoration: BoxDecoration(
-                  color: i == picked ? Dk.p3 : null,
-                  borderRadius: BorderRadius.circular(Rd.sm),
-                ),
-                child: Row(
-                  children: [
-                    Text('@', style: Ty.meta.copyWith(color: Dk.signal)),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(names[i], style: Ty.body)),
-                    if (i == picked) const Text('Tab', style: Ty.meta),
-                  ],
+      child: Container(
+        margin: const EdgeInsets.only(bottom: Sp.x2),
+        padding: const EdgeInsets.all(Sp.x1),
+        constraints: const BoxConstraints(maxWidth: 320),
+        decoration: BoxDecoration(
+          color: Dk.p2,
+          borderRadius: BorderRadius.circular(Rd.lg),
+          border: Border.all(color: Dk.line2),
+          boxShadow: const [BoxShadow(color: Dk.shadow, blurRadius: 24)],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (var i = 0; i < names.length; i++)
+              Pressable(
+                key: ValueKey('mention-${names[i]}'),
+                semanticLabel: '提及 ${names[i]}',
+                onTap: () => onPick(names[i]),
+                radius: Rd.sm,
+                ring: false,
+                builder: (context, s) => Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: Sp.x25,
+                    vertical: Sp.x15,
+                  ),
+                  decoration: BoxDecoration(
+                    color: i == picked || s.lit ? Dk.p3 : null,
+                    borderRadius: BorderRadius.circular(Rd.sm),
+                  ),
+                  child: Row(
+                    children: [
+                      Text('@', style: Ty.meta.copyWith(color: Dk.signal)),
+                      const SizedBox(width: Sp.x2),
+                      Expanded(child: Text(names[i], style: Ty.body)),
+                      if (i == picked && !Touch.primary) const Kbd('Tab'),
+                    ],
+                  ),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }

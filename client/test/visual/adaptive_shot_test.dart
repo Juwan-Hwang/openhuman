@@ -12,7 +12,6 @@ import 'package:openhuman_client/app/theme.dart';
 import 'package:openhuman_client/core/sdk_provider.dart';
 import 'package:openhuman_client/features/auth/auth_screen.dart';
 import 'package:openhuman_client/features/chat/chat_screen.dart';
-import 'package:openhuman_client/features/chat/room_composer.dart';
 import 'package:openhuman_client/widgets/window_chrome.dart';
 import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -67,32 +66,15 @@ Future<(FakeClient, ProviderContainer)> _boot(
   return (fake, container);
 }
 
-Future<void> _thread(WidgetTester tester, FakeClient fake) async {
-  void say(String id, String text) {
-    fake.msgs.add(oh.MessageReceivedData(
-      conversationId: 'cnv_1',
-      messageId: id,
-      senderId: 'agt_cc',
-      senderType: 'agent',
-      senderName: 'Claude Code · a3f9',
-      text: text,
-    ));
-  }
-
-  say('m1', sampleRequest1);
-  await tester.pump(const Duration(milliseconds: 50));
-  await tester.pumpAndSettle(const Duration(milliseconds: 100));
-  await tester.enterText(
-    find.descendant(
-      of: find.byType(Composer),
-      matching: find.byType(EditableText),
-    ),
-    sampleReply,
-  );
+Future<void> _open(
+  WidgetTester tester,
+  ProviderContainer c,
+  String id,
+) async {
+  c.read(activeConversationIdProvider.notifier).state = id;
   await tester.pump();
-  await tester.tap(find.byKey(const ValueKey('composer-send')));
   await tester.pumpAndSettle(const Duration(milliseconds: 100));
-  say('m3', sampleRequest2);
+  await settleImages(tester);
   await tester.pumpAndSettle(const Duration(milliseconds: 100));
 }
 
@@ -114,15 +96,15 @@ void main() {
       matchesGoldenFile('shots/phone_list.png'),
     );
 
-    await tester.tap(find.byKey(const ValueKey('conv-cnv_1')));
+    await tester.tap(find.byKey(const ValueKey('conv-cnv_zhou')));
     await tester.pumpAndSettle();
-    await _thread(tester, fake);
+    await _open(tester, container, 'cnv_zhou');
     await expectLater(
       find.byType(MaterialApp),
       matchesGoldenFile('shots/phone_chat.png'),
     );
 
-    await tester.tap(find.byTooltip('AI 运行信息'));
+    await tester.tap(find.byTooltip('对话详情'));
     await tester.pumpAndSettle();
     fake.caps.add(sampleCaps);
     await tester.pumpAndSettle();
@@ -140,14 +122,12 @@ void main() {
       touch: true,
       padding: const EdgeInsets.only(top: 24),
     );
-    container.read(activeConversationIdProvider.notifier).state = 'cnv_1';
-    await tester.pump();
-    await _thread(tester, fake);
+    await _open(tester, container, 'room_1');
     await expectLater(
       find.byType(MaterialApp),
       matchesGoldenFile('shots/tablet.png'),
     );
-    await tester.tap(find.byTooltip('AI 运行信息'));
+    await tester.tap(find.byTooltip('对话详情'));
     await tester.pumpAndSettle();
     fake.caps.add(sampleCaps);
     await tester.pumpAndSettle();
@@ -165,7 +145,7 @@ void main() {
       chrome: true,
       conn: oh.ConnectionState.disconnected,
     );
-    container.read(activeConversationIdProvider.notifier).state = 'cnv_2';
+    container.read(activeConversationIdProvider.notifier).state = 'cnv_anon';
     await tester.pumpAndSettle(const Duration(milliseconds: 100));
     await expectLater(
       find.byType(MaterialApp),

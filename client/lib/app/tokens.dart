@@ -119,8 +119,8 @@ class Dk {
 
   /// The floor of my own messages: a breath warmer than the window, so
   /// the two voices are told apart without one outweighing the other.
-  static const Color mineFloor = Color(0xFF1B1A1E);
-  static const Color mineEdge = Color(0xFF2E2C30);
+  static const Color mineFloor = Color(0xFF211F21);
+  static const Color mineEdge = Color(0xFF353135);
 
   /// A row under the pointer.
   static const Color hover = Color(0x0AF7F2EA);

@@ -1,10 +1,13 @@
-/// A small, fast renderer for the text agents actually send.
+/// A small, fast renderer for what people type to each other.
 ///
-/// Agents write a narrow slice of Markdown: paragraphs, fenced code,
-/// `inline code`, **bold**, bullet and numbered lists, and the odd
-/// heading. A full Markdown engine costs layout time on every message in
-/// a long stream; this covers that slice and leaves anything else as
-/// plain text, which is always readable.
+/// People writing from a coding tool reach for a narrow slice of
+/// Markdown: paragraphs, fenced code, `inline code`, **bold**, bullet
+/// and numbered lists, and the odd heading. A full Markdown engine costs
+/// layout time on every message in a long stream; this covers that slice
+/// and leaves anything else as plain text, which is always readable.
+///
+/// A long code block folds to its first lines with a control to open
+/// the rest, so one pasted file does not push the conversation away.
 library;
 
 import 'package:flutter/gestures.dart';
@@ -12,6 +15,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../app/tokens.dart';
+import '../../../widgets/controls.dart';
+import '../../../widgets/glyphs.dart';
 
 /// One parsed block.
 sealed class RichBlock {
@@ -224,7 +229,7 @@ List<InlineSpan> _mentionSplit(
   return out;
 }
 
-/// Renders agent or human text.
+/// Renders a message's text.
 class RichMessageText extends StatelessWidget {
   const RichMessageText(
     this.text, {
@@ -333,13 +338,20 @@ class CodePanel extends StatefulWidget {
   State<CodePanel> createState() => _CodePanelState();
 }
 
+/// Code longer than this folds to [kCodeFoldTo] lines.
+const int kCodeFoldFrom = 18;
+const int kCodeFoldTo = 12;
+
 class _CodePanelState extends State<CodePanel> {
   bool _copied = false;
+  bool _open = false;
 
   @override
   Widget build(BuildContext context) {
     final floor = widget.inverted ? Dk.ink : Dk.codeFloor;
     final lines = widget.code.split('\n');
+    final folds = lines.length > kCodeFoldFrom;
+    final shown = folds && !_open ? lines.sublist(0, kCodeFoldTo) : lines;
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -379,25 +391,36 @@ class _CodePanelState extends State<CodePanel> {
               ],
             ),
           ),
-          LayoutBuilder(
-            builder: (context, box) => SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              child: ConstrainedBox(
-                // Tinted diff lines run the full width of the panel.
-                constraints: BoxConstraints(minWidth: box.maxWidth),
-                child: IntrinsicWidth(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (var i = 0; i < lines.length; i++)
-                        _codeLine(i + 1, lines[i], lines.length),
-                    ],
+          AnimatedSize(
+            duration: Mo.of(context, Mo.base),
+            curve: Mo.expo,
+            alignment: Alignment.topCenter,
+            child: LayoutBuilder(
+              builder: (context, box) => SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: ConstrainedBox(
+                  // Tinted diff lines run the full width of the panel.
+                  constraints: BoxConstraints(minWidth: box.maxWidth),
+                  child: IntrinsicWidth(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (var i = 0; i < shown.length; i++)
+                          _codeLine(i + 1, shown[i], lines.length),
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
           ),
+          if (folds)
+            _FoldBar(
+              open: _open,
+              hidden: lines.length - kCodeFoldTo,
+              onTap: () => setState(() => _open = !_open),
+            ),
         ],
       ),
     );
@@ -439,15 +462,74 @@ class _MiniButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(Rd.xs),
-        hoverColor: Dk.p3,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          child: Text(label, style: Ty.small.copyWith(fontSize: 11.5)),
+    return Pressable(
+      semanticLabel: label,
+      onTap: onTap,
+      radius: Rd.xs,
+      builder: (context, s) => AnimatedContainer(
+        duration: Mo.of(context, Mo.instant),
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x2, vertical: 3),
+        decoration: BoxDecoration(
+          color: s.lit ? Dk.p3 : Colors.transparent,
+          borderRadius: BorderRadius.circular(Rd.xs),
+        ),
+        child: Text(
+          label,
+          style:
+              Ty.small.copyWith(fontSize: 11.5, color: s.lit ? Dk.t1 : Dk.t2),
+        ),
+      ),
+    );
+  }
+}
+
+/// The foot of a folded code block: how much is hidden, and the toggle.
+class _FoldBar extends StatelessWidget {
+  const _FoldBar({
+    required this.open,
+    required this.hidden,
+    required this.onTap,
+  });
+  final bool open;
+  final int hidden;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = open ? '收起' : '展开其余 $hidden 行';
+    return Pressable(
+      semanticLabel: label,
+      onTap: onTap,
+      radius: 0,
+      builder: (context, s) => AnimatedContainer(
+        duration: Mo.of(context, Mo.instant),
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: Sp.x15),
+        decoration: BoxDecoration(
+          color: s.lit ? Dk.p3 : Dk.codeHead,
+          border: const Border(top: BorderSide(color: Dk.line)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            AnimatedRotation(
+              turns: open ? 0.5 : 0,
+              duration: Mo.of(context, Mo.base),
+              child: GlyphIcon(
+                Glyph.chevronDown,
+                size: Sz.glyphXs,
+                color: s.lit ? Dk.t1 : Dk.t2,
+              ),
+            ),
+            const SizedBox(width: Sp.x15),
+            Text(
+              label,
+              style: Ty.small.copyWith(
+                fontSize: 11.5,
+                color: s.lit ? Dk.t1 : Dk.t2,
+              ),
+            ),
+          ],
         ),
       ),
     );

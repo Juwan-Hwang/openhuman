@@ -264,8 +264,9 @@ Future<void> openAttachment(
 }
 
 String _safeName(String name, String uri) {
-  if (name.contains('.'))
+  if (name.contains('.')) {
     return name.replaceAll(RegExp(r'[\\/:*?"<>|\s]'), '_');
+  }
   final mime = decodeDataUrl(uri)?.$1 ?? '';
   final ext = switch (mime) {
     'image/png' => 'png',

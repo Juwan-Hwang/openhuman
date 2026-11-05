@@ -664,8 +664,9 @@ String? checkModeration(String text, Map<String, dynamic> spec) {
         final score =
             s is bool ? (s ? 1.0 : 0.0) : (s is num ? s.toDouble() : null);
         if (score == null) return '第 $n 项：「${entry.key}」要填分数或 true/false。';
-        if (score < 0 || score > 1)
+        if (score < 0 || score > 1) {
           return '第 $n 项：「${entry.key}」的分数要在 0 到 1 之间。';
+        }
         if (!known('${entry.key}')) return '第 $n 项：没有「${entry.key}」这个类别。';
       }
     } else {
@@ -739,8 +740,9 @@ String? checkHits(String text, Map<String, dynamic> spec) {
   final max = (spec['max'] as num?)?.toInt() ?? 10;
   final files = (spec['files'] as List?) ?? const [];
   var v = _json(text);
-  if (v is _Bad)
+  if (v is _Bad) {
     return '要用 JSON 作答：[{"file": "资料名", "score": 0.9, "text": "段落"}]，没有就写 []。';
+  }
   if (v is Map) v = v['data'] ?? v['results'] ?? v;
   if (v is! List) return '要用 JSON 列表作答。';
   if (v.length > max) return '最多 $max 条，现在是 ${v.length} 条。';

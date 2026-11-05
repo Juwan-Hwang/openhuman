@@ -40,11 +40,14 @@ void main() {
     expect(Fit.forWidth(1100), Fit.expanded);
   });
 
-  test('a narrow stream drops the rail and the wide gutter', () {
-    expect(StreamMetrics.forWidth(360).rail, isFalse);
-    expect(StreamMetrics.forWidth(360).gutter, lessThan(30));
-    expect(StreamMetrics.forWidth(700).rail, isTrue);
-    expect(StreamMetrics.forWidth(1000).gutter, 104);
+  test('a narrow stream tightens its lanes', () {
+    expect(StreamMetrics.forWidth(360).phone, isTrue);
+    expect(StreamMetrics.forWidth(360).side, lessThan(16));
+    expect(StreamMetrics.forWidth(700).phone, isFalse);
+    expect(
+      StreamMetrics.forWidth(1000).side,
+      greaterThan(StreamMetrics.forWidth(700).side),
+    );
   });
 
   testWidgets('phone: list first, a tap opens the stream, back returns',
@@ -55,7 +58,7 @@ void main() {
     // The list is the phone's home screen and wears the brand.
     expect(find.byType(BrandLockup), findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('conv-cnv_1')));
+    await tester.tap(find.byKey(const ValueKey('conv-cnv_lin')));
     await tester.pumpAndSettle();
     expect(find.byType(Composer), findsOneWidget);
     expect(find.byType(ConversationSidebar), findsNothing);

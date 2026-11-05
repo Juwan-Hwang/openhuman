@@ -9,6 +9,8 @@ library;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
+import 'tokens.dart';
+
 enum Fit {
   /// Phones, and a desktop window dragged very narrow: one pane at a time.
   compact,
@@ -52,44 +54,45 @@ class Touch {
 }
 
 /// Stream geometry per window class.
+///
+/// The stream is a peer conversation: the other person's messages sit
+/// on the left behind a lane that holds their avatar, mine sit on the
+/// right. [lane] is that avatar column; [side] is the margin on both
+/// edges, which the composer and the strips between them share.
 class StreamMetrics {
   const StreamMetrics._({
-    required this.gutter,
-    required this.right,
-    required this.cardPad,
-    required this.rail,
+    required this.side,
+    required this.avatar,
+    required this.phone,
   });
 
-  /// Left gutter holding the clock and rail. Zero on phones: the clock
-  /// moves beside the speaker's name and the rail is dropped.
-  final double gutter;
+  /// Margin on both edges of the stream.
+  final double side;
 
-  /// Right margin of the stream.
-  final double right;
+  /// Avatar beside the first message of a run.
+  final double avatar;
 
-  /// Inner padding of a request card.
-  final EdgeInsets cardPad;
+  /// A phone-width column: tighter lanes, clocks always shown (there is
+  /// no hover to reveal them).
+  final bool phone;
 
-  /// Whether the timeline rail is drawn.
-  final bool rail;
+  /// The avatar lane: the avatar and the gap after it.
+  double get lane => avatar + (phone ? Sp.x2 : Sp.x3);
 
   static const _wide = StreamMetrics._(
-    gutter: 104,
-    right: 36,
-    cardPad: EdgeInsets.fromLTRB(24, 20, 24, 20),
-    rail: true,
+    side: Sp.x8,
+    avatar: Sz.avatar,
+    phone: false,
   );
   static const _mid = StreamMetrics._(
-    gutter: 76,
-    right: 24,
-    cardPad: EdgeInsets.fromLTRB(22, 18, 22, 18),
-    rail: true,
+    side: Sp.x6,
+    avatar: Sz.avatar,
+    phone: false,
   );
   static const _phone = StreamMetrics._(
-    gutter: 16,
-    right: 16,
-    cardPad: EdgeInsets.fromLTRB(16, 14, 16, 14),
-    rail: false,
+    side: Sp.x3,
+    avatar: Sz.avatarSm,
+    phone: true,
   );
 
   /// Chosen by the stream's own width, not the window's, so a desktop

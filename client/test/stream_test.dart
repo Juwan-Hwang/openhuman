@@ -40,11 +40,11 @@ void main() {
     });
   });
 
-  group('buildRows', () {
+  group('buildItems', () {
     final t0 = DateTime(2026, 11, 4, 10);
 
     test('same author within the window folds into one turn', () {
-      final rows = buildRows([
+      final rows = buildItems([
         _m('c', 'a', t0.add(const Duration(minutes: 2))),
         _m('b', 'a', t0.add(const Duration(minutes: 1))),
         _m('a', 'a', t0),
@@ -53,7 +53,7 @@ void main() {
     });
 
     test('a new speaker or a long pause starts a turn', () {
-      final rows = buildRows([
+      final rows = buildItems([
         _m('c', 'a', t0.add(const Duration(minutes: 30))),
         _m('b', 'h', t0.add(const Duration(minutes: 1))),
         _m('a', 'a', t0),
@@ -62,11 +62,53 @@ void main() {
     });
 
     test('a new calendar day breaks the stream', () {
-      final rows = buildRows([
+      final rows = buildItems([
         _m('b', 'a', t0.add(const Duration(days: 1))),
         _m('a', 'a', t0),
       ]);
       expect(rows.map((r) => r.dayBreak), [true, true]);
+    });
+
+    test('files fold into the message they came with', () {
+      final text = _m('a', 'x', t0);
+      final img = types.ImageMessage(
+        id: 'a-img0',
+        author: const types.User(id: 'x'),
+        uri: 'https://example.com/a.png',
+        name: '图片 1',
+        size: 0,
+        createdAt: t0.millisecondsSinceEpoch,
+      );
+      final items = buildItems([img, text]);
+      expect(items.length, 1);
+      expect(items.single.text?.id, 'a');
+      expect(items.single.files.single.id, 'a-img0');
+    });
+
+    test('a task stands alone and is answered once I reply', () {
+      final task = types.TextMessage(
+        id: 't',
+        author: const types.User(id: 'x'),
+        text: '画一只猫',
+        createdAt: t0.millisecondsSinceEpoch,
+        metadata: const {
+          'request': {'kind': 'api', 'api': 'images.generations'},
+        },
+      );
+      final mine = _m('r', 'me', t0.add(const Duration(seconds: 30)));
+      final before = _m('p', 'x', t0.subtract(const Duration(seconds: 30)));
+      final items = buildItems([mine, task, before], meId: 'me');
+      expect(items.map((i) => i.head), [true, true, true]);
+      expect(items[1].task, isNotNull);
+      expect(items[1].answered, isTrue);
+    });
+
+    test('the clock and day marker follow Beijing time', () {
+      // 17:30 UTC is 01:30 the next day in Beijing.
+      final ms = DateTime.utc(2026, 11, 4, 17, 30).millisecondsSinceEpoch;
+      final t = beijing(ms);
+      expect(hm(t), '01:30');
+      expect(t.day, 5);
     });
   });
 

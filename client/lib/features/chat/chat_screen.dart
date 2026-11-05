@@ -1,10 +1,14 @@
-/// Chat screen — the main communication UI.
+/// Chat screen: the conversation with one person (or one room).
+///
+/// The header leads with the person: their avatar, their name, the
+/// small "经由 Claude Code" tag for the tool they type in, and whose
+/// move it is. Below it the stream, then the composer.
 ///
 /// Layout, by window class (see `app/adaptive.dart`):
 /// ```
-/// expanded  ┌ list ┬──── stream ────┬ runtime ┐   all side by side
-/// medium    ┌ list ┬──── stream ─────[runtime]┐   runtime overlays
-/// compact   [ list ] ⇄ [ stream ]  runtime = bottom sheet
+/// expanded  ┌ list ┬──── stream ────┬ details ┐   all side by side
+/// medium    ┌ list ┬──── stream ─────[details]┐   details overlay
+/// compact   [ list ] ⇄ [ stream ]  details = bottom sheet
 /// ```
 library;
 
@@ -18,6 +22,12 @@ import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/sdk_provider.dart';
+import '../../core/tasks.dart';
+import '../../widgets/avatar.dart';
+import '../../widgets/controls.dart';
+import '../../widgets/glyphs.dart';
+import '../../widgets/motion.dart';
+import 'message_adapter.dart';
 import 'agent_integration_sheet.dart';
 import 'agent_runtime_panel.dart';
 import 'chat_controller.dart';
@@ -117,14 +127,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     void sendText(String text) {
       final sent = controller.sendReply(text);
-      if (!sent && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('未连接 — 请先重连后再发送。'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
+      if (!sent && mounted) toast(context, '还没有打开的对话，发不出去');
     }
 
     // Group-room context (§10.6): end.turn and the tool-invoke panel are
@@ -146,6 +149,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final waitingOnMe = !_turnEnded &&
         messages.isNotEmpty &&
         messages.first.author.id != humanUser.id;
+    final openTask = _openFileTask(messages, humanUser.id);
     final mentionNames = isGroup && activeConvId != null
         ? roomMemberNames(
             ref.watch(roomInfoProvider(activeConvId)).valueOrNull,
@@ -191,10 +195,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             sendText: sendText,
             waitingOnMe: waitingOnMe,
             mentionNames: mentionNames,
+            openTask: openTask,
           ),
         ),
       ),
     );
+  }
+
+  /// The newest task in this conversation that is still open and wants
+  /// files, so the composer can attach them: (message id, task).
+  (String, ApiTask)? _openFileTask(List<types.Message> newestFirst, String me) {
+    final outcomes = ref.watch(taskOutcomesProvider);
+    for (final m in newestFirst) {
+      if (m.author.id == me) return null;
+      final t = taskOf(m);
+      if (t == null) continue;
+      final o = outcomes[m.id]?.state;
+      if (o != null && o != TaskState.open) return null;
+      if (t.expiredAt(DateTime.now())) return null;
+      if (t.media == AnswerMedia.text || t.media == AnswerMedia.json) {
+        return null;
+      }
+      return (m.id, t);
+    }
+    return null;
   }
 
   void _toggleRuntime() {
@@ -254,11 +278,35 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     required void Function(String) sendText,
     required bool waitingOnMe,
     required List<String> mentionNames,
+    required (String, ApiTask)? openTask,
   }) {
+    final caller = activeInfo?.caller;
+    final connected = connState == oh.ConnectionState.connected;
     final topBar = _TopBar(
       compact: fit.isCompact,
       title: activeInfo?.displayName ?? human?.displayName ?? 'OpenHuman',
-      subtitle: _connectionStateLabel(connState, human),
+      avatar: activeInfo == null
+          ? null
+          : isGroup
+              ? RoomAvatar(
+                  title: activeInfo.displayName,
+                  members: mentionNames,
+                  size: fit.isCompact ? Sz.avatarSm : Sz.avatar,
+                )
+              : PersonAvatar(
+                  name: caller!.name,
+                  anonymous: caller.anonymous,
+                  size: fit.isCompact ? Sz.avatarSm : Sz.avatar,
+                ),
+      via: isGroup
+          ? (activeInfo?.memberCount == null
+              ? '群聊'
+              : '群聊 · ${activeInfo!.memberCount} 人')
+          : caller?.via,
+      // My own connection only speaks up when it is not fine.
+      connection: activeInfo != null && connected
+          ? null
+          : _connectionStateLabel(connState, human),
       conn: connState,
       state: _turnEnded
           ? _TurnState.ended
@@ -276,32 +324,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
       }),
       actions: [
-        if (connState != oh.ConnectionState.connected)
-          BarIcon(
-            icon: Icons.refresh_rounded,
-            tooltip: '重新连接',
+        if (!connected)
+          _Action(
+            glyph: Glyph.retry,
+            label: '重新连接',
             busy: _reconnecting,
             onTap: _reconnecting ? null : _reconnect,
           ),
         if (isGroup && activeConvId != null)
-          BarIcon(
-            icon: Icons.groups_outlined,
-            tooltip: '群聊管理',
+          _Action(
+            glyph: Glyph.people,
+            label: '群成员与设置',
             onTap: () => RoomPanel.show(context, activeConvId),
           ),
         if (showOwnerControls)
-          BarIcon(
-            icon: _showRuntimePanel && !fit.isCompact
-                ? Icons.view_sidebar_rounded
-                : Icons.view_sidebar_outlined,
-            tooltip:
-                fit.isCompact || Touch.primary ? 'AI 运行信息' : 'AI 运行信息  Ctrl I',
+          _Action(
+            glyph: Glyph.details,
+            label: '对话详情',
+            shortcut: 'I',
             active: _showRuntimePanel && !fit.isCompact,
             onTap: _toggleRuntime,
           ),
-        BarIcon(
-          icon: Icons.integration_instructions_outlined,
-          tooltip: 'AI 接入配置与指南',
+        _Action(
+          glyph: Glyph.link,
+          label: '接入指南',
           onTap: () => AgentIntegrationSheet.show(context),
         ),
       ],
@@ -335,24 +381,35 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         meId: humanUser.id,
                         mentions: mentionNames,
                         waitingOnMe: waitingOnMe,
+                        onRetry:
+                            ref.read(chatControllerProvider.notifier).retry,
                       ),
                     ),
-                    if (_turnEnded)
-                      _EndedStrip(
-                        onResume: () => ref
-                            .read(chatControllerProvider.notifier)
-                            .reopenTurn(),
-                      ),
                     Composer(
+                      // A fresh composer per conversation: a draft never
+                      // leaks into someone else's chat.
+                      key: ValueKey('composer-$activeConvId'),
                       enabled: !_turnEnded,
                       onSend: sendText,
-                      // Nothing to end before the first request.
-                      onEndTurn: showOwnerControls &&
-                              !_turnEnded &&
-                              messages.isNotEmpty
+                      // Nothing to end before anyone has written.
+                      onEndTurn: showOwnerControls && messages.isNotEmpty
                           ? _endTurn
                           : null,
+                      onReopen:
+                          ref.read(chatControllerProvider.notifier).reopenTurn,
                       mentionNames: mentionNames,
+                      to: isGroup ? null : caller?.name,
+                      waitingOnMe: waitingOnMe,
+                      offline: !connected,
+                      fileTypes: openTask?.$2.acceptExtensions,
+                      onSendFiles: openTask == null
+                          ? null
+                          : (text, files) => _sendFiles(
+                                openTask.$1,
+                                openTask.$2,
+                                text,
+                                files,
+                              ),
                     ),
                   ],
                 ),
@@ -479,16 +536,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _endTurn() {
-    // end.turn closes the caller's waiting stream (`finish_reason: stop`
-    // + [DONE]), so their tool treats the reply as complete.
+    // end.turn closes the other person's waiting stream
+    // (`finish_reason: stop` + [DONE]), so their tool shows my reply as
+    // complete.
     final ended = ref.read(chatControllerProvider.notifier).endTurn();
-    if (!ended && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('当前没有可结束的会话。'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+    if (!ended && mounted) toast(context, '现在没有可以结束的对话');
+  }
+
+  /// Words and files from the composer, as the answer to an open task.
+  Future<void> _sendFiles(
+    String taskMessageId,
+    ApiTask task,
+    String text,
+    List<OutgoingFile> files,
+  ) async {
+    final out = await ref.read(chatControllerProvider.notifier).answerTask(
+          taskMessageId: taskMessageId,
+          task: task,
+          text: text,
+          files: files,
+        );
+    if (!mounted) return;
+    if (out.state == TaskState.open && out.note != null) {
+      toast(context, out.note!);
     }
   }
 
@@ -502,7 +572,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       case oh.ConnectionState.connecting:
         return '连接中…';
       case oh.ConnectionState.connected:
-        return human != null ? '已连接 · ${human.id}' : '已连接';
+        return '已连接';
       case oh.ConnectionState.reconnecting:
         return '重连中…';
       case oh.ConnectionState.disconnected:
@@ -516,16 +586,47 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 /// Whose move it is, as the top bar shows it.
 enum _TurnState { yours, theirs, ended, idle }
 
-/// The stream's header: title, the turn state, window actions.
+/// A header action: a glyph button on a desktop, a menu row on a phone.
+class _Action {
+  const _Action({
+    required this.glyph,
+    required this.label,
+    required this.onTap,
+    this.shortcut,
+    this.active = false,
+    this.busy = false,
+  });
+  final Glyph glyph;
+  final String label;
+  final VoidCallback? onTap;
+  final String? shortcut;
+  final bool active;
+  final bool busy;
+
+  Widget button() => DkIconButton(
+        glyph: glyph,
+        label: label,
+        shortcut: shortcut,
+        active: active,
+        busy: busy,
+        bar: true,
+        onTap: onTap,
+      );
+}
+
+/// The stream's header: who I am talking to, whose move it is, and the
+/// conversation's actions.
 ///
-/// 72 px on a desktop (it lines up with the list's search bar and the
-/// runtime pane's head); 56 px on a phone, where the list button becomes
-/// a back arrow and the actions fold into an overflow menu.
+/// [Sz.bar] on a desktop (it lines up with the list's search bar and the
+/// details pane's head); [Sz.barCompact] on a phone, where the list
+/// button becomes a back arrow and the actions fold into a menu.
 class _TopBar extends StatelessWidget {
   const _TopBar({
     required this.compact,
     required this.title,
-    required this.subtitle,
+    required this.avatar,
+    required this.via,
+    required this.connection,
     required this.conn,
     required this.state,
     required this.sidebarOpen,
@@ -535,12 +636,20 @@ class _TopBar extends StatelessWidget {
 
   final bool compact;
   final String title;
-  final String subtitle;
+
+  /// The person's (or room's) face; null with no conversation open.
+  final Widget? avatar;
+
+  /// "经由 Claude Code", "群聊 · 4 人".
+  final String? via;
+
+  /// My own connection, when it needs saying.
+  final String? connection;
   final oh.ConnectionState conn;
   final _TurnState state;
   final bool sidebarOpen;
   final VoidCallback onSidebar;
-  final List<BarIcon> actions;
+  final List<_Action> actions;
 
   @override
   Widget build(BuildContext context) {
@@ -552,70 +661,99 @@ class _TopBar extends StatelessWidget {
       oh.ConnectionState.error => Dk.danger,
       _ => Dk.t3,
     };
+    final turn = _turnLabel(state, compact);
+    final second = <Widget>[
+      if (via != null)
+        Flexible(
+          child: Text(
+            via!,
+            style: Ty.small.copyWith(fontSize: 12, color: Dk.t3),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      if (connection != null) ...[
+        if (via != null) const _Sep(),
+        Container(
+          width: Sz.dotSm,
+          height: Sz.dotSm,
+          decoration: BoxDecoration(shape: BoxShape.circle, color: connColor),
+        ),
+        const SizedBox(width: Sp.x15),
+        Flexible(
+          child: Text(
+            connection!,
+            style: Ty.small.copyWith(fontSize: 12, color: Dk.t3),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+      // On a phone the turn sits here; a desktop has room for a pill.
+      if (compact && turn != null) ...[
+        if (via != null || connection != null) const _Sep(),
+        Text(
+          turn.$1,
+          style: Ty.small.copyWith(
+            fontSize: 12,
+            color: turn.$2,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    ];
     final heading = Column(
       mainAxisAlignment: MainAxisAlignment.center,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           title,
-          style: compact ? Ty.title.copyWith(fontSize: 16.5) : Ty.title,
+          style: compact
+              ? Ty.title.copyWith(fontSize: 16)
+              : Ty.title.copyWith(fontSize: 17),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
-        SizedBox(height: compact ? 2 : 4),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 6,
-              height: 6,
-              decoration:
-                  BoxDecoration(shape: BoxShape.circle, color: connColor),
-            ),
-            const SizedBox(width: 7),
-            Flexible(
-              child: Text(
-                subtitle,
-                style: Ty.meta.copyWith(color: Dk.t3),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        ),
+        if (second.isNotEmpty) ...[
+          const SizedBox(height: Sp.x05),
+          Row(mainAxisSize: MainAxisSize.min, children: second),
+        ],
+      ],
+    );
+    final who = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (avatar != null) ...[
+          avatar!,
+          SizedBox(width: compact ? Sp.x25 : Sp.x3),
+        ],
+        Flexible(child: heading),
       ],
     );
 
     if (compact) {
       // Keep the one action a phone reaches for most (reconnect when it
-      // is needed, else the runtime pane) and fold the rest.
+      // is needed, else the details) and fold the rest.
       final keep = actions.isEmpty ? null : actions.first;
-      final rest = actions.length > 1 ? actions.sublist(1) : <BarIcon>[];
+      final rest = actions.length > 1 ? actions.sublist(1) : <_Action>[];
       return Container(
-        height: 56,
+        height: Sz.barCompact,
         padding: const EdgeInsets.symmetric(horizontal: Sp.x1),
         decoration: const BoxDecoration(
           border: Border(bottom: BorderSide(color: Dk.line)),
         ),
         child: Row(
           children: [
-            BarIcon(
-              icon: Icons.arrow_back_rounded,
-              tooltip: '会话列表',
+            DkIconButton(
+              glyph: Glyph.back,
+              label: '会话列表',
+              bar: true,
               onTap: onSidebar,
             ),
             const SizedBox(width: Sp.x1),
-            Expanded(child: heading),
-            const SizedBox(width: Sp.x2),
-            AnimatedSwitcher(
-              duration: Mo.base,
-              child: _StatePill(
-                key: ValueKey(state),
-                state: state,
-                dense: true,
-              ),
-            ),
-            if (keep != null) keep,
+            Expanded(child: who),
+            const SizedBox(width: Sp.x1),
+            if (keep != null) keep.button(),
             if (rest.isNotEmpty) _Overflow(items: rest),
           ],
         ),
@@ -623,49 +761,78 @@ class _TopBar extends StatelessWidget {
     }
 
     return Container(
-      height: 72,
-      padding: const EdgeInsets.only(left: Sp.x4, right: Sp.x6),
+      height: Sz.bar,
+      padding: const EdgeInsets.only(left: Sp.x3, right: Sp.x4),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: Dk.line)),
       ),
       child: Row(
         children: [
-          BarIcon(
-            icon: sidebarOpen ? Icons.menu_open_rounded : Icons.menu_rounded,
-            tooltip: Touch.primary ? '会话列表' : '会话列表  Ctrl B',
+          DkIconButton(
+            glyph: Glyph.sidebar,
+            label: '会话列表',
+            shortcut: 'B',
+            bar: true,
             active: sidebarOpen,
             onTap: onSidebar,
           ),
-          const SizedBox(width: Sp.x4),
-          Flexible(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 520),
-              child: heading,
+          const SizedBox(width: Sp.x3),
+          Expanded(
+            child: Row(
+              children: [
+                Flexible(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 520),
+                    child: who,
+                  ),
+                ),
+                const SizedBox(width: Sp.x4),
+                if (turn != null)
+                  Swap(
+                    value: state,
+                    child: _StatePill(state: state),
+                  ),
+              ],
             ),
           ),
-          const SizedBox(width: Sp.x5),
-          AnimatedSwitcher(
-            duration: Mo.base,
-            child: _StatePill(key: ValueKey(state), state: state),
-          ),
-          const Spacer(),
-          ...actions,
+          for (final a in actions) ...[
+            const SizedBox(width: Sp.x05),
+            a.button(),
+          ],
         ],
       ),
     );
   }
 }
 
+/// What the header says about whose move it is, and in what colour.
+(String, Color)? _turnLabel(_TurnState s, bool short) => switch (s) {
+      _TurnState.yours => (short ? '等你回复' : '在等你回复', Dk.signal),
+      _TurnState.theirs => ('等对方回复', Dk.t2),
+      _TurnState.ended => (short ? '你已说完' : '这一轮你说完了', Dk.t3),
+      _TurnState.idle => null,
+    };
+
+class _Sep extends StatelessWidget {
+  const _Sep();
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x15),
+        child: Text('·', style: Ty.small.copyWith(color: Dk.t4)),
+      );
+}
+
 /// The folded actions of a phone top bar.
 class _Overflow extends StatelessWidget {
   const _Overflow({required this.items});
-  final List<BarIcon> items;
+  final List<_Action> items;
 
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<int>(
       tooltip: '更多',
-      icon: const Icon(Icons.more_vert_rounded, size: 20, color: Dk.t2),
+      icon: const GlyphIcon(Glyph.more, size: Sz.glyph, color: Dk.t2),
       position: PopupMenuPosition.under,
       onSelected: (i) => items[i].onTap?.call(),
       itemBuilder: (c) => [
@@ -675,9 +842,9 @@ class _Overflow extends StatelessWidget {
             enabled: items[i].onTap != null,
             child: Row(
               children: [
-                Icon(items[i].icon, size: 18, color: Dk.t2),
+                GlyphIcon(items[i].glyph, size: Sz.glyph, color: Dk.t2),
                 const SizedBox(width: Sp.x3),
-                Text(items[i].tooltip, style: Ty.body),
+                Text(items[i].label, style: Ty.body),
               ],
             ),
           ),
@@ -687,185 +854,33 @@ class _Overflow extends StatelessWidget {
 }
 
 class _StatePill extends StatelessWidget {
-  const _StatePill({super.key, required this.state, this.dense = false});
+  const _StatePill({required this.state});
   final _TurnState state;
-
-  /// Phone top bar: shorter label, tighter box.
-  final bool dense;
 
   @override
   Widget build(BuildContext context) {
-    final (label, short, fg, bg) = switch (state) {
-      _TurnState.yours => ('等你回复', '等你', Dk.signal, Dk.signalSoft),
-      _TurnState.theirs => ('AI 处理中', '处理中', Dk.ok, Dk.okSoft),
-      _TurnState.ended => ('本轮已结束', '已结束', Dk.t2, Dk.p3),
-      _TurnState.idle => ('空闲', '空闲', Dk.t3, Dk.p2),
-    };
+    final (label, fg) = _turnLabel(state, false)!;
+    final yours = state == _TurnState.yours;
     return Semantics(
       liveRegion: true,
       label: label,
       child: Container(
-        padding: dense
-            ? const EdgeInsets.fromLTRB(8, 4, 10, 4)
-            : const EdgeInsets.fromLTRB(11, 6, 13, 6),
+        padding: const EdgeInsets.fromLTRB(Sp.x25, Sp.x1, Sp.x3, Sp.x1),
         decoration: BoxDecoration(
-          color: bg,
+          color: yours ? Dk.signalSoft : Dk.p2,
           borderRadius: BorderRadius.circular(Rd.pill),
+          border: Border.all(color: yours ? Dk.signalRing : Dk.line),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _Pulse(
-              color: fg,
-              on: state == _TurnState.yours || state == _TurnState.theirs,
-              halo: state == _TurnState.yours,
-            ),
-            SizedBox(width: dense ? 7 : 9),
+            BreathingDot(color: fg, on: yours, size: Sz.dotSm),
+            const SizedBox(width: Sp.x2),
             Text(
-              dense ? short : label,
-              style: Ty.name.copyWith(fontSize: dense ? 12 : 12.5, color: fg),
+              label,
+              style: Ty.name.copyWith(fontSize: 12, color: fg),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-/// The state dot. "Your move" breathes slowly in Apricot; "working"
-/// breathes in green; idle and ended sit still.
-class _Pulse extends StatefulWidget {
-  const _Pulse({required this.color, required this.on, required this.halo});
-  final Color color;
-  final bool on;
-  final bool halo;
-
-  @override
-  State<_Pulse> createState() => _PulseState();
-}
-
-class _PulseState extends State<_Pulse> with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 2400),
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    _sync();
-  }
-
-  @override
-  void didUpdateWidget(_Pulse old) {
-    super.didUpdateWidget(old);
-    _sync();
-  }
-
-  void _sync() {
-    if (widget.on && Mo.loops) {
-      if (!_c.isAnimating) _c.repeat();
-    } else {
-      _c.stop();
-      _c.value = 0;
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox.square(
-      dimension: 7,
-      child: AnimatedBuilder(
-        animation: _c,
-        builder: (context, _) {
-          final v = Curves.easeOut.transform(_c.value);
-          return Stack(
-            clipBehavior: Clip.none,
-            alignment: Alignment.center,
-            children: [
-              if (widget.on)
-                Container(
-                  width: 7 + 10 * v,
-                  height: 7 + 10 * v,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: widget.color.withValues(
-                        alpha: (widget.halo ? 0.34 : 0.22) * (1 - v)),
-                  ),
-                ),
-              Container(
-                width: 7,
-                height: 7,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: widget.color,
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-/// A square icon button for bars. 36 px on desktop, 44 px on touch; the
-/// hover floor is the only acknowledgement a mouse gets, so it is never
-/// skipped.
-class BarIcon extends StatelessWidget {
-  const BarIcon({
-    super.key,
-    required this.icon,
-    required this.tooltip,
-    required this.onTap,
-    this.active = false,
-    this.busy = false,
-  });
-
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback? onTap;
-  final bool active;
-  final bool busy;
-
-  @override
-  Widget build(BuildContext context) {
-    final edge = Touch.primary ? 44.0 : 36.0;
-    return Tooltip(
-      message: tooltip,
-      child: Padding(
-        padding: const EdgeInsets.only(left: 2),
-        child: Material(
-          color: active ? Dk.p3 : Colors.transparent,
-          borderRadius: BorderRadius.circular(Rd.md),
-          child: InkWell(
-            onTap: onTap,
-            borderRadius: BorderRadius.circular(Rd.md),
-            hoverColor: Dk.p2,
-            focusColor: Dk.p3,
-            child: SizedBox(
-              width: edge,
-              height: edge,
-              child: Center(
-                child: busy
-                    ? const SizedBox(
-                        width: 15,
-                        height: 15,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 1.6,
-                          color: Dk.t2,
-                        ),
-                      )
-                    : Icon(icon, size: 18, color: active ? Dk.t1 : Dk.t2),
-              ),
-            ),
-          ),
         ),
       ),
     );
@@ -889,29 +904,31 @@ class _ConnBanner extends StatelessWidget {
     final g = StreamScope.of(context);
     final retrying = state == oh.ConnectionState.connecting ||
         state == oh.ConnectionState.reconnecting;
-    final (fg, bg, text) = retrying
-        ? (Dk.warn, Dk.warnSoft, '正在重新连接，期间的回复会在连上后发出。')
-        : (Dk.danger, Dk.dangerSoft, '连接已断开，新请求暂时收不到。');
+    final (fg, bg, edge, text) = retrying
+        ? (Dk.warn, Dk.warnSoft, Dk.warnSoft, '正在重新连接，连上之前消息发不出去。')
+        : (Dk.danger, Dk.dangerSoft, Dk.dangerEdge, '连接断开了，暂时收不到新消息。');
     return Semantics(
       liveRegion: true,
       child: Container(
-        margin: EdgeInsets.fromLTRB(g.gutter, Sp.x3, g.right, 0),
-        padding: const EdgeInsets.fromLTRB(Sp.x3, 6, 6, 6),
+        margin: EdgeInsets.fromLTRB(g.side, Sp.x3, g.side, 0),
+        padding: const EdgeInsets.fromLTRB(Sp.x3, Sp.x15, Sp.x15, Sp.x15),
         decoration: BoxDecoration(
           color: bg,
           borderRadius: BorderRadius.circular(Rd.md),
-          border: Border.all(color: fg.withValues(alpha: 0.28)),
+          border: Border.all(color: edge),
         ),
         child: Row(
           children: [
             if (retrying)
-              SizedBox(
-                width: 12,
-                height: 12,
-                child: CircularProgressIndicator(strokeWidth: 1.5, color: fg),
+              SizedBox.square(
+                dimension: Sz.glyphXs,
+                child: CircularProgressIndicator(
+                  strokeWidth: Sz.stroke,
+                  color: fg,
+                ),
               )
             else
-              Icon(Icons.wifi_off_rounded, size: 14, color: fg),
+              GlyphIcon(Glyph.offline, size: Sz.glyphSm, color: fg),
             const SizedBox(width: Sp.x2),
             Expanded(
               child: Text(
@@ -920,12 +937,12 @@ class _ConnBanner extends StatelessWidget {
               ),
             ),
             if (!retrying)
-              TextButton(
-                onPressed: onRetry,
-                child: Text(
-                  busy ? '连接中…' : '重新连接',
-                  style: Ty.name.copyWith(fontSize: 12.5, color: fg),
-                ),
+              DkButton(
+                label: busy ? '连接中…' : '重新连接',
+                kind: DkButtonKind.quiet,
+                dense: true,
+                busy: busy,
+                onTap: onRetry,
               ),
           ],
         ),
@@ -934,7 +951,7 @@ class _ConnBanner extends StatelessWidget {
   }
 }
 
-/// The runtime pane over the stream on a medium window: slides in from
+/// The details pane over the stream on a medium window: slides in from
 /// the right over a scrim; a tap on the scrim or Esc closes it.
 class _OverlayPane extends StatelessWidget {
   const _OverlayPane({
@@ -986,39 +1003,6 @@ class _OverlayPane extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _EndedStrip extends StatelessWidget {
-  const _EndedStrip({required this.onResume});
-  final VoidCallback onResume;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.fromLTRB(
-        StreamScope.of(context).gutter,
-        0,
-        StreamScope.of(context).right,
-        Sp.x2,
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.flag_outlined, size: 14, color: Dk.t3),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              '本轮已结束。之后的回复会攒到下一轮一起发出。',
-              style: Ty.small.copyWith(fontSize: 12),
-            ),
-          ),
-          TextButton(
-            onPressed: onResume,
-            child: Text('继续本轮', style: Ty.small.copyWith(color: Dk.t1)),
-          ),
-        ],
       ),
     );
   }

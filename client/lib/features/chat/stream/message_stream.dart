@@ -1,66 +1,57 @@
-/// The message stream: the console's centre pane.
+/// The message stream: two people talking, at equal weight.
 ///
-/// A timeline, not a chat: a gutter on the left carries the clock and a
-/// rail with one node per speaker turn. Agent requests are wide reading
-/// cards (they are the work); the human's replies are compact paper
-/// bubbles on the right. The node of the newest agent request glows
-/// signal-orange while it waits on the human.
+/// The other person types in their own AI tool, which is only the
+/// transport, so their messages read as theirs: on the left, with their
+/// avatar and name (and a small "经由 Claude Code" tag) on the first
+/// message of a run. Mine sit on the right, on a floor a breath warmer
+/// than theirs, with their delivery state under the last of a run.
+///
+/// * A run is one person's messages close together; it shares one
+///   avatar and one name line.
+/// * Clocks are Beijing time. On a desktop a continuation shows its
+///   time when the pointer is over it; on touch the run's head says it.
+/// * Something someone asked of you through an API (a picture, a
+///   recording…) is a [TaskCard]; files ride with the message they came
+///   with, as an [AttachmentList].
+/// * A failed send stays in place, says why, and offers 重试.
 ///
 /// Built on a reversed lazy [ListView], so a stream of thousands of
 /// messages lays out only what is on screen.
 library;
-
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
 
 import '../../../app/adaptive.dart';
 import '../../../app/tokens.dart';
-import '../../../widgets/brand.dart';
+import '../../../core/identity.dart';
+import '../../../core/tasks.dart';
 import '../../../widgets/avatar.dart';
+import '../../../widgets/brand.dart';
+import '../../../widgets/controls.dart';
+import '../../../widgets/glyphs.dart';
+import '../../../widgets/motion.dart';
+import '../message_adapter.dart';
+import 'attachments.dart';
 import 'rich_text.dart';
+import 'task_card.dart';
 
-/// Messages closer than this from one author fold into one turn.
-const Duration _foldWindow = Duration(minutes: 3);
+/// Messages closer than this from one person fold into one run.
+const Duration _runWindow = Duration(minutes: 3);
 
-/// One rendered row of the stream: a turn head or a continuation.
-class StreamRow {
-  StreamRow(this.message, {required this.head, required this.dayBreak});
-  final types.Message message;
+/// Files sent with a message land a moment apart at most.
+const Duration _withWindow = Duration(seconds: 2);
 
-  /// First message of a speaker turn: shows name, time and rail node.
-  final bool head;
+/// The wall clock in Beijing for an epoch time. China keeps one zone
+/// and no daylight saving, so this is a fixed eight hours.
+DateTime beijing(int epochMs) =>
+    DateTime.fromMillisecondsSinceEpoch(epochMs, isUtc: true)
+        .add(const Duration(hours: 8));
 
-  /// First message of a calendar day: shows a day marker above.
-  final bool dayBreak;
-}
-
-/// Groups [newestFirst] into rows. Pure, so it is unit-tested.
-List<StreamRow> buildRows(List<types.Message> newestFirst) {
-  final rows = <StreamRow>[];
-  for (var i = 0; i < newestFirst.length; i++) {
-    final m = newestFirst[i];
-    final older = i + 1 < newestFirst.length ? newestFirst[i + 1] : null;
-    final t = DateTime.fromMillisecondsSinceEpoch(m.createdAt ?? 0);
-    final ot = older == null
-        ? null
-        : DateTime.fromMillisecondsSinceEpoch(older.createdAt ?? 0);
-    final dayBreak = ot == null ||
-        ot.year != t.year ||
-        ot.month != t.month ||
-        ot.day != t.day;
-    final head = dayBreak ||
-        older!.author.id != m.author.id ||
-        t.difference(ot).abs() > _foldWindow;
-    rows.add(StreamRow(m, head: head, dayBreak: dayBreak));
-  }
-  return rows;
-}
-
-String _hm(DateTime t) =>
+String hm(DateTime t) =>
     '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
+/// The day marker for wall time [t], seen on day [now].
 String dayLabel(DateTime t, DateTime now) {
   final d = DateTime(t.year, t.month, t.day);
   final n = DateTime(now.year, now.month, now.day);
@@ -71,6 +62,118 @@ String dayLabel(DateTime t, DateTime now) {
   return '${t.year} 年 ${t.month} 月 ${t.day} 日';
 }
 
+final _attachmentId = RegExp(r'^(.+)-(img|file)\d+$');
+
+/// One thing in the stream: a message, the files that came with it, or
+/// a task card.
+class StreamItem {
+  StreamItem({this.text, List<types.Message>? files})
+      : files = files ?? <types.Message>[];
+
+  /// The written part, when there is one.
+  types.TextMessage? text;
+
+  /// Pictures and files sent with it (or on their own).
+  final List<types.Message> files;
+
+  /// First of a run: avatar and name line.
+  bool head = true;
+
+  /// Last of a run: my delivery state goes under it.
+  bool tail = true;
+
+  /// First of a calendar day (Beijing): a day marker above.
+  bool dayBreak = true;
+
+  /// A reply of mine follows this task.
+  bool answered = false;
+
+  types.Message get lead => text ?? files.first;
+  String get id => lead.id;
+  types.User get author => lead.author;
+  int get at => lead.createdAt ?? 0;
+
+  /// What was asked of me, if this is a task.
+  late final ApiTask? task = text == null ? null : taskOf(text!);
+
+  /// The worst delivery state among the parts: one failed file fails
+  /// the whole message.
+  types.Status? get status {
+    final all = [if (text != null) text!, ...files];
+    for (final s in [types.Status.error, types.Status.sending]) {
+      if (all.any((m) => m.status == s)) return s;
+    }
+    if (all.every((m) => m.status == types.Status.delivered)) {
+      return types.Status.delivered;
+    }
+    return all.first.status;
+  }
+
+  /// Why it did not go out.
+  String? get failure {
+    for (final m in [if (text != null) text!, ...files]) {
+      final f = m.metadata?[kFailure];
+      if (f is String) return f;
+    }
+    return null;
+  }
+}
+
+/// Groups [newestFirst] into stream items, newest first. Pure, so it
+/// is unit-tested.
+List<StreamItem> buildItems(List<types.Message> newestFirst, {String? meId}) {
+  final out = <StreamItem>[];
+  for (final m in newestFirst.reversed) {
+    final last = out.isEmpty ? null : out.last;
+    final near = last != null &&
+        last.author.id == m.author.id &&
+        ((m.createdAt ?? 0) - last.at).abs() <= _withWindow.inMilliseconds;
+    if (m is types.ImageMessage || m is types.FileMessage) {
+      final base = _attachmentId.firstMatch(m.id)?.group(1);
+      final belongs = last != null &&
+          last.author.id == m.author.id &&
+          (base != null && last.id == base || near);
+      if (belongs) {
+        last.files.add(m);
+      } else {
+        out.add(StreamItem(files: [m]));
+      }
+    } else if (m is types.TextMessage) {
+      // My answer to a task: the files go first, the words after.
+      if (last != null && last.text == null && near && taskOf(m) == null) {
+        last.text = m;
+      } else {
+        out.add(StreamItem(text: m));
+      }
+    }
+  }
+
+  for (var i = 0; i < out.length; i++) {
+    final it = out[i];
+    final prev = i > 0 ? out[i - 1] : null;
+    final t = beijing(it.at);
+    final pt = prev == null ? null : beijing(prev.at);
+    it.dayBreak = pt == null ||
+        pt.year != t.year ||
+        pt.month != t.month ||
+        pt.day != t.day;
+    it.head = it.dayBreak ||
+        prev!.author.id != it.author.id ||
+        it.task != null ||
+        prev.task != null ||
+        (it.at - prev.at).abs() > _runWindow.inMilliseconds;
+    if (prev != null) prev.tail = it.head;
+  }
+
+  // A task is answered once a message of mine follows it.
+  var mineAfter = false;
+  for (final it in out.reversed) {
+    if (it.task != null) it.answered = mineAfter;
+    if (meId != null && it.author.id == meId) mineAfter = true;
+  }
+  return out.reversed.toList();
+}
+
 class MessageStream extends StatefulWidget {
   const MessageStream({
     super.key,
@@ -78,15 +181,25 @@ class MessageStream extends StatefulWidget {
     required this.meId,
     this.mentions = const [],
     this.waitingOnMe = false,
+    this.onRetry,
+    this.now,
   });
 
   /// Newest first, as the controller keeps them.
   final List<types.Message> messages;
   final String meId;
+
+  /// Room members, so "@名字" lights up.
   final List<String> mentions;
 
-  /// The newest message is an agent request still waiting on the human.
+  /// The newest message is theirs and I have not answered it.
   final bool waitingOnMe;
+
+  /// Send a failed message of mine again.
+  final void Function(String messageId)? onRetry;
+
+  /// Pins the clock (tests and screenshots).
+  final DateTime? now;
 
   @override
   State<MessageStream> createState() => _MessageStreamState();
@@ -96,12 +209,12 @@ class _MessageStreamState extends State<MessageStream> {
   final _scroll = ScrollController();
   bool _away = false;
   int _unseen = 0;
-  int _lastCount = 0;
+  String? _newestId;
 
   @override
   void initState() {
     super.initState();
-    _lastCount = widget.messages.length;
+    _newestId = widget.messages.firstOrNull?.id;
     _scroll.addListener(() {
       final away = _scroll.hasClients && _scroll.offset > 240;
       if (away != _away) {
@@ -116,22 +229,25 @@ class _MessageStreamState extends State<MessageStream> {
   @override
   void didUpdateWidget(MessageStream old) {
     super.didUpdateWidget(old);
-    final added = widget.messages.length - _lastCount;
-    _lastCount = widget.messages.length;
-    if (added > 0) {
-      final mineNewest = widget.messages.isNotEmpty &&
-          widget.messages.first.author.id == widget.meId;
-      if (mineNewest) {
-        _toBottom();
-      } else if (_away) {
-        setState(() => _unseen += added);
-      }
+    final newest = widget.messages.firstOrNull;
+    if (newest == null || newest.id == _newestId) return;
+    // Count what arrived since the newest one I had.
+    var added = 0;
+    for (final m in widget.messages) {
+      if (m.id == _newestId) break;
+      added++;
+    }
+    _newestId = newest.id;
+    if (newest.author.id == widget.meId) {
+      _toBottom();
+    } else if (_away) {
+      setState(() => _unseen += added);
     }
   }
 
   void _toBottom() {
     if (!_scroll.hasClients) return;
-    _scroll.animateTo(0, duration: Mo.slow, curve: Mo.expo);
+    _scroll.animateTo(0, duration: Mo.of(context, Mo.slow), curve: Mo.expo);
     setState(() => _unseen = 0);
   }
 
@@ -144,57 +260,46 @@ class _MessageStreamState extends State<MessageStream> {
   @override
   Widget build(BuildContext context) {
     if (widget.messages.isEmpty) return const _EmptyStream();
-    final m = StreamScope.of(context);
-    final rows = buildRows(widget.messages);
-    final now = DateTime.now();
-    String? newestAgentId;
-    for (final m in widget.messages) {
-      if (m.author.id != widget.meId) {
-        newestAgentId = m.id;
-        break;
-      }
-    }
+    final g = StreamScope.of(context);
+    final items = buildItems(widget.messages, meId: widget.meId);
+    final now = beijing((widget.now ?? DateTime.now()).millisecondsSinceEpoch);
+    final hotId = widget.waitingOnMe
+        ? items.where((i) => i.author.id != widget.meId).firstOrNull?.id
+        : null;
+    final newestMine =
+        items.where((i) => i.author.id == widget.meId).firstOrNull?.id;
 
     return Stack(
       children: [
-        // The rail runs the full height behind the rows.
-        if (m.rail)
-          Positioned(
-            left: m.gutter - 17,
-            top: 0,
-            bottom: 0,
-            child: const SizedBox(width: 1, child: ColoredBox(color: Dk.line)),
-          ),
         ScrollConfiguration(
           behavior: ScrollConfiguration.of(context).copyWith(scrollbars: true),
           child: ListView.builder(
             controller: _scroll,
             reverse: true,
-            padding: const EdgeInsets.only(top: Sp.x6, bottom: Sp.x9),
-            itemCount: rows.length,
+            padding: EdgeInsets.only(
+              top: Sp.x6,
+              bottom: g.phone ? Sp.x4 : Sp.x6,
+            ),
+            itemCount: items.length,
             itemBuilder: (context, i) {
-              final r = rows[i];
-              final hot = widget.waitingOnMe && r.message.id == newestAgentId;
+              final it = items[i];
               return Column(
-                key: ValueKey(r.message.id),
+                key: ValueKey(it.id),
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  if (r.dayBreak)
-                    _DayMarker(
-                      dayLabel(
-                        DateTime.fromMillisecondsSinceEpoch(
-                          r.message.createdAt ?? 0,
-                        ),
-                        now,
-                      ),
-                    ),
-                  _Row(
-                    row: r,
-                    mine: r.message.author.id == widget.meId,
-                    hot: hot,
-                    mentions: widget.mentions,
+                  if (it.dayBreak) _DayMarker(dayLabel(beijing(it.at), now)),
+                  Enter(
                     // Only the newest row animates in.
-                    fresh: i == 0,
+                    enabled: i == 0,
+                    child: _Item(
+                      item: it,
+                      mine: it.author.id == widget.meId,
+                      hot: it.id == hotId,
+                      showState: it.id == newestMine,
+                      mentions: widget.mentions,
+                      onRetry: widget.onRetry,
+                      now: widget.now,
+                    ),
                   ),
                 ],
               );
@@ -202,11 +307,10 @@ class _MessageStreamState extends State<MessageStream> {
           ),
         ),
         Positioned(
-          right: m.right,
-          bottom: Sp.x4,
-          child: AnimatedSwitcher(
-            duration: Mo.base,
-            switchInCurve: Mo.expo,
+          right: g.side,
+          bottom: Sp.x3,
+          child: Swap(
+            value: _away,
             child: _away
                 ? _JumpPill(count: _unseen, onTap: _toBottom)
                 : const SizedBox.shrink(),
@@ -217,465 +321,508 @@ class _MessageStreamState extends State<MessageStream> {
   }
 }
 
-class _Row extends StatelessWidget {
-  const _Row({
-    required this.row,
+/// One item, laid out on its side of the stream.
+class _Item extends StatefulWidget {
+  const _Item({
+    required this.item,
     required this.mine,
     required this.hot,
+    required this.showState,
     required this.mentions,
-    required this.fresh,
+    required this.onRetry,
+    required this.now,
   });
 
-  final StreamRow row;
+  final StreamItem item;
   final bool mine;
+
+  /// Theirs, newest, and waiting on me.
   final bool hot;
+
+  /// My newest message: its delivery state stays visible.
+  final bool showState;
   final List<String> mentions;
-  final bool fresh;
+  final void Function(String)? onRetry;
+  final DateTime? now;
+
+  @override
+  State<_Item> createState() => _ItemState();
+}
+
+class _ItemState extends State<_Item> {
+  bool _hover = false;
+
+  StreamItem get it => widget.item;
 
   @override
   Widget build(BuildContext context) {
-    final m = row.message;
-    final t = DateTime.fromMillisecondsSinceEpoch(m.createdAt ?? 0);
     final g = StreamScope.of(context);
-    final body = mine ? _mineBody(m, g, _hm(t)) : _agentBody(m, g);
+    final time = hm(beijing(it.at));
+    final caller = Caller.parse(it.author.firstName ?? it.author.id);
+    final hoverClock = !Touch.primary && _hover && !it.head;
 
-    Widget content = Padding(
-      padding: EdgeInsets.only(
-        right: g.right,
-        // A phone gives the human's bubbles room on the left so they never
-        // run the full width and read like an agent card.
-        left: g.rail || !mine ? 0 : Sp.x9,
-        top: row.head ? Sp.x5 : Sp.x2,
+    final Widget row = widget.mine
+        ? _mine(g, time, hoverClock)
+        : _theirs(g, caller, time, hoverClock);
+
+    final padded = Padding(
+      padding: EdgeInsets.fromLTRB(
+        g.side,
+        it.head ? (g.phone ? Sp.x4 : Sp.x5) : Sp.x1,
+        g.side,
+        0,
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: g.gutter,
-            child: row.head && g.rail
-                ? _Gutter(time: _hm(t), mine: mine, hot: hot)
-                : null,
-          ),
-          Expanded(
-            child: Column(
-              crossAxisAlignment:
-                  mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-              children: [
-                if (row.head && !mine)
-                  _Who(
-                    author: m.author,
-                    time: g.rail ? null : _hm(t),
-                    hot: hot && !g.rail,
-                  ),
-                body,
-              ],
-            ),
-          ),
-        ],
-      ),
+      child: row,
     );
-
-    if (fresh) {
-      content = TweenAnimationBuilder<double>(
-        tween: Tween(begin: 0, end: 1),
-        duration: Mo.slow,
-        curve: Mo.expo,
-        builder: (context, v, child) => Opacity(
-          opacity: v,
-          child: Transform.translate(
-            offset: Offset(0, (1 - v) * 10),
-            child: child,
-          ),
-        ),
-        child: content,
-      );
-    }
-    return content;
-  }
-
-  Widget _agentBody(types.Message m, StreamMetrics g) {
-    if (m is types.ImageMessage) {
-      return Align(
-        alignment: Alignment.centerLeft,
-        child: _ImageTile(uri: m.uri),
-      );
-    }
-    final text = m is types.TextMessage ? m.text : '';
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: Sp.measure + 50),
-      child: _RequestCard(
-        hot: hot,
-        text: text,
-        mentions: mentions,
-        padding: g.cardPad,
-      ),
+    if (Touch.primary) return padded;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: padded,
     );
   }
 
-  Widget _mineBody(types.Message m, StreamMetrics g, String time) {
-    if (m is types.ImageMessage) return _ImageTile(uri: m.uri);
-    final text = m is types.TextMessage ? m.text : '';
-    final sending = m.status == types.Status.sending;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.end,
+  Widget _theirs(
+    StreamMetrics g,
+    Caller caller,
+    String time,
+    bool hoverClock,
+  ) {
+    final task = it.task;
+    final Widget body;
+    if (task != null) {
+      body = TaskCard(
+        messageId: it.text!.id,
+        task: task,
+        person: caller.name,
+        prompt: it.text!.text,
+        inputs: it.files,
+        answeredBefore: it.answered,
+        now: widget.now,
+      );
+    } else {
+      body = _Body(
+        item: it,
+        mine: false,
+        hot: widget.hot,
+        head: it.head,
+        mentions: widget.mentions,
+      );
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 560),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-            decoration: const BoxDecoration(
-              color: Dk.mine,
-              borderRadius: BorderRadius.only(
-                topLeft: Radius.circular(16),
-                topRight: Radius.circular(16),
-                bottomLeft: Radius.circular(16),
-                bottomRight: Radius.circular(4),
-              ),
-            ),
-            child: RichMessageText(
-              text,
-              inverted: true,
-              mentions: mentions,
-              codeInk: Dk.onMine,
-              codeFloor: Dk.mineCode,
-              style: Ty.prose.copyWith(
-                color: Dk.onMine,
-                fontWeight: FontWeight.w500,
-                height: 1.65,
-              ),
-            ),
+        SizedBox(
+          width: g.lane,
+          child: it.head
+              ? Align(
+                  alignment: Alignment.topLeft,
+                  child: PersonAvatar(
+                    name: caller.name,
+                    anonymous: caller.anonymous,
+                    size: g.avatar,
+                  ),
+                )
+              : _HoverClock(time: time, on: hoverClock),
+        ),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (it.head) _NameLine(caller: caller, time: time),
+              body,
+            ],
           ),
         ),
-        if (row.head || sending)
-          Padding(
-            padding: const EdgeInsets.only(top: 6, right: 2),
-            child: Text(
-              sending
-                  ? '发送中…'
-                  : g.rail
-                      ? '已送达'
-                      : '已送达 · $time',
-              style: Ty.small.copyWith(fontSize: 11, color: Dk.t3),
-            ),
+        // Leave the far side to my messages, so a long message of
+        // theirs never runs the full width and reads as mine.
+        SizedBox(width: g.phone ? Sp.x6 : Sp.x12),
+      ],
+    );
+  }
+
+  Widget _mine(StreamMetrics g, String time, bool hoverClock) {
+    final status = it.status;
+    final failed = status == types.Status.error;
+    final showState = it.tail &&
+        (widget.showState || failed || status == types.Status.sending);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(width: g.lane + (g.phone ? Sp.x6 : Sp.x12)),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  if (!Touch.primary)
+                    Padding(
+                      padding: const EdgeInsets.only(
+                        right: Sp.x2,
+                        bottom: Sp.x15,
+                      ),
+                      child: _HoverClock(
+                        time: time,
+                        on: _hover && !showState,
+                      ),
+                    ),
+                  Flexible(
+                    child: _Body(
+                      item: it,
+                      mine: true,
+                      hot: false,
+                      head: it.head,
+                      mentions: widget.mentions,
+                    ),
+                  ),
+                ],
+              ),
+              if (showState)
+                _DeliveryLine(
+                  status: status,
+                  time: time,
+                  failure: it.failure,
+                  onRetry: failed &&
+                          it.text != null &&
+                          it.files.isEmpty &&
+                          widget.onRetry != null
+                      ? () => widget.onRetry!(it.text!.id)
+                      : null,
+                ),
+            ],
           ),
+        ),
       ],
     );
   }
 }
 
-class _Gutter extends StatelessWidget {
-  const _Gutter({required this.time, required this.mine, required this.hot});
+/// Name, tool, session tag and clock over the first message of a run.
+class _NameLine extends StatelessWidget {
+  const _NameLine({required this.caller, required this.time});
+  final Caller caller;
   final String time;
-  final bool mine;
-  final bool hot;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 20,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          Positioned(
-            right: 34,
-            top: 2,
-            child: Text(time, style: Ty.meta.copyWith(fontSize: 11)),
-          ),
-          Positioned(
-            right: 13,
-            top: 5,
-            child: _Node(mine: mine, hot: hot),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// The rail node. When a request starts waiting on the human it pulses
-/// three times, then holds a steady halo: enough to catch the eye, not
-/// a light that blinks all afternoon.
-class _Node extends StatefulWidget {
-  const _Node({required this.mine, required this.hot});
-  final bool mine;
-  final bool hot;
-
-  @override
-  State<_Node> createState() => _NodeState();
-}
-
-class _NodeState extends State<_Node> with SingleTickerProviderStateMixin {
-  late final AnimationController _pulse = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1600),
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.hot) _beat();
-  }
-
-  Future<void> _beat() async {
-    for (var i = 0; i < 3 && mounted && widget.hot; i++) {
-      await _pulse.forward(from: 0).orCancel.catchError((_) {});
-    }
-  }
-
-  @override
-  void didUpdateWidget(_Node old) {
-    super.didUpdateWidget(old);
-    if (widget.hot && !old.hot) _beat();
-    if (!widget.hot && _pulse.isAnimating) _pulse.stop();
-  }
-
-  @override
-  void dispose() {
-    _pulse.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final fill = widget.hot
-        ? Dk.signal
-        : widget.mine
-            ? Dk.t1
-            : Dk.bg;
-    final ring = widget.hot
-        ? Dk.signal
-        : widget.mine
-            ? Dk.t1
-            : Dk.line2;
-    return AnimatedBuilder(
-      animation: _pulse,
-      builder: (context, _) {
-        final v = widget.hot ? _pulse.value : 0.0;
-        final settled = widget.hot && !_pulse.isAnimating;
-        return SizedBox(
-          width: 9,
-          height: 9,
-          child: Stack(
-            clipBehavior: Clip.none,
-            alignment: Alignment.center,
-            children: [
-              if (settled)
-                Container(
-                  width: 17,
-                  height: 17,
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Dk.signalRing,
-                  ),
-                ),
-              if (widget.hot && !settled)
-                Container(
-                  width: 9 + 14 * v,
-                  height: 9 + 14 * v,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Dk.signal.withValues(alpha: 0.28 * (1 - v)),
-                  ),
-                ),
-              Container(
-                width: 9,
-                height: 9,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: fill,
-                  border: Border.all(color: ring, width: 1.5),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _Who extends StatelessWidget {
-  const _Who({required this.author, this.time, this.hot = false});
-  final types.User author;
-
-  /// Shown beside the name when there is no gutter clock (phones).
-  final String? time;
-
-  /// Waiting on the human, on a layout with no rail node to say so.
-  final bool hot;
-
-  @override
-  Widget build(BuildContext context) {
-    // Server names callers like "小明的 Claude Code · a3f9": the part
-    // after the dot is a session tag, shown as a mono chip.
-    final full = author.firstName ?? author.id;
-    final dot = full.lastIndexOf(' · ');
-    final name = dot > 0 ? full.substring(0, dot) : full;
-    final tag = dot > 0 ? full.substring(dot + 3) : null;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.only(bottom: Sp.x15),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
         children: [
-          PersonAvatar(name: name),
-          const SizedBox(width: 10),
           Flexible(
             child: Text(
-              name,
-              style: Ty.name,
+              caller.name,
+              style:
+                  caller.anonymous ? Ty.name.copyWith(color: Dk.t2) : Ty.name,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
           ),
-          if (tag != null) ...[
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-              decoration: BoxDecoration(
-                color: Dk.p3,
-                borderRadius: BorderRadius.circular(Rd.xs),
+          if (caller.via != null) ...[
+            const SizedBox(width: Sp.x2),
+            Flexible(
+              child: Text(
+                caller.via!,
+                style: Ty.small.copyWith(fontSize: 11.5, color: Dk.t3),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
-              child: Text(tag, style: Ty.meta.copyWith(color: Dk.t2)),
             ),
           ],
-          if (time != null) ...[
-            const SizedBox(width: 8),
-            Text(time!, style: Ty.meta),
+          if (caller.tag != null) ...[
+            const SizedBox(width: Sp.x15),
+            Tag(caller.tag!, mono: true, color: Dk.t3),
           ],
-          if (hot) ...[
-            const SizedBox(width: 8),
-            const _Node(mine: false, hot: true),
-          ],
+          const SizedBox(width: Sp.x2),
+          Text(time, style: Ty.meta.copyWith(fontSize: 10.5)),
         ],
       ),
     );
   }
 }
 
-class _RequestCard extends StatelessWidget {
-  const _RequestCard({
-    required this.hot,
-    required this.text,
-    required this.mentions,
-    required this.padding,
-  });
-  final bool hot;
-  final String text;
-  final List<String> mentions;
-  final EdgeInsets padding;
+/// A clock that appears beside a continuation while the pointer is on
+/// it.
+class _HoverClock extends StatelessWidget {
+  const _HoverClock({required this.time, required this.on});
+  final String time;
+  final bool on;
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: Mo.base,
+    return AnimatedOpacity(
+      duration: Mo.of(context, Mo.instant),
+      opacity: on ? 1 : 0,
+      child: Padding(
+        padding: const EdgeInsets.only(top: Sp.x25),
+        child: Text(
+          time,
+          style: Ty.meta.copyWith(fontSize: 10, color: Dk.t4),
+        ),
+      ),
+    );
+  }
+}
+
+/// The words and files of one message.
+class _Body extends StatelessWidget {
+  const _Body({
+    required this.item,
+    required this.mine,
+    required this.hot,
+    required this.head,
+    required this.mentions,
+  });
+  final StreamItem item;
+  final bool mine;
+  final bool hot;
+  final bool head;
+  final List<String> mentions;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = item.text?.text.trim() ?? '';
+    final parts = <Widget>[
+      if (item.files.isNotEmpty) AttachmentList(items: item.files),
+      if (text.isNotEmpty)
+        _Bubble(
+          text: text,
+          mine: mine,
+          hot: hot,
+          head: head,
+          failed: item.status == types.Status.error && mine,
+          mentions: mentions,
+        ),
+    ];
+    if (parts.length == 1) return parts.first;
+    return Column(
+      crossAxisAlignment:
+          mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [parts[0], const SizedBox(height: Sp.x15), parts[1]],
+    );
+  }
+}
+
+/// Text longer than this folds behind 展开全文.
+const int _foldChars = 900;
+const int _foldLines = 16;
+
+class _Bubble extends StatefulWidget {
+  const _Bubble({
+    required this.text,
+    required this.mine,
+    required this.hot,
+    required this.head,
+    required this.failed,
+    required this.mentions,
+  });
+  final String text;
+  final bool mine;
+  final bool hot;
+  final bool head;
+  final bool failed;
+  final List<String> mentions;
+
+  @override
+  State<_Bubble> createState() => _BubbleState();
+}
+
+class _BubbleState extends State<_Bubble> {
+  bool _open = false;
+
+  bool get _long {
+    // Count prose only: a code block folds on its own.
+    final prose = widget.text.replaceAll(RegExp(r'```[\s\S]*?```'), '');
+    return prose.length > _foldChars ||
+        '\n'.allMatches(prose).length > _foldLines;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mine = widget.mine;
+    final hasCode = widget.text.contains('```');
+    final floor = mine ? Dk.mineFloor : Dk.p2;
+    final edge = widget.failed
+        ? Dk.dangerEdge
+        : widget.hot
+            ? Dk.signalEdge
+            : mine
+                ? Dk.mineEdge
+                : Dk.line;
+    const r = Radius.circular(Rd.lg);
+    const tight = Radius.circular(Rd.xs);
+    final radius = BorderRadius.only(
+      topLeft: !mine && widget.head ? tight : r,
+      topRight: mine && widget.head ? tight : r,
+      bottomLeft: r,
+      bottomRight: r,
+    );
+
+    Widget text = RichMessageText(
+      widget.text,
+      mentions: widget.mentions,
+      style: Ty.prose.copyWith(height: 1.62, fontSize: 14.5),
+    );
+
+    final long = _long;
+    if (long) {
+      text = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedSize(
+            duration: Mo.of(context, Mo.base),
+            curve: Mo.expo,
+            alignment: Alignment.topCenter,
+            child: _open
+                ? text
+                : ShaderMask(
+                    blendMode: BlendMode.dstIn,
+                    shaderCallback: (b) => const LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      stops: [0.7, 1],
+                      colors: [Dk.t1, Colors.transparent],
+                    ).createShader(b),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 280),
+                      child: ClipRect(
+                        child: SingleChildScrollView(
+                          physics: const NeverScrollableScrollPhysics(),
+                          child: text,
+                        ),
+                      ),
+                    ),
+                  ),
+          ),
+          const SizedBox(height: Sp.x15),
+          _TextLink(
+            label: _open ? '收起' : '展开全文 · ${widget.text.length} 字',
+            onTap: () => setState(() => _open = !_open),
+          ),
+        ],
+      );
+    }
+
+    final bubble = AnimatedContainer(
+      duration: Mo.of(context, Mo.base),
       curve: Mo.soft,
+      width: hasCode || long ? double.infinity : null,
+      padding: const EdgeInsets.fromLTRB(Sp.x35, Sp.x25, Sp.x35, Sp.x25),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Dk.p2, Dk.p1],
-        ),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: hot ? Dk.signalEdge : Dk.line,
-        ),
-        boxShadow: hot
+        color: floor,
+        borderRadius: radius,
+        border: Border.all(color: edge),
+        boxShadow: widget.hot
             ? const [
                 BoxShadow(
                   color: Dk.signalGlow,
-                  blurRadius: 32,
-                  spreadRadius: -6,
+                  blurRadius: 24,
+                  spreadRadius: -4,
                 ),
               ]
             : null,
       ),
-      child: Stack(
-        children: [
-          Padding(
-            padding: padding,
-            child: RichMessageText(text, style: Ty.prose, mentions: mentions),
-          ),
-          Positioned(
-            left: 0,
-            top: 22,
-            child: AnimatedContainer(
-              duration: Mo.base,
-              width: 3,
-              height: 24,
-              decoration: BoxDecoration(
-                color: hot ? Dk.signal : Dk.line2,
-                borderRadius: const BorderRadius.only(
-                  topRight: Radius.circular(3),
-                  bottomRight: Radius.circular(3),
-                ),
-              ),
-            ),
-          ),
-        ],
+      child: text,
+    );
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: Sz.measure),
+      child: bubble,
+    );
+  }
+}
+
+class _TextLink extends StatelessWidget {
+  const _TextLink({required this.label, required this.onTap});
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      semanticLabel: label,
+      onTap: onTap,
+      radius: Rd.xs,
+      builder: (context, s) => Text(
+        label,
+        style: Ty.small.copyWith(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: s.lit ? Dk.t1 : Dk.blue,
+        ),
       ),
     );
   }
 }
 
-class _ImageTile extends StatelessWidget {
-  const _ImageTile({required this.uri});
-  final String uri;
-
-  ImageProvider? get _provider {
-    if (uri.startsWith('data:')) {
-      final comma = uri.indexOf(',');
-      if (comma != -1 && comma < uri.length - 1) {
-        try {
-          return MemoryImage(base64Decode(uri.substring(comma + 1)));
-        } catch (_) {
-          return null;
-        }
-      }
-      return null;
-    }
-    if (uri.startsWith('http://') || uri.startsWith('https://')) {
-      return NetworkImage(uri);
-    }
-    return null;
-  }
+/// Under my newest message: 发送中 / 已发出 / 已送达, or why it failed.
+class _DeliveryLine extends StatelessWidget {
+  const _DeliveryLine({
+    required this.status,
+    required this.time,
+    required this.failure,
+    required this.onRetry,
+  });
+  final types.Status? status;
+  final String time;
+  final String? failure;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
-    final p = _provider;
-    if (p == null) {
-      return const Text('图片无法显示', style: Ty.small);
+    final Widget line;
+    if (status == types.Status.error) {
+      line = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const GlyphIcon(Glyph.alert, size: Sz.glyphXs, color: Dk.danger),
+          const SizedBox(width: Sp.x15),
+          Flexible(
+            child: Text(
+              failure ?? '没发出去',
+              style: Ty.small.copyWith(fontSize: 12, color: Dk.dangerInk),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (onRetry != null) ...[
+            const SizedBox(width: Sp.x2),
+            DkButton(
+              key: const ValueKey('message-retry'),
+              label: '重试',
+              glyph: Glyph.retry,
+              dense: true,
+              kind: DkButtonKind.danger,
+              onTap: onRetry,
+            ),
+          ],
+        ],
+      );
+    } else {
+      final (label, glyph, color) = switch (status) {
+        types.Status.sending => ('发送中…', Glyph.clock, Dk.t3),
+        types.Status.delivered => ('已送达', Glyph.delivered, Dk.t3),
+        _ => ('已发出', Glyph.check, Dk.t3),
+      };
+      line = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          GlyphIcon(glyph, size: Sz.glyphXs - 1, color: color),
+          const SizedBox(width: Sp.x1),
+          Text(
+            status == types.Status.sending ? label : '$label · $time',
+            style: Ty.small.copyWith(fontSize: 11, color: color),
+          ),
+        ],
+      );
     }
-    return MouseRegion(
-      cursor: SystemMouseCursors.zoomIn,
-      child: GestureDetector(
-        onTap: () => showDialog<void>(
-          context: context,
-          barrierColor: Dk.scrimDeep,
-          builder: (c) => GestureDetector(
-            onTap: () => Navigator.of(c).pop(),
-            child: InteractiveViewer(
-              maxScale: 6,
-              child: Center(child: Image(image: p)),
-            ),
-          ),
-        ),
-        child: Container(
-          constraints: const BoxConstraints(maxHeight: 340, maxWidth: 520),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(Rd.lg),
-            border: Border.all(color: Dk.line),
-          ),
-          clipBehavior: Clip.antiAlias,
-          child: Image(
-            image: p,
-            fit: BoxFit.contain,
-            errorBuilder: (_, __, ___) => const Padding(
-              padding: EdgeInsets.all(Sp.x3),
-              child: Text('图片无法显示', style: Ty.small),
-            ),
-          ),
-        ),
-      ),
+    return Padding(
+      padding: const EdgeInsets.only(top: Sp.x15, right: Sp.x05),
+      child: Semantics(liveRegion: true, child: line),
     );
   }
 }
@@ -687,46 +834,24 @@ class _DayMarker extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final g = StreamScope.of(context);
-    final pill = Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: Dk.bg,
-        border: Border.all(color: Dk.line),
-        borderRadius: BorderRadius.circular(Rd.pill),
-      ),
-      child: Text(label, style: Ty.small.copyWith(fontSize: 11)),
-    );
-    const rule = Divider(height: 1, color: Dk.line);
-    if (!g.rail) {
-      // No rail to hang the pill on: centre it between two rules.
-      return Padding(
-        padding: EdgeInsets.fromLTRB(g.gutter, Sp.x6, g.right, Sp.x1),
-        child: Row(
-          children: [
-            const Expanded(child: rule),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: Sp.x3),
-              child: pill,
-            ),
-            const Expanded(child: rule),
-          ],
-        ),
-      );
-    }
+    const rule = Expanded(child: Divider(height: 1, color: Dk.line));
     return Padding(
-      padding: const EdgeInsets.only(top: Sp.x6, bottom: Sp.x1),
+      padding: EdgeInsets.fromLTRB(g.side, Sp.x6, g.side, Sp.x1),
       child: Row(
         children: [
-          SizedBox(
-            width: g.gutter - 17 + 0.5,
-            child: Align(alignment: Alignment.centerRight, child: pill),
-          ),
-          Expanded(
-            child: Padding(
-              padding: EdgeInsets.only(left: Sp.x3, right: g.right),
-              child: rule,
+          rule,
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: Sp.x3),
+            child: Text(
+              label,
+              style: Ty.small.copyWith(
+                fontSize: 11,
+                color: Dk.t3,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
+          rule,
         ],
       ),
     );
@@ -741,38 +866,39 @@ class _JumpPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hasNew = count > 0;
-    return Material(
-      color: hasNew ? Dk.signal : Dk.p3,
-      borderRadius: BorderRadius.circular(Rd.pill),
-      elevation: 0,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(Rd.pill),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(Rd.pill),
-            border: Border.all(color: hasNew ? Dk.signal : Dk.line2),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.arrow_downward_rounded,
-                size: 15,
-                color: hasNew ? Dk.signalInk : Dk.t1,
+    final label = hasNew ? '$count 条新消息' : '回到最新';
+    final ink = hasNew ? Dk.signalInk : Dk.t1;
+    return Pressable(
+      key: const ValueKey('jump-latest'),
+      semanticLabel: label,
+      onTap: onTap,
+      radius: Rd.pill,
+      builder: (context, s) => AnimatedContainer(
+        duration: Mo.of(context, Mo.instant),
+        padding: const EdgeInsets.symmetric(
+          horizontal: Sp.x35,
+          vertical: Sp.x2,
+        ),
+        decoration: BoxDecoration(
+          color: hasNew ? (s.lit ? Dk.signalCode : Dk.signal) : Dk.p3,
+          borderRadius: BorderRadius.circular(Rd.pill),
+          border: Border.all(color: hasNew ? Dk.signal : Dk.line2),
+          boxShadow: const [BoxShadow(color: Dk.shadow, blurRadius: 18)],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            GlyphIcon(Glyph.arrowDown, size: Sz.glyphSm, color: ink),
+            const SizedBox(width: Sp.x15),
+            Text(
+              label,
+              style: Ty.small.copyWith(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: ink,
               ),
-              const SizedBox(width: 6),
-              Text(
-                hasNew ? '$count 条新消息' : '回到最新',
-                style: Ty.small.copyWith(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: hasNew ? Dk.signalInk : Dk.t1,
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -800,10 +926,10 @@ class _EmptyStream extends StatelessWidget {
                 ),
               ),
             ),
-            Text('还没有请求', style: Ty.title.copyWith(fontSize: 17)),
+            Text('这里还没有消息', style: Ty.title.copyWith(fontSize: 17)),
             const SizedBox(height: Sp.x2),
             Text(
-              'AI 发来的第一条请求会出现在这里。',
+              '对方在自己的工具里写下第一句话，就会出现在这里。',
               textAlign: TextAlign.center,
               style: Ty.small.copyWith(fontSize: 13),
             ),
