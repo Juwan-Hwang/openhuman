@@ -224,7 +224,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                   const Center(child: BrandWordmark(height: 26)),
                   const SizedBox(height: Sp.x3),
                   Text(
-                    '连接服务器，AI 需要你时会在这里找到你',
+                    '连上服务器，有人找你时就会在这里收到',
                     textAlign: TextAlign.center,
                     style: Ty.small.copyWith(fontSize: 13),
                   ),

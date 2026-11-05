@@ -63,6 +63,17 @@ class TrayService with WindowListener, TrayListener {
     await _setMenu();
   }
 
+  /// How many people are waiting on a reply, for the tray's hover text.
+  int _waiting = -1;
+
+  /// Keep the tray's hover text on whether anyone is waiting on me, so
+  /// a glance at the taskbar answers it without opening the window.
+  Future<void> setWaiting(int count) async {
+    if (!_initialised || count == _waiting) return;
+    _waiting = count;
+    await trayManager.setToolTip(trayTooltip(count));
+  }
+
   /// Windows wants an .ico, and the runner's own icon is not copied into
   /// the build output — so it ships as an asset and is read from beside
   /// the executable. Without a resolved icon the tray stays empty and
@@ -90,7 +101,7 @@ class TrayService with WindowListener, TrayListener {
           items: [
             MenuItem(
               key: 'show',
-              label: '打开主窗口',
+              label: '打开 OpenHuman',
             ),
             MenuItem.separator(),
             MenuItem(
@@ -144,3 +155,7 @@ class TrayService with WindowListener, TrayListener {
     }
   }
 }
+
+/// The tray's hover text.
+String trayTooltip(int waiting) =>
+    waiting <= 0 ? 'OpenHuman · 没有人在等你回复' : 'OpenHuman · $waiting 人在等你回复';

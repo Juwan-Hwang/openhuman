@@ -23,6 +23,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/sdk_provider.dart';
 import '../../core/tasks.dart';
+import '../../core/tray_service.dart';
 import '../../widgets/avatar.dart';
 import '../../widgets/controls.dart';
 import '../../widgets/glyphs.dart';
@@ -122,7 +123,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Watched here so the list starts fetching as soon as the console
     // opens. The provider is lazy, and the sidebar is often closed —
     // waiting for it to be opened would start the fetch far too late.
-    ref.watch(conversationListProvider);
+    final list = ref.watch(conversationListProvider);
+    TrayService.instance
+        .setWaiting(list.entries.where((c) => c.waiting).length);
 
     final controller = ref.read(chatControllerProvider.notifier);
     final humanUser = controller.humanUser;

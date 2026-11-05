@@ -434,7 +434,7 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
       children: [
         Row(
           children: [
-            const Text('已连接的 AI', style: Ty.label),
+            const Text('已接入的工具', style: Ty.label),
             const Spacer(),
             IconButton(
               icon: const Icon(Icons.refresh, size: 18),
@@ -456,7 +456,7 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
             final callers = snap.data ?? const [];
             if (callers.isEmpty) {
               return const Text(
-                '还没有 AI 接入这个房间。',
+                '还没有人从自己的工具接入这个群。',
                 style: Ty.small,
               );
             }

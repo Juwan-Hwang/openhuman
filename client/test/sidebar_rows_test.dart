@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openhuman_client/core/sdk_provider.dart';
+import 'package:openhuman_client/core/tray_service.dart';
 import 'package:openhuman_client/features/chat/conversation_sidebar.dart';
 
 ConversationInfo _c({
@@ -47,6 +48,11 @@ void main() {
     expect(c.caller.name, '小周');
     expect(c.caller.tool, 'Cursor');
     expect(remarkToStoredName('小周', null), '小周');
+  });
+
+  test('the tray says how many people are waiting', () {
+    expect(trayTooltip(0), 'OpenHuman · 没有人在等你回复');
+    expect(trayTooltip(2), 'OpenHuman · 2 人在等你回复');
   });
 
   test('markdown is flattened to one line', () {

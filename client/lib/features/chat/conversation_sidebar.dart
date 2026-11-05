@@ -704,7 +704,7 @@ class _ListPlaceholder extends StatelessWidget {
           theme: theme,
           icon: Icons.forum_outlined,
           title: '还没有会话',
-          subtitle: 'AI 发来消息后，会话会出现在这里',
+          subtitle: '有人发来消息后，会出现在这里。\n可以先在「让别人联系你」里把联系方式发给朋友',
         );
 
       case ConversationListStatus.idle:
