@@ -348,10 +348,13 @@ pub fn check_reply(api: &str, spec: &Value, text: &str) -> Result<(), String> {
         // A search answer must be checkable hits before it reaches the
         // caller.
         "vector_stores.search" => crate::api::vector_stores::parse_hits(text, spec).map(|_| ()),
-        // The other task kinds ported so far (images, audio, completions)
-        // answer free-form: no shape to check. The arms for the APIs not
-        // ported here (embeddings, moderations, graders, decisions)
-        // return with their modules.
+        // Structured answers are checked here too, so a malformed one goes
+        // back to whoever answered instead of failing the caller.
+        "moderations" => crate::api::moderations::parse_verdicts(text, spec).map(|_| ()),
+        "decisions" => crate::api::decisions::parse_answers(text, spec).map(|_| ()),
+        "graders" => crate::api::evals::check_grade(text, spec),
+        // The other task kinds (images, audio, video, completions) answer
+        // free-form: no shape to check.
         _ => {
             let _ = (api, spec, text);
             Ok(())
@@ -682,6 +685,20 @@ mod tests {
         let a = parse_answer(&app, "see file-nothing here").await;
         assert!(a.files.is_empty());
         assert_eq!(a.text, "see file-nothing here");
+    }
+
+    #[test]
+    fn structured_answers_are_checked() {
+        let m = json!({"count": 2});
+        assert!(check_reply("moderations", &m, r#"[[], ["violence"]]"#).is_ok());
+        assert!(check_reply("moderations", &m, "[[]]").is_err());
+        let d = json!({"questions": [{"type": "choice", "name": null, "values": ["a", "b"]}]});
+        assert!(check_reply("decisions", &d, r#"["a"]"#).is_ok());
+        assert!(check_reply("decisions", &d, r#"["c"]"#).is_err());
+        let g = json!({"range": [0, 1]});
+        assert!(check_reply("graders", &g, r#"{"score": 0.4}"#).is_ok());
+        assert!(check_reply("graders", &g, r#"{"score": 4}"#).is_err());
+        assert!(check_reply("images.generations", &Value::Null, "anything").is_ok());
     }
 
     #[test]

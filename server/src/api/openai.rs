@@ -1454,9 +1454,25 @@ pub async fn chat_completions(
         info["api"] = json!(api);
         info["expected_format"] = json!(expected);
         info["wants_files"] = json!(files);
+        // What a human client needs to draw the task as a card and check
+        // an answer before sending it: the spec the server will check, the
+        // durable task id, and when the caller stops waiting.
+        if let Some(t) = req.metadata.as_ref().and_then(|m| m.get(TASK_KEY)) {
+            info["spec"] = t.get("spec").cloned().unwrap_or(Value::Null);
+            info["task_id"] = t.get("id").cloned().unwrap_or(Value::Null);
+        }
+        info["timeout_secs"] = json!(task_timeout_secs());
+        info["created_at"] = json!(chrono::Utc::now().timestamp());
         if session_task {
             info["session"] = json!(true);
         }
+    }
+    if let Some(origin) = headers
+        .get("x-openhuman-session-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(origin_of)
+    {
+        info["origin"] = json!(origin);
     }
     for msg in &mut inbound_messages {
         if msg.metadata.contains_key("raw_tail") {
@@ -2000,6 +2016,21 @@ pub(crate) fn task_timeout_secs() -> u64 {
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(900)
+}
+
+/// Which stateful API a chat request was made for, from the session key
+/// that API sets (`thread:<id>` for an Assistants run, ...), so a client
+/// can say where a message came from.
+fn origin_of(session: &str) -> Option<&'static str> {
+    [
+        ("thread:", "assistants"),
+        ("agent-session:", "agents"),
+        ("chatkit:", "chatkit"),
+        ("eval:", "evals"),
+    ]
+    .into_iter()
+    .find(|(p, _)| session.starts_with(p))
+    .map(|(_, o)| o)
 }
 
 /// Metadata key marking a chat request as an API task built by one of the
@@ -3240,6 +3271,15 @@ mod tests {
             ]
         }));
         assert_eq!(req.messages[0].role, crate::openai_compat::ChatRole::System);
+    }
+
+    #[test]
+    fn origin_names_the_stateful_api() {
+        assert_eq!(origin_of("thread:thread_1"), Some("assistants"));
+        assert_eq!(origin_of("agent-session:s1"), Some("agents"));
+        assert_eq!(origin_of("chatkit:t"), Some("chatkit"));
+        assert_eq!(origin_of("eval:r:3"), Some("evals"));
+        assert_eq!(origin_of("design-review"), None);
     }
 
     #[test]

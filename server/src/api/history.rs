@@ -173,7 +173,7 @@ pub async fn list_messages(
                 })
                 .unwrap_or_default();
 
-            json!({
+            let mut v = json!({
                 "id": m.id,
                 "conversation_id": m.conversation_id,
                 "sender_id": m.sender.participant_id,
@@ -182,7 +182,13 @@ pub async fn list_messages(
                 "text": m.content.as_text().unwrap_or(""),
                 "images": images,
                 "created_at": m.created_at.to_rfc3339(),
-            })
+            });
+            // The request's shape (an API task's contract and spec), so a
+            // reopened conversation still shows a task as a task.
+            if let Some(r) = m.metadata.get("request") {
+                v["request"] = r.clone();
+            }
+            v
         })
         .collect();
 
