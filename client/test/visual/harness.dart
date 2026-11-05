@@ -147,6 +147,10 @@ class FakeClient extends oh.OpenHumanClient {
     ];
   }
 
+  @override
+  Future<oh.ModelName> modelName() async =>
+      const oh.ModelName(name: 'huang-zhiwen');
+
   /// Files removed from the sample library during a test.
   final deletedFiles = <String>{};
 

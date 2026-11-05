@@ -184,7 +184,10 @@ class _PersonDetails extends ConsumerWidget {
               trailing: const GlyphIcon(Glyph.edit, size: 14, color: Dk.t3),
               onTap: () => askForName(context, ref, info),
             ),
-            if (caller.raw != caller.name)
+            // Only when the raw name says more than the person and tool
+            // already shown (a session tag, a name the parser dropped).
+            if (caller.raw != caller.name &&
+                caller.raw != remarkToStoredName(caller.name, caller.tool))
               _Row(
                 label: '对方报上的名字',
                 value: caller.raw,

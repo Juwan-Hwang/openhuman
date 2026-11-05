@@ -3,20 +3,23 @@ import 'package:openhuman_client/app/theme.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
+
 import '../../core/notification_service.dart';
 import '../../core/sdk_provider.dart';
 import '../../app/adaptive.dart';
+import '../../widgets/controls.dart';
 import '../../widgets/sheet.dart';
 
 /// The model name callers pick, as the server has it (it can be renamed
 /// and pinned there). Falls back to the protocol default.
-final modelNameProvider = FutureProvider.autoDispose<String>((ref) async {
+final modelNameProvider =
+    FutureProvider.autoDispose<oh.ModelName>((ref) async {
   ref.watch(serverConfigProvider);
   try {
-    final m = await ref.read(openHumanClientProvider).modelName();
-    return m.name;
+    return await ref.read(openHumanClientProvider).modelName();
   } catch (_) {
-    return 'openhuman-human';
+    return const oh.ModelName(name: 'openhuman-human');
   }
 });
 
@@ -110,6 +113,56 @@ class _ShareSheetState extends ConsumerState<ShareSheet> {
 该端点对应的是真实人类（开发者/联系人）。当你或你的用户想要联系我、向我留言、咨询事宜、或需要与我沟通时，可直接通过调用该模型（或通过该 Provider）向我发送消息。消息会实时推送至我的移动端/客户端，并在我回复后流式返回给你。''';
   }
 
+  Future<void> _renameModel(String current) async {
+    final controller = TextEditingController(text: current)
+      ..selection = TextSelection(baseOffset: 0, extentOffset: current.length);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('改模型名'),
+        content: SizedBox(
+          width: 360,
+          child: TextField(
+            controller: controller,
+            autofocus: true,
+            style: Ty.code.copyWith(fontSize: 14),
+            decoration: const InputDecoration(
+              hintText: '例如：huang-zhiwen',
+              helperText: '朋友在模型列表里看到的就是这个名字。改了之后，旧名字就不能用了',
+              helperMaxLines: 2,
+            ),
+            onSubmitted: (v) => Navigator.of(c).pop(v.trim()),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(c).pop(controller.text.trim()),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty || name == current || !mounted) return;
+    try {
+      final now = await ref.read(openHumanClientProvider).setModelName(name);
+      ref.invalidate(modelNameProvider);
+      if (mounted) toast(context, '模型名已改为 $now');
+    } catch (e) {
+      if (!mounted) return;
+      final t = e.toString();
+      toast(
+        context,
+        t.contains('locked') || t.contains('pinned')
+            ? '服务器管理员固定了模型名，不能改'
+            : '这个名字用不了：只能用字母、数字和 - _ .',
+      );
+    }
+  }
+
   /// Builds shell environment variable export commands.
   String _buildShellEnv({required String baseUrl, required String apiKey}) {
     return '''export OPENAI_BASE_URL="$baseUrl"
@@ -121,8 +174,8 @@ export OPENAI_API_KEY="$apiKey"''';
     final serverConfig = ref.watch(serverConfigProvider);
     final baseUrl = _deriveBaseUrl(serverConfig.serverUrl);
     final apiKey = serverConfig.apiKey;
-    final modelName =
-        ref.watch(modelNameProvider).valueOrNull ?? 'openhuman-human';
+    final model = ref.watch(modelNameProvider).valueOrNull;
+    final modelName = model?.name ?? 'openhuman-human';
     final me = ref.watch(currentHumanProvider)?.displayName;
     final fcmToken = NotificationService.fcmToken;
     final ready = baseUrl.isNotEmpty && apiKey.isNotEmpty;
@@ -211,6 +264,17 @@ export OPENAI_API_KEY="$apiKey"''';
                         hint: '对方要选的模型名',
                         last: true,
                         value: modelName,
+                        // A name of your own reads better in a friend's
+                        // model list than the protocol default — unless
+                        // the server owner pinned it.
+                        extra: model == null || model.locked || !ready
+                            ? null
+                            : _MiniIcon(
+                                key: const ValueKey('share-rename-model'),
+                                icon: Icons.edit_outlined,
+                                tooltip: '改模型名',
+                                onTap: () => _renameModel(modelName),
+                              ),
                         onCopy: () =>
                             _copyToClipboard(context, modelName, '模型名'),
                       ),
@@ -381,6 +445,7 @@ class _SpecRow extends StatelessWidget {
 
 class _MiniIcon extends StatelessWidget {
   const _MiniIcon({
+    super.key,
     required this.icon,
     required this.tooltip,
     required this.onTap,
