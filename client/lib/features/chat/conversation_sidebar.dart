@@ -14,6 +14,9 @@ import '../../core/sdk_provider.dart';
 import '../../app/adaptive.dart';
 import '../../widgets/brand.dart';
 import '../../widgets/avatar.dart';
+import '../../widgets/controls.dart';
+import '../../widgets/glyphs.dart';
+import '../files/file_library.dart';
 
 /// Sidebar width limits; the pane is resizable from its right edge.
 const double kSidebarMin = 232;
@@ -225,10 +228,30 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
               child: Row(
                 children: [
                   _CreateRoomButton(onPicked: widget.onPicked),
-                  const Spacer(),
                   _FootButton(
-                    icon: Icons.delete_outline_rounded,
+                    key: const ValueKey('join-room'),
+                    icon: Icons.login_rounded,
+                    label: '加入',
+                    tooltip: '用邀请码加入群聊',
+                    onTap: () => joinRoomByCode(
+                      context,
+                      ref,
+                      onPicked: widget.onPicked,
+                    ),
+                  ),
+                  const Spacer(),
+                  DkIconButton(
+                    key: const ValueKey('open-files'),
+                    glyph: Glyph.folder,
+                    label: '文件库',
+                    glyphSize: Sz.glyphSm,
+                    onTap: () => FileLibrarySheet.show(context),
+                  ),
+                  DkIconButton(
+                    key: const ValueKey('open-trash'),
+                    glyph: Glyph.trash,
                     label: '回收站',
+                    glyphSize: Sz.glyphSm,
                     onTap: () => _openTrash(context),
                   ),
                 ],
@@ -324,6 +347,71 @@ class _SectionLabel extends StatelessWidget {
   }
 }
 
+/// Join a room with an invite code someone sent (§10.5), then open it.
+Future<void> joinRoomByCode(
+  BuildContext context,
+  WidgetRef ref, {
+  VoidCallback? onPicked,
+}) async {
+  final controller = TextEditingController();
+  final code = await showDialog<String>(
+    context: context,
+    builder: (c) => AlertDialog(
+      title: const Text('加入群聊'),
+      content: SizedBox(
+        width: 360,
+        child: TextField(
+          key: const ValueKey('join-code'),
+          controller: controller,
+          autofocus: true,
+          textCapitalization: TextCapitalization.characters,
+          style: Ty.code.copyWith(fontSize: 15, letterSpacing: 1.2),
+          decoration: const InputDecoration(
+            hintText: '粘贴群主发给你的邀请码',
+            helperText: '进群后能看到之后的消息，之前的看不到',
+          ),
+          onSubmitted: (v) => Navigator.of(c).pop(v.trim()),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(c).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(c).pop(controller.text.trim()),
+          child: const Text('加入'),
+        ),
+      ],
+    ),
+  );
+  if (code == null || code.isEmpty || !context.mounted) return;
+  try {
+    final room = await ref.read(openHumanClientProvider).acceptInvite(code);
+    final id = (room['id'] ?? room['room_id']) as String?;
+    await ref.read(conversationListProvider.notifier).retry();
+    if (id != null) {
+      ref.read(conversationListProvider.notifier).selectConversation(id);
+      onPicked?.call();
+    }
+    if (context.mounted) {
+      final title = room['title'] as String?;
+      toast(context, title == null ? '已加入群聊' : '已加入「$title」');
+    }
+  } catch (e) {
+    if (!context.mounted) return;
+    final t = e.toString();
+    toast(
+      context,
+      t.contains('404') || t.contains('not_found') || t.contains('invalid')
+          ? '这个邀请码不对，或者已经作废了'
+          : t.contains('full')
+              ? '这个群已经满了'
+              : '没加入成功，稍后再试',
+    );
+  }
+}
+
 /// Open the trash as a sheet over the console.
 Future<void> _openTrash(BuildContext context) {
   return showModalBottomSheet<void>(
@@ -343,6 +431,7 @@ class _CreateRoomButton extends ConsumerWidget {
     return _FootButton(
       icon: Icons.group_add_outlined,
       label: '新建群聊',
+      tooltip: '新建一个群，邀请朋友进来',
       onTap: () => _createRoom(context, ref),
     );
   }
@@ -394,17 +483,27 @@ class _CreateRoomButton extends ConsumerWidget {
 
 class _FootButton extends StatelessWidget {
   const _FootButton({
+    super.key,
     required this.icon,
     required this.label,
     required this.onTap,
+    this.tooltip,
   });
 
   final IconData icon;
   final String label;
   final VoidCallback onTap;
+  final String? tooltip;
 
   @override
   Widget build(BuildContext context) {
+    final button = _button();
+    return tooltip == null
+        ? button
+        : Tooltip(message: tooltip!, child: button);
+  }
+
+  Widget _button() {
     return Material(
       color: Colors.transparent,
       child: InkWell(

@@ -164,6 +164,18 @@ void main() {
         matchesGoldenFile('shots/share.png'),
       );
     }
+
+    // The file library.
+    Navigator.of(tester.element(find.byType(ChatScreen))).pop();
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('open-files')));
+    await tester.pumpAndSettle();
+    if (enabled) {
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('shots/files.png'),
+      );
+    }
   }, skip: !enabled);
 
   testWidgets('auth shot', (tester) async {

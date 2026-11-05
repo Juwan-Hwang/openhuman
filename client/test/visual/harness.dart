@@ -147,6 +147,49 @@ class FakeClient extends oh.OpenHumanClient {
     ];
   }
 
+  /// Files removed from the sample library during a test.
+  final deletedFiles = <String>{};
+
+  @override
+  Future<List<oh.StoredFileInfo>> listFiles() async => [
+        oh.StoredFileInfo(
+          id: 'file_sunset',
+          filename: '海边日落.png',
+          bytes: 2457600,
+          mime: 'image/png',
+          purpose: 'answer',
+          createdAt: _ago(const Duration(minutes: 30)),
+        ),
+        oh.StoredFileInfo(
+          id: 'file_review',
+          filename: '发布评审纪要.pdf',
+          bytes: 348160,
+          mime: 'application/pdf',
+          purpose: 'user_data',
+          createdAt: _ago(const Duration(hours: 22)),
+        ),
+        oh.StoredFileInfo(
+          id: 'file_voice',
+          filename: '周会录音.m4a',
+          bytes: 6291456,
+          mime: 'audio/mp4',
+          purpose: 'answer',
+          createdAt: _ago(const Duration(days: 3)),
+        ),
+      ].where((f) => !deletedFiles.contains(f.id)).toList();
+
+  @override
+  Future<bool> deleteFile(String fileId) async {
+    deletedFiles.add(fileId);
+    return true;
+  }
+
+  @override
+  Future<Map<String, dynamic>> acceptInvite(String code) async {
+    if (code != 'K7Q2-9XMA') throw StateError('404 invite not_found');
+    return {'id': 'room_1', 'title': '发布评审'};
+  }
+
   @override
   Future<Map<String, dynamic>> getRoom(String roomId) async => {
         'id': roomId,
