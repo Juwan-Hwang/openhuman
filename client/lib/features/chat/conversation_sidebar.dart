@@ -945,10 +945,21 @@ class _ConversationTileState extends State<_ConversationTile> {
     // A phone has no hover: its row menu opens on a long press, and the
     // row keeps showing its time.
     final touch = Touch.primary;
-    final showMenu = touch ? _menuOpen : (active || _hover || _menuOpen);
+    final showMenu = touch ? _menuOpen : (_hover || _menuOpen);
     final time = c.lastMessageTime == null
         ? null
         : rowTime(c.lastMessageTime!.toLocal(), DateTime.now());
+    // Someone is waiting on me here, or wrote while I was elsewhere: the
+    // row is "hot", which is the only time it gets brighter than its
+    // neighbours.
+    final waiting = c.waiting && !active && !c.lastFailed;
+    final hot = waiting || c.unread > 0;
+    final preview = rowPreview(c);
+    final Widget? badge = c.unread > 0
+        ? _UnreadPill(count: c.unread, signal: c.waiting)
+        : waiting
+            ? const _WaitingTag()
+            : null;
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
@@ -990,78 +1001,193 @@ class _ConversationTileState extends State<_ConversationTile> {
                       children: [
                         Row(
                           children: [
-                            Flexible(
+                            Expanded(
+                              child: Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      c.displayName,
+                                      style: Ty.name.copyWith(
+                                        color:
+                                            active || hot ? Dk.t1 : Dk.t1Soft,
+                                        fontWeight: hot
+                                            ? FontWeight.w700
+                                            : Ty.name.fontWeight,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (c.isGroup && c.memberCount != null) ...[
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      '${c.memberCount} 人',
+                                      style: Ty.meta.copyWith(color: Dk.t3),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            SizedBox(
+                              height: 18,
+                              child: showMenu
+                                  ? Builder(
+                                      builder: (bctx) => _RowMenuButton(
+                                        key: ValueKey('conv-menu-${c.id}'),
+                                        onPressed: () {
+                                          final box = bctx.findRenderObject()
+                                              as RenderBox;
+                                          _menu(
+                                            box.localToGlobal(
+                                              Offset(0, box.size.height),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    )
+                                  : time == null
+                                      ? null
+                                      : Center(
+                                          widthFactor: 1,
+                                          child: Text(
+                                            time,
+                                            style: Ty.meta.copyWith(
+                                              fontSize: 10.5,
+                                              color: hot ? Dk.t2 : Dk.t3,
+                                            ),
+                                          ),
+                                        ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 3),
+                        Row(
+                          children: [
+                            Expanded(
                               child: Text(
-                                c.displayName,
-                                style: Ty.name.copyWith(
-                                  color: active ? Dk.t1 : Dk.t1Soft,
+                                preview,
+                                key: ValueKey('conv-preview-${c.id}'),
+                                style: Ty.small.copyWith(
+                                  fontSize: 12,
+                                  color: c.lastFailed
+                                      ? Dk.dangerInk
+                                      : (hot || active ? Dk.t2 : Dk.t3),
                                 ),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                            if (c.isGroup && c.memberCount != null) ...[
-                              const SizedBox(width: 6),
-                              Text(
-                                '${c.memberCount} 人',
-                                style: Ty.meta.copyWith(color: Dk.t3),
-                              ),
+                            if (badge != null) ...[
+                              const SizedBox(width: 8),
+                              badge,
                             ],
                           ],
                         ),
-                        if (c.lastMessage != null) ...[
-                          const SizedBox(height: 3),
-                          Text(
-                            previewText(c.lastMessage!),
-                            style: Ty.small.copyWith(
-                              fontSize: 12,
-                              color: active ? Dk.t2 : Dk.t3,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ],
                       ],
                     ),
-                  ),
-                  const SizedBox(width: 6),
-                  SizedBox(
-                    width: touch ? 44 : 34,
-                    child: showMenu
-                        ? Builder(
-                            builder: (bctx) => IconButton(
-                              key: ValueKey('conv-menu-${c.id}'),
-                              tooltip: '更多',
-                              iconSize: 16,
-                              visualDensity: VisualDensity.compact,
-                              padding: EdgeInsets.zero,
-                              icon: const Icon(
-                                Icons.more_horiz_rounded,
-                                color: Dk.t2,
-                              ),
-                              onPressed: () {
-                                final box =
-                                    bctx.findRenderObject() as RenderBox;
-                                _menu(
-                                  box.localToGlobal(
-                                    Offset(0, box.size.height),
-                                  ),
-                                );
-                              },
-                            ),
-                          )
-                        : time == null
-                            ? null
-                            : Text(
-                                time,
-                                textAlign: TextAlign.right,
-                                style: Ty.meta.copyWith(fontSize: 10.5),
-                              ),
                   ),
                 ],
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// What a row shows under the name: my own last word is marked as mine,
+/// an open task says so, and nothing at all reads as "no messages yet".
+String rowPreview(ConversationInfo c) {
+  final raw = c.lastMessage == null ? '' : previewText(c.lastMessage!);
+  if (raw.isEmpty) {
+    if (c.task != null) return '发来一个请求';
+    if (c.isGroup) return '群聊';
+    final via = c.caller.tool;
+    return via == null ? '' : '经由 $via';
+  }
+  if (c.lastFailed) return '未发出：$raw';
+  return c.lastFromMe ? '你：$raw' : raw;
+}
+
+/// How many messages came in while I was away. Apricot when someone is
+/// also waiting on an answer, quiet otherwise.
+class _UnreadPill extends StatelessWidget {
+  const _UnreadPill({required this.count, required this.signal});
+  final int count;
+  final bool signal;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = count > 99 ? '99+' : '$count';
+    return Container(
+      key: const ValueKey('conv-unread'),
+      constraints: const BoxConstraints(minWidth: 18),
+      height: 18,
+      padding: const EdgeInsets.symmetric(horizontal: 5),
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: signal ? Dk.signal : Dk.p4,
+        borderRadius: BorderRadius.circular(Rd.pill),
+      ),
+      child: Text(
+        label,
+        style: Ty.meta.copyWith(
+          fontSize: 10.5,
+          fontWeight: FontWeight.w600,
+          height: 1,
+          color: signal ? Dk.signalInk : Dk.t1,
+        ),
+      ),
+    );
+  }
+}
+
+/// Read, but still unanswered: a small apricot "等你" with a dot.
+class _WaitingTag extends StatelessWidget {
+  const _WaitingTag();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      key: const ValueKey('conv-waiting'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: Sz.dotSm,
+          height: Sz.dotSm,
+          decoration:
+              const BoxDecoration(color: Dk.signal, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 5),
+        Text(
+          '等你回复',
+          style: Ty.meta.copyWith(
+            fontSize: 10.5,
+            color: Dk.signal,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _RowMenuButton extends StatelessWidget {
+  const _RowMenuButton({super.key, required this.onPressed});
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: '更多',
+      child: InkResponse(
+        onTap: onPressed,
+        radius: 14,
+        child: const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 4),
+          child: Icon(Icons.more_horiz_rounded, size: 16, color: Dk.t2),
         ),
       ),
     );

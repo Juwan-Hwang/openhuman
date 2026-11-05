@@ -199,6 +199,11 @@ class FakeClient extends oh.OpenHumanClient {
     String conversationId, {
     int limit = 100,
   }) async {
+    final all = await _messagesFor(conversationId);
+    return all.length > limit ? all.sublist(all.length - limit) : all;
+  }
+
+  Future<List<oh.HistoryMessage>> _messagesFor(String conversationId) async {
     const m = Duration(minutes: 1);
     switch (conversationId) {
       case 'cnv_lin':

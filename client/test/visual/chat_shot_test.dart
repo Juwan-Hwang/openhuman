@@ -6,6 +6,7 @@
 
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -120,6 +121,12 @@ void main() {
 
     // A tool expanded, and the row menu of a conversation.
     await tester.tap(find.text('读取文件'));
+    await tester.pumpAndSettle();
+    // The row menu shows on hover.
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(
+      location: tester.getCenter(find.byKey(const ValueKey('conv-cnv_lin'))),
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('conv-menu-cnv_lin')));
     await tester.pumpAndSettle();

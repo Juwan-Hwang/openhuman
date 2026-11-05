@@ -165,6 +165,14 @@ class ChatController extends StateNotifier<List<types.Message>> {
         );
       }
       _publish(conversationId);
+      // The open conversation and its row must agree on whose turn it is.
+      if (messages.isNotEmpty) {
+        _ref.read(conversationListProvider.notifier).applyLastMessage(
+              conversationId,
+              messages.last,
+              me: _ref.read(currentHumanProvider)?.id ?? client.currentHuman?.id,
+            );
+      }
     } catch (e, st) {
       debugPrint('[Chat] failed to load $conversationId: $e\n$st');
     }
@@ -295,17 +303,22 @@ class ChatController extends StateNotifier<List<types.Message>> {
     final inv = _invocations.remove(conversationId);
     Future<void> send() async =>
         client.sendReply(conversationId, text, invocationId: inv);
+    final list = _ref.read(conversationListProvider.notifier);
     send().then(
-      (_) => _replace(
-        conversationId,
-        id,
-        (m) => m.status == types.Status.delivered
-            ? m
-            : m.copyWith(status: types.Status.sent),
-      ),
+      (_) {
+        _replace(
+          conversationId,
+          id,
+          (m) => m.status == types.Status.delivered
+              ? m
+              : m.copyWith(status: types.Status.sent),
+        );
+        list.markSent(conversationId);
+      },
       onError: (Object e) {
         debugPrint('[Chat] send failed: $e');
         if (inv != null) _invocations[conversationId] = inv;
+        list.markFailed(conversationId);
         _replace(
           conversationId,
           id,

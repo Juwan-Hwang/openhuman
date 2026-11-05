@@ -113,6 +113,7 @@ class ConversationInfo {
     this.task,
     this.origin,
     this.lastFromMe = false,
+    this.lastFailed = false,
   });
 
   final String id;
@@ -150,6 +151,9 @@ class ConversationInfo {
   /// The newest message is mine.
   bool lastFromMe;
 
+  /// My newest message never left: the row says so instead of "你：…".
+  bool lastFailed;
+
   /// Who is on the other end.
   Caller get caller => Caller.parse(agentName);
 
@@ -175,6 +179,7 @@ class ConversationInfo {
         task: task,
         origin: origin,
         lastFromMe: lastFromMe,
+        lastFailed: lastFailed,
       );
 }
 
@@ -245,6 +250,7 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
       c.lastMessage = data.text;
       c.lastMessageTime = DateTime.now();
       c.lastFromMe = mine;
+      c.lastFailed = false;
       c.waiting = !mine;
       if (!mine && data.conversationId != active) c.unread++;
       state = state.copyWith(
@@ -333,6 +339,7 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
             task: old?.task,
             origin: old?.origin,
             lastFromMe: old?.lastFromMe ?? false,
+            lastFailed: old?.lastFailed ?? false,
           ),
         );
       }
@@ -346,6 +353,9 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
         entries: merged..sort(_newestFirst),
         status: ConversationListStatus.ready,
       );
+      // Background: the list endpoint carries no preview, so without
+      // this every row reads blank and nobody can tell who is waiting.
+      unawaited(_fillPreviews());
     } catch (e) {
       debugPrint('[Conversations] history populate failed: $e');
       _populated = false; // allow a retry on the next connection
@@ -356,6 +366,58 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
     } finally {
       _loading = false;
     }
+  }
+
+  /// How many rows get their last message fetched up front.
+  static const int _previewBudget = 40;
+
+  /// Fetch the newest message of each row that has none yet, so the list
+  /// shows what was said last and who is waiting on whom — the same rule
+  /// the open conversation's header uses (the newest message is theirs).
+  Future<void> _fillPreviews() async {
+    final client = _ref.read(openHumanClientProvider);
+    final me = _ref.read(currentHumanProvider)?.id ?? client.currentHuman?.id;
+    final todo = state.entries
+        .where((c) => c.lastMessage == null)
+        .take(_previewBudget)
+        .toList();
+    // A few at a time: a long list must not open forty sockets at once.
+    for (var i = 0; i < todo.length; i += 6) {
+      final batch = todo.skip(i).take(6);
+      await Future.wait(batch.map((c) async {
+        try {
+          final last = await client.fetchMessages(c.id, limit: 1);
+          if (last.isEmpty || !mounted) return;
+          applyLastMessage(c.id, last.last, me: me);
+        } catch (_) {
+          // A row without a preview is fine; the list must not fail.
+        }
+      }));
+      if (!mounted) return;
+    }
+  }
+
+  /// Bring a row up to date with a message from history: its preview,
+  /// whose turn it is. Live messages that arrived since win.
+  void applyLastMessage(String id, oh.HistoryMessage m, {String? me}) {
+    final c = state.entries.where((c) => c.id == id).firstOrNull;
+    if (c == null) return;
+    final at = m.createdAt;
+    if (c.lastMessage != null &&
+        at != null &&
+        c.lastMessageTime != null &&
+        c.lastMessageTime!.isAfter(at.add(const Duration(seconds: 1)))) {
+      return;
+    }
+    final mine = me != null ? m.senderId == me : m.senderType == 'human';
+    c.lastMessage = m.text.isNotEmpty
+        ? m.text
+        : (m.images.isNotEmpty ? '[图片]' : c.lastMessage);
+    c.lastFromMe = mine;
+    c.lastFailed = false;
+    c.waiting = !mine;
+    if (at != null) c.lastMessageTime = at;
+    state = state.copyWith(entries: [...state.entries]);
   }
 
   /// Ask for the history again after a failure.
@@ -427,9 +489,29 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
     if (c == null) return;
     c.waiting = false;
     c.lastFromMe = true;
+    c.lastFailed = false;
     c.lastMessage = text.isEmpty ? c.lastMessage : text;
     c.lastMessageTime = DateTime.now();
     state = state.copyWith(entries: [...state.entries]..sort(_newestFirst));
+  }
+
+  /// My reply did not go out: they are still waiting, and the row shows
+  /// the failure rather than the text as if it had been said.
+  void markFailed(String id) {
+    final c = state.entries.where((c) => c.id == id).firstOrNull;
+    if (c == null || !c.lastFromMe) return;
+    c.lastFailed = true;
+    c.waiting = true;
+    state = state.copyWith(entries: [...state.entries]);
+  }
+
+  /// A failed reply went out on retry.
+  void markSent(String id) {
+    final c = state.entries.where((c) => c.id == id).firstOrNull;
+    if (c == null || !c.lastFailed) return;
+    c.lastFailed = false;
+    c.waiting = false;
+    state = state.copyWith(entries: [...state.entries]);
   }
 
   /// How many people are waiting on me.
