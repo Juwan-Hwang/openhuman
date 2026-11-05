@@ -26,3 +26,4 @@ export 'src/events.dart';
 export 'src/messages.dart';
 export 'src/capabilities.dart';
 export 'src/version.dart';
+export 'src/workspace.dart';

@@ -71,6 +71,7 @@ class HistoryMessage {
     this.text = '',
     this.images = const [],
     this.createdAt,
+    this.request,
   });
 
   factory HistoryMessage.fromJson(Map<String, dynamic> json) {
@@ -81,12 +82,18 @@ class HistoryMessage {
       senderType: json['sender_type'] as String? ?? 'agent',
       senderName: json['sender_name'] as String?,
       text: json['text'] as String? ?? '',
-      images: (json['images'] as List? ?? const [])
-          .whereType<String>()
-          .toList(),
+      images:
+          (json['images'] as List? ?? const []).whereType<String>().toList(),
       createdAt: _parseDate(json['created_at']),
+      request: json['request'] is Map<String, dynamic>
+          ? json['request'] as Map<String, dynamic>
+          : null,
     );
   }
+
+  /// The request's shape as the server recorded it: for an API task its
+  /// kind (`"api"`), endpoint, answer contract, spec and deadline.
+  final Map<String, dynamic>? request;
 
   final String id;
   final String conversationId;

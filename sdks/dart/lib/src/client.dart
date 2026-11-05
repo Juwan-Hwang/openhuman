@@ -42,11 +42,13 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'capabilities.dart';
 import 'connection.dart';
 import 'events.dart';
 import 'history.dart';
+import 'workspace.dart';
 
 // ═════════════════════════════════════════════════════════════════
 //  Human Identity (session state)
@@ -128,20 +130,17 @@ class OpenHumanClient {
   // ── Typed event controllers (broadcast) ───────────────────────
 
   /// Controller for `message.received` events (typed).
-  final _messagesController =
-      StreamController<MessageReceivedData>.broadcast();
+  final _messagesController = StreamController<MessageReceivedData>.broadcast();
 
   /// Controller for `reply.delivered` events (typed).
-  final _replyAcksController =
-      StreamController<ReplyDeliveredData>.broadcast();
+  final _replyAcksController = StreamController<ReplyDeliveredData>.broadcast();
 
   /// Controller for `capability.updated` events (typed).
   final _capabilityUpdatesController =
       StreamController<CapabilityUpdatedData>.broadcast();
 
   /// Controller for `tool.result` events (typed).
-  final _toolResultsController =
-      StreamController<ToolResultData>.broadcast();
+  final _toolResultsController = StreamController<ToolResultData>.broadcast();
 
   /// Controller for `async.invocation.created` events (typed).
   final _asyncInvocationsController =
@@ -185,8 +184,7 @@ class OpenHumanClient {
   /// Stream of connection state changes.
   ///
   /// Passthrough from [OpenHumanConnection.connectionState].
-  Stream<ConnectionState> get connectionState =>
-      _connection.connectionState;
+  Stream<ConnectionState> get connectionState => _connection.connectionState;
 
   /// The current connection state.
   ConnectionState get currentState => _connection.currentState;
@@ -259,6 +257,14 @@ class OpenHumanClient {
     _stateSub = _connection.connectionState.listen((_) {});
 
     await _connection.connect(url, apiKey, deviceToken: deviceToken);
+  }
+
+  /// Use the REST surface without opening the socket: for tools and tests
+  /// that only need history, files or answers. [url] may be the `ws(s)://`
+  /// address or the HTTP base.
+  void useHttp(String url, String apiKey) {
+    _apiKey = apiKey;
+    _baseUrl = _httpBaseFrom(url);
   }
 
   /// Turn a WebSocket URL into the HTTP base it was reached through.
@@ -540,9 +546,7 @@ class OpenHumanClient {
   /// A freshly connected console has no messages: the socket backlog only
   /// carries what has not been delivered yet. Call this to populate the
   /// conversation list on startup.
-  Future<List<HistoryConversation>> fetchConversations({
-    int limit = 50,
-  }) async {
+  Future<List<HistoryConversation>> fetchConversations({int limit = 50}) async {
     final body = await _getJson('/v1/conversations?limit=$limit');
     final data = (body['data'] as List?) ?? const [];
     return data
@@ -553,9 +557,7 @@ class OpenHumanClient {
 
   /// The human's discarded conversations, most recently discarded first.
   Future<List<HistoryConversation>> fetchTrash({int limit = 50}) async {
-    final body = await _getJson(
-      '/v1/conversations?limit=$limit&deleted=true',
-    );
+    final body = await _getJson('/v1/conversations?limit=$limit&deleted=true');
     return (body['data'] as List? ?? const [])
         .whereType<Map<String, dynamic>>()
         .map(HistoryConversation.fromJson)
@@ -591,7 +593,10 @@ class OpenHumanClient {
   /// Mint a caller key bound to this room (owner). `displayName` is what
   /// members see as the caller's stream prefix, e.g. "小明的 Claude Code".
   /// The full key is returned once (`api_key`) — store it or lose it.
-  Future<Map<String, dynamic>> mintCallerKey(String roomId, String displayName) {
+  Future<Map<String, dynamic>> mintCallerKey(
+    String roomId,
+    String displayName,
+  ) {
     return _sendJson(
       '/v1/rooms/$roomId/caller-keys',
       body: {'display_name': displayName},
@@ -647,11 +652,7 @@ class OpenHumanClient {
   /// human calls it. Scoped server-side to the agent this key was issued
   /// under, so it cannot rename another agent's.
   Future<bool> renameAgent(String agentId, String name) async {
-    return _send(
-      '/v1/agents/$agentId',
-      method: 'PATCH',
-      body: {'name': name},
-    );
+    return _send('/v1/agents/$agentId', method: 'PATCH', body: {'name': name});
   }
 
   /// Move a conversation to the trash. It stays restorable.
@@ -663,18 +664,12 @@ class OpenHumanClient {
   /// default (the caller's transcript is the record); this writes the
   /// conversation's messages to the database so they survive a restart.
   Future<bool> saveConversation(String conversationId) async {
-    return _send(
-      '/v1/conversations/$conversationId/save',
-      method: 'POST',
-    );
+    return _send('/v1/conversations/$conversationId/save', method: 'POST');
   }
 
   /// Take a conversation back out of the trash.
   Future<bool> restoreConversation(String conversationId) async {
-    return _send(
-      '/v1/conversations/$conversationId/restore',
-      method: 'POST',
-    );
+    return _send('/v1/conversations/$conversationId/restore', method: 'POST');
   }
 
   /// Destroy a conversation for good. Not reversible.
@@ -757,16 +752,13 @@ class OpenHumanClient {
       // Bounded: a request that never completes would leave the caller
       // waiting forever with no error to report, and the caller is the
       // thing that decides whether history ever appears.
-      final request = await client
-          .getUrl(Uri.parse('$base$path'))
-          .timeout(_httpTimeout);
+      final request =
+          await client.getUrl(Uri.parse('$base$path')).timeout(_httpTimeout);
       request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $key');
       request.headers.contentType = ContentType.json;
       final response = await request.close().timeout(_httpTimeout);
-      final text = await response
-          .transform(utf8.decoder)
-          .join()
-          .timeout(_httpTimeout);
+      final text =
+          await response.transform(utf8.decoder).join().timeout(_httpTimeout);
       if (response.statusCode != HttpStatus.ok) {
         throw HttpException(
           'GET $path failed with ${response.statusCode}: $text',
@@ -805,10 +797,8 @@ class OpenHumanClient {
         request.write(jsonEncode(body));
       }
       final response = await request.close().timeout(_httpTimeout);
-      final text = await response
-          .transform(utf8.decoder)
-          .join()
-          .timeout(_httpTimeout);
+      final text =
+          await response.transform(utf8.decoder).join().timeout(_httpTimeout);
       if (response.statusCode >= 400) {
         throw HttpException(
           '$method $path failed with ${response.statusCode}: $text',
@@ -819,6 +809,192 @@ class OpenHumanClient {
       return decoded is Map<String, dynamic>
           ? decoded
           : <String, dynamic>{'data': decoded};
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  Answers with files, the files library, invites, the model name
+  // ═══════════════════════════════════════════════════════════════
+
+  /// Answer a conversation through `POST /v1/seat/reply`: text plus any
+  /// files, checked by the server against the conversation's API task
+  /// (a malformed answer comes back refused, with the reason, instead of
+  /// reaching the person who asked). Closes the turn by default — a task
+  /// is one request, one answer.
+  Future<AnswerResult> answer(
+    String conversationId, {
+    String text = '',
+    List<ReplyAttachment> attachments = const [],
+    bool endTurn = true,
+    String? invocationId,
+  }) async {
+    final r = await _request(
+      'POST',
+      '/v1/seat/reply',
+      json: {
+        'conversation_id': conversationId,
+        'text': text,
+        'end_turn': endTurn,
+        if (invocationId != null) 'invocation_id': invocationId,
+        if (attachments.isNotEmpty)
+          'attachments': [for (final a in attachments) a.toJson()],
+      },
+      timeout: const Duration(minutes: 5),
+    );
+    final body = _decodeObject(r.$2);
+    if (r.$1 >= 200 && r.$1 < 300) return AnswerResult.fromJson(body);
+    return AnswerResult.refused(body);
+  }
+
+  /// The files this key owns: uploads and the outputs it answered with.
+  Future<List<StoredFileInfo>> listFiles() async {
+    final j = await _getJson('/v1/files');
+    return ((j['data'] as List?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(StoredFileInfo.fromJson)
+        .toList();
+  }
+
+  /// One file's metadata.
+  Future<StoredFileInfo> fileInfo(String fileId) async =>
+      StoredFileInfo.fromJson(await _getJson('/v1/files/$fileId'));
+
+  /// One file's bytes.
+  Future<Uint8List> fileContent(String fileId) async {
+    final r = await _request('GET', '/v1/files/$fileId/content');
+    if (r.$1 != 200) {
+      throw HttpException('GET /v1/files/$fileId/content failed with ${r.$1}');
+    }
+    return r.$2;
+  }
+
+  /// Upload a file (`POST /v1/files`, multipart).
+  Future<StoredFileInfo> uploadFile(
+    String filename,
+    Uint8List bytes, {
+    String purpose = 'user_data',
+    String? mime,
+  }) async {
+    final boundary = 'oh${DateTime.now().microsecondsSinceEpoch}';
+    final b = BytesBuilder()
+      ..add(
+        utf8.encode(
+          '--$boundary\r\n'
+          'Content-Disposition: form-data; name="purpose"\r\n\r\n'
+          '$purpose\r\n'
+          '--$boundary\r\n'
+          'Content-Disposition: form-data; name="file"; filename="$filename"\r\n'
+          'Content-Type: ${mime ?? 'application/octet-stream'}\r\n\r\n',
+        ),
+      )
+      ..add(bytes)
+      ..add(utf8.encode('\r\n--$boundary--\r\n'));
+    final r = await _request(
+      'POST',
+      '/v1/files',
+      body: b.takeBytes(),
+      contentType: 'multipart/form-data; boundary=$boundary',
+      timeout: const Duration(minutes: 5),
+    );
+    final j = _decodeObject(r.$2);
+    if (r.$1 >= 400) {
+      throw HttpException('POST /v1/files failed with ${r.$1}: ${r.$2.length}');
+    }
+    return StoredFileInfo.fromJson(j);
+  }
+
+  /// Remove a file from the library.
+  Future<bool> deleteFile(String fileId) =>
+      _send('/v1/files/$fileId', method: 'DELETE');
+
+  /// Join a room with an invite code (`POST /v1/invites/{code}/accept`).
+  /// Returns the room.
+  Future<Map<String, dynamic>> acceptInvite(String code) =>
+      _sendJson('/v1/invites/${Uri.encodeComponent(code.trim())}/accept');
+
+  /// Leave a room.
+  Future<bool> leaveRoom(String roomId) =>
+      _send('/v1/rooms/$roomId/leave', method: 'POST');
+
+  /// Remove a member from a room (owner only).
+  Future<bool> removeRoomMember(String roomId, String participantId) =>
+      _send('/v1/rooms/$roomId/members/$participantId', method: 'DELETE');
+
+  /// The model name callers use, and whether it is pinned.
+  Future<ModelName> modelName() async {
+    try {
+      final j = await _getJson('/v1/seat/model-name');
+      return ModelName(
+        name: j['model'] as String? ?? 'openhuman-human',
+        locked: j['locked'] == true,
+      );
+    } catch (_) {
+      // Keys without the responder scope cannot read it there; the
+      // public model list says the same name.
+      final j = await _getJson('/v1/models');
+      final data = (j['data'] as List?) ?? const [];
+      final first = data.isEmpty ? null : data.first;
+      return ModelName(
+        name:
+            (first is Map ? first['id'] as String? : null) ?? 'openhuman-human',
+      );
+    }
+  }
+
+  /// Rename the model callers use. Returns the name now in effect, or
+  /// throws with the server's reason (invalid, or pinned by the owner).
+  Future<String> setModelName(String name) async {
+    final j = await _sendJson('/v1/seat/model-name', body: {'name': name});
+    return j['model'] as String? ?? name;
+  }
+
+  Map<String, dynamic> _decodeObject(Uint8List bytes) {
+    try {
+      final v = jsonDecode(utf8.decode(bytes));
+      return v is Map<String, dynamic> ? v : <String, dynamic>{'data': v};
+    } catch (_) {
+      return <String, dynamic>{};
+    }
+  }
+
+  /// One HTTP exchange: (status, body bytes).
+  Future<(int, Uint8List)> _request(
+    String method,
+    String path, {
+    Map<String, dynamic>? json,
+    Uint8List? body,
+    String? contentType,
+    Duration timeout = _httpTimeout,
+  }) async {
+    final base = _baseUrl;
+    final key = _apiKey;
+    if (base == null || key == null) {
+      throw StateError('fetch called before connect()');
+    }
+    final client = HttpClient();
+    try {
+      final request = await client
+          .openUrl(method, Uri.parse('$base$path'))
+          .timeout(timeout);
+      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $key');
+      if (json != null) {
+        request.headers.contentType = ContentType.json;
+        request.add(utf8.encode(jsonEncode(json)));
+      } else if (body != null) {
+        request.headers.set(
+          HttpHeaders.contentTypeHeader,
+          contentType ?? 'application/octet-stream',
+        );
+        request.add(body);
+      }
+      final response = await request.close().timeout(timeout);
+      final out = BytesBuilder(copy: false);
+      await for (final chunk in response.timeout(timeout)) {
+        out.add(chunk);
+      }
+      return (response.statusCode, out.takeBytes());
     } finally {
       client.close(force: true);
     }
