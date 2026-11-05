@@ -8,25 +8,40 @@ import '../../core/sdk_provider.dart';
 import '../../app/adaptive.dart';
 import '../../widgets/sheet.dart';
 
-/// Modal bottom sheet displaying OpenAI-compatible configuration and
-/// self-configuring prompts for AI agents (WorkBuddy, Trae, Cursor, Windsurf, Claude Code).
-class AgentIntegrationSheet extends ConsumerStatefulWidget {
-  const AgentIntegrationSheet({super.key});
+/// The model name callers pick, as the server has it (it can be renamed
+/// and pinned there). Falls back to the protocol default.
+final modelNameProvider = FutureProvider.autoDispose<String>((ref) async {
+  ref.watch(serverConfigProvider);
+  try {
+    final m = await ref.read(openHumanClientProvider).modelName();
+    return m.name;
+  } catch (_) {
+    return 'openhuman-human';
+  }
+});
+
+/// 让别人联系你: what a friend fills into the tool they already use —
+/// address, key, model — so that what they type there reaches you here.
+///
+/// The person is the point: the sheet speaks about a friend reaching you,
+/// and keeps the protocol words (Base URL, API Key) as the hints that map
+/// onto the fields of their tool.
+class ShareSheet extends ConsumerStatefulWidget {
+  const ShareSheet({super.key});
 
   static void show(BuildContext context) {
     showDkSheet<void>(
       context,
       maxWidth: 640,
-      builder: (ctx) => const AgentIntegrationSheet(),
+      builder: (ctx) => const ShareSheet(),
     );
   }
 
   @override
-  ConsumerState<AgentIntegrationSheet> createState() =>
-      _AgentIntegrationSheetState();
+  ConsumerState<ShareSheet> createState() => _ShareSheetState();
 }
 
-class _AgentIntegrationSheetState extends ConsumerState<AgentIntegrationSheet> {
+class _ShareSheetState extends ConsumerState<ShareSheet> {
   bool _showApiKey = false;
 
   /// Automatically derives the OpenAI-compatible HTTP Base URL
@@ -106,7 +121,9 @@ export OPENAI_API_KEY="$apiKey"''';
     final serverConfig = ref.watch(serverConfigProvider);
     final baseUrl = _deriveBaseUrl(serverConfig.serverUrl);
     final apiKey = serverConfig.apiKey;
-    const modelName = 'openhuman-human';
+    final modelName =
+        ref.watch(modelNameProvider).valueOrNull ?? 'openhuman-human';
+    final me = ref.watch(currentHumanProvider)?.displayName;
     final fcmToken = NotificationService.fcmToken;
     final ready = baseUrl.isNotEmpty && apiKey.isNotEmpty;
 
@@ -123,11 +140,11 @@ export OPENAI_API_KEY="$apiKey"''';
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('接入 AI', style: Ty.title.copyWith(fontSize: 18)),
+                    Text('让别人联系你', style: Ty.title.copyWith(fontSize: 18)),
                     const SizedBox(height: 4),
                     const Text(
-                      '把你自己当成一个兼容 OpenAI 的模型，交给任何 AI 工具调用。'
-                      'AI 需要你时，请求会出现在这个控制台。',
+                      '对方在自己常用的工具里填这三项，打的字就会到你这里，'
+                      '你在这里回复。',
                       style: Ty.small,
                     ),
                   ],
@@ -158,7 +175,7 @@ export OPENAI_API_KEY="$apiKey"''';
                     children: [
                       _SpecRow(
                         label: '接口地址',
-                        hint: '由服务器地址推导',
+                        hint: '对方工具里的 Base URL',
                         value: baseUrl.isNotEmpty ? baseUrl : '未连接',
                         empty: baseUrl.isEmpty,
                         onCopy: baseUrl.isNotEmpty
@@ -167,7 +184,7 @@ export OPENAI_API_KEY="$apiKey"''';
                       ),
                       _SpecRow(
                         label: '密钥',
-                        hint: '当前连接使用的令牌',
+                        hint: '对方工具里的 API Key',
                         value: apiKey.isEmpty
                             ? '未配置'
                             : _showApiKey
@@ -190,38 +207,43 @@ export OPENAI_API_KEY="$apiKey"''';
                             : null,
                       ),
                       _SpecRow(
-                        label: '模型名',
-                        hint: '调用时填写的 model',
+                        label: '模型',
+                        hint: '对方要选的模型名',
+                        last: true,
                         value: modelName,
                         onCopy: () =>
                             _copyToClipboard(context, modelName, '模型名'),
-                      ),
-                      _SpecRow(
-                        label: '手机推送',
-                        hint:
-                            fcmToken != null ? '已注册，锁屏也能收到请求' : '桌面与网页通过长连接接收',
-                        value: fcmToken != null
-                            ? '${fcmToken.substring(0, 10)}…'
-                                '${fcmToken.substring(fcmToken.length - 6)}'
-                            : '未注册',
-                        empty: fcmToken == null,
-                        good: fcmToken != null,
-                        last: true,
-                        onCopy: fcmToken != null
-                            ? () => _copyToClipboard(context, fcmToken, '推送令牌')
-                            : null,
                       ),
                     ],
                   ),
                 ),
                 const SizedBox(height: Sp.x5),
-                const Text('一键复制', style: Ty.label),
+                const Text('复制', style: Ty.label),
                 const SizedBox(height: Sp.x2),
                 _CopyAction(
-                  icon: Icons.chat_bubble_outline_rounded,
-                  title: '给 AI 的配置说明',
-                  detail: '粘贴给任意 AI 工具，它会把你配置成可联系的端点',
+                  key: const ValueKey('share-friend'),
+                  icon: Icons.forward_to_inbox_outlined,
+                  title: '复制发给朋友的话',
+                  detail: '一段说明，直接发到聊天或邮件里',
                   primary: true,
+                  onTap: ready
+                      ? () => _copyToClipboard(
+                            context,
+                            friendNote(
+                              baseUrl: baseUrl,
+                              apiKey: apiKey,
+                              modelName: modelName,
+                              me: me,
+                            ),
+                            '给朋友的说明',
+                          )
+                      : null,
+                ),
+                const SizedBox(height: Sp.x2),
+                _CopyAction(
+                  icon: Icons.integration_instructions_outlined,
+                  title: '复制给对方工具的配置说明',
+                  detail: '对方贴进自己的工具，工具会自己配好',
                   onTap: ready
                       ? () => _copyToClipboard(
                             context,
@@ -246,6 +268,25 @@ export OPENAI_API_KEY="$apiKey"''';
                             '环境变量',
                           )
                       : null,
+                ),
+                const SizedBox(height: Sp.x4),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(top: 2),
+                      child:
+                          Icon(Icons.shield_outlined, size: 14, color: Dk.t3),
+                    ),
+                    const SizedBox(width: Sp.x2),
+                    Expanded(
+                      child: Text(
+                        '拿到密钥的人都能给你发消息，只发给信任的人。'
+                        '${fcmToken != null ? '手机推送已开启，锁屏也能收到。' : ''}',
+                        style: Ty.small.copyWith(color: Dk.t3, fontSize: 12),
+                      ),
+                    ),
+                  ],
                 ),
                 if (!ready) ...[
                   const SizedBox(height: Sp.x3),
@@ -273,7 +314,6 @@ class _SpecRow extends StatelessWidget {
     this.onCopy,
     this.extra,
     this.empty = false,
-    this.good = false,
     this.last = false,
   });
 
@@ -283,7 +323,6 @@ class _SpecRow extends StatelessWidget {
   final VoidCallback? onCopy;
   final Widget? extra;
   final bool empty;
-  final bool good;
   final bool last;
 
   @override
@@ -303,11 +342,7 @@ class _SpecRow extends StatelessWidget {
       style: Ty.code.copyWith(
         height: 1.4,
         fontSize: 12.5,
-        color: empty
-            ? Dk.t3
-            : good
-                ? Dk.ok
-                : Dk.t1,
+        color: empty ? Dk.t3 : Dk.t1,
       ),
     );
     final actions = Row(
@@ -376,6 +411,7 @@ class _MiniIcon extends StatelessWidget {
 /// A large copy target: what you get, and where it goes.
 class _CopyAction extends StatelessWidget {
   const _CopyAction({
+    super.key,
     required this.icon,
     required this.title,
     required this.detail,
@@ -434,4 +470,24 @@ class _CopyAction extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Words to send a friend as they are, by chat or mail.
+String friendNote({
+  required String baseUrl,
+  required String apiKey,
+  required String modelName,
+  String? me,
+}) {
+  return '''${me == null ? '我' : '我（$me）'}在用 OpenHuman，你可以在自己常用的工具里直接给我发消息。
+
+在 Claude Code、Cursor、WorkBuddy 这类支持「OpenAI 兼容」的工具里，新加一个模型服务，填这三项：
+
+接口地址（Base URL）：$baseUrl
+密钥（API Key）：$apiKey
+模型：$modelName
+
+然后选这个模型发消息就行。消息会直接到我这里，我回的话会出现在你那边。
+
+这把密钥只给你，请别转发。''';
 }

@@ -52,6 +52,12 @@ void main() {
           (ref) => const oh.HumanSession(id: 'hum_me', displayName: '黄治文')),
       connectionStateProvider
           .overrideWith((ref) => Stream.value(oh.ConnectionState.connected)),
+      serverConfigProvider.overrideWith(
+        (ref) => const ServerConfig(
+          serverUrl: 'wss://oh.example.com/ws',
+          apiKey: 'ohk_live_7d2f9a41c0e84b6e',
+        ),
+      ),
     ]);
     await tester.pumpWidget(UncontrolledProviderScope(
       container: container,
@@ -150,12 +156,12 @@ void main() {
       );
     }
 
-    await tester.tap(find.byTooltip('接入指南'));
+    await tester.tap(find.byTooltip('让别人联系你'));
     await tester.pumpAndSettle();
     if (enabled) {
       await expectLater(
         find.byType(MaterialApp),
-        matchesGoldenFile('shots/integration.png'),
+        matchesGoldenFile('shots/share.png'),
       );
     }
   }, skip: !enabled);

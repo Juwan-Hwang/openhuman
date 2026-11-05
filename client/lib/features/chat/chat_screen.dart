@@ -28,7 +28,7 @@ import '../../widgets/controls.dart';
 import '../../widgets/glyphs.dart';
 import '../../widgets/motion.dart';
 import 'message_adapter.dart';
-import 'agent_integration_sheet.dart';
+import 'share_sheet.dart';
 import 'details_panel.dart';
 import 'chat_controller.dart';
 import 'conversation_sidebar.dart';
@@ -343,8 +343,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ),
         _Action(
           glyph: Glyph.link,
-          label: '接入指南',
-          onTap: () => AgentIntegrationSheet.show(context),
+          label: '让别人联系你',
+          onTap: () => ShareSheet.show(context),
         ),
       ],
     );
