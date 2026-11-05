@@ -83,7 +83,7 @@ ConversationListStatus _statusOf(WidgetTester tester) {
 /// Returns a finder scoped to the sheet: the sidebar underneath has its
 /// own retry button, so an unscoped `find.text('重试')` is ambiguous.
 Future<Finder> _openTrash(WidgetTester tester) async {
-  await tester.tap(find.text('回收站'));
+  await tester.tap(find.byKey(const ValueKey('open-trash')));
   await tester.pumpAndSettle();
   final sheet = find.byType(BottomSheet);
   expect(sheet, findsOneWidget);
@@ -279,7 +279,9 @@ void main() {
       find.descendant(of: sheet, matching: find.text('回收站是空的')),
       findsNothing,
     );
-    expect(find.text('agent_trae'), findsOneWidget);
+    // The restored list shows the caller the way the console names them.
+    expect(find.descendant(of: sheet, matching: find.text('经由 Trae')),
+        findsOneWidget);
   });
 
   test('a failure lands in error state, not in a silent reset', () async {

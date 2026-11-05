@@ -16,6 +16,8 @@ import '../../widgets/brand.dart';
 import '../../widgets/avatar.dart';
 import '../../widgets/controls.dart';
 import '../../widgets/glyphs.dart';
+import '../../widgets/sheet.dart';
+import '../../core/identity.dart';
 import '../files/file_library.dart';
 
 /// Sidebar width limits; the pane is resizable from its right edge.
@@ -414,9 +416,9 @@ Future<void> joinRoomByCode(
 
 /// Open the trash as a sheet over the console.
 Future<void> _openTrash(BuildContext context) {
-  return showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
+  return showDkSheet<void>(
+    context,
+    maxWidth: 640,
     builder: (sheetContext) => const _TrashSheet(),
   );
 }
@@ -498,9 +500,7 @@ class _FootButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final button = _button();
-    return tooltip == null
-        ? button
-        : Tooltip(message: tooltip!, child: button);
+    return tooltip == null ? button : Tooltip(message: tooltip!, child: button);
   }
 
   Widget _button() {
@@ -549,104 +549,149 @@ class _TrashSheetState extends ConsumerState<_TrashSheet> {
   Widget build(BuildContext context) {
     final trash = ref.watch(trashListProvider);
     final theme = Theme.of(context);
+    final notifier = ref.read(trashListProvider.notifier);
 
-    return SafeArea(
-      child: SizedBox(
-        height: MediaQuery.of(context).size.height * 0.6,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text('回收站', style: theme.textTheme.titleSmall),
+    return SizedBox(
+      height: MediaQuery.of(context).size.height * 0.6,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(Sp.x6, Sp.x2, Sp.x3, Sp.x3),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('回收站', style: Ty.title.copyWith(fontSize: 18)),
+                      const SizedBox(height: 4),
+                      const Text(
+                        '移进来的对话随时可以恢复；彻底删除后就找不回了',
+                        style: Ty.small,
+                      ),
+                    ],
+                  ),
+                ),
+                DkIconButton(
+                  glyph: Glyph.close,
+                  label: '关闭',
+                  onTap: () => Navigator.of(context).pop(),
+                ),
+              ],
             ),
-            // An unreachable trash must not read as an empty one: "空的"
-            // invites the reader to think their conversations are gone
-            // for good, and invites a pointless retry loop.
-            if (trash.entries.isEmpty)
-              Expanded(
-                child: _TrashPlaceholder(
-                  theme: theme,
-                  status: trash.status,
-                  error: trash.error,
-                  onRetry: () => ref.read(trashListProvider.notifier).refresh(),
-                ),
-              )
-            else
-              Expanded(
-                child: ListView.builder(
-                  itemCount: trash.entries.length,
-                  itemBuilder: (context, index) {
-                    final item = trash.entries[index];
-                    return ListTile(
-                      leading: const Icon(Icons.restore_from_trash, size: 20),
-                      title: Text(item.agentName),
-                      subtitle: Text(
-                        item.id,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.restore, size: 20),
-                            tooltip: '恢复',
-                            onPressed: () async {
-                              final ok = await ref
-                                  .read(trashListProvider.notifier)
-                                  .restore(item.id);
-                              if (!context.mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(ok ? '已恢复' : '恢复失败'),
-                                ),
-                              );
-                            },
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.delete_forever, size: 20),
-                            tooltip: '彻底删除',
-                            onPressed: () async {
-                              final confirmed = await showDialog<bool>(
-                                context: context,
-                                builder: (dialogContext) => AlertDialog(
-                                  title: const Text('彻底删除'),
-                                  content: const Text(
-                                    '这条对话会被永久删除，无法恢复。',
+          ),
+          // An unreachable trash must not read as an empty one: "空的"
+          // invites the reader to think their conversations are gone
+          // for good, and invites a pointless retry loop.
+          Expanded(
+            child: trash.entries.isEmpty
+                ? _TrashPlaceholder(
+                    theme: theme,
+                    status: trash.status,
+                    error: trash.error,
+                    onRetry: () => notifier.refresh(),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(Sp.x4, 0, Sp.x4, Sp.x5),
+                    itemCount: trash.entries.length,
+                    itemBuilder: (context, index) {
+                      final item = trash.entries[index];
+                      final caller = Caller.parse(item.agentName);
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: Sp.x2,
+                          vertical: Sp.x2,
+                        ),
+                        child: Row(
+                          children: [
+                            PersonAvatar(
+                              name: caller.name,
+                              anonymous: caller.anonymous,
+                              size: Sz.avatarSm,
+                            ),
+                            const SizedBox(width: Sp.x3),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    caller.name,
+                                    style: Ty.name.copyWith(color: Dk.t1Soft),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () => Navigator.of(
-                                        dialogContext,
-                                      ).pop(false),
-                                      child: const Text('取消'),
+                                  // Unnamed callers are told apart by
+                                  // what the server calls them.
+                                  if ((caller.via ??
+                                          (caller.anonymous
+                                              ? caller.raw
+                                              : null)) !=
+                                      null)
+                                    Text(
+                                      caller.via ?? caller.raw,
+                                      style: Ty.small.copyWith(
+                                        fontSize: 11.5,
+                                        color: Dk.t3,
+                                      ),
                                     ),
-                                    FilledButton(
-                                      onPressed: () => Navigator.of(
-                                        dialogContext,
-                                      ).pop(true),
-                                      child: const Text('永久删除'),
+                                ],
+                              ),
+                            ),
+                            DkButton(
+                              label: '恢复',
+                              glyph: Glyph.restore,
+                              dense: true,
+                              onTap: () async {
+                                final ok = await notifier.restore(item.id);
+                                if (!context.mounted) return;
+                                toast(context,
+                                    ok ? '已恢复「${caller.name}」' : '没恢复成功');
+                              },
+                            ),
+                            const SizedBox(width: Sp.x1),
+                            DkIconButton(
+                              glyph: Glyph.trash,
+                              label: '彻底删除',
+                              color: Dk.danger,
+                              glyphSize: Sz.glyphSm,
+                              onTap: () async {
+                                final confirmed = await showDialog<bool>(
+                                  context: context,
+                                  builder: (dialogContext) => AlertDialog(
+                                    title: const Text('彻底删除'),
+                                    content: Text(
+                                      '和「${caller.name}」的这段对话会被永久删除，无法恢复。',
                                     ),
-                                  ],
-                                ),
-                              );
-                              if (confirmed != true || !context.mounted) {
-                                return;
-                              }
-                              await ref
-                                  .read(trashListProvider.notifier)
-                                  .destroy(item.id);
-                            },
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ),
-          ],
-        ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.of(
+                                          dialogContext,
+                                        ).pop(false),
+                                        child: const Text('取消'),
+                                      ),
+                                      FilledButton(
+                                        onPressed: () => Navigator.of(
+                                          dialogContext,
+                                        ).pop(true),
+                                        child: const Text('永久删除'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                                if (confirmed != true || !context.mounted) {
+                                  return;
+                                }
+                                await notifier.destroy(item.id);
+                              },
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
       ),
     );
   }
