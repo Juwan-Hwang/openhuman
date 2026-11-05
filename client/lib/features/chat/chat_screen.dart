@@ -320,7 +320,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ? _TurnState.yours
               : messages.isEmpty
                   ? _TurnState.idle
-                  : _TurnState.theirs,
+                  // My newest reply never left: they are not waiting on
+                  // anything from me, they have not heard it at all.
+                  : messages.first.status == types.Status.error
+                      ? _TurnState.failed
+                      : _TurnState.theirs,
       sidebarOpen: !fit.isCompact && _showSidebar,
       onSidebar: () => setState(() {
         if (fit.isCompact) {
@@ -587,7 +591,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 }
 
 /// Whose move it is, as the top bar shows it.
-enum _TurnState { yours, theirs, ended, idle }
+enum _TurnState { yours, theirs, failed, ended, idle }
 
 /// A header action: a glyph button on a desktop, a menu row on a phone.
 class _Action {
@@ -812,6 +816,7 @@ class _TopBar extends StatelessWidget {
 (String, Color)? _turnLabel(_TurnState s, bool short) => switch (s) {
       _TurnState.yours => (short ? '等你回复' : '在等你回复', Dk.signal),
       _TurnState.theirs => ('等对方回复', Dk.t2),
+      _TurnState.failed => (short ? '没发出去' : '你的回复没发出去', Dk.danger),
       _TurnState.ended => (short ? '你已说完' : '这一轮你说完了', Dk.t3),
       _TurnState.idle => null,
     };
@@ -864,15 +869,26 @@ class _StatePill extends StatelessWidget {
   Widget build(BuildContext context) {
     final (label, fg) = _turnLabel(state, false)!;
     final yours = state == _TurnState.yours;
+    final failed = state == _TurnState.failed;
     return Semantics(
       liveRegion: true,
       label: label,
       child: Container(
         padding: const EdgeInsets.fromLTRB(Sp.x25, Sp.x1, Sp.x3, Sp.x1),
         decoration: BoxDecoration(
-          color: yours ? Dk.signalSoft : Dk.p2,
+          color: yours
+              ? Dk.signalSoft
+              : failed
+                  ? Dk.dangerSoft
+                  : Dk.p2,
           borderRadius: BorderRadius.circular(Rd.pill),
-          border: Border.all(color: yours ? Dk.signalRing : Dk.line),
+          border: Border.all(
+            color: yours
+                ? Dk.signalRing
+                : failed
+                    ? Dk.dangerEdge
+                    : Dk.line,
+          ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,

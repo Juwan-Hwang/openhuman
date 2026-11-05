@@ -15,6 +15,7 @@ import '../../widgets/controls.dart';
 import '../../widgets/glyphs.dart';
 import '../../widgets/sheet.dart';
 import '../chat/conversation_sidebar.dart' show rowTime;
+import '../chat/stream/message_stream.dart' show beijing;
 
 /// The library, newest first. Refreshed by invalidating it.
 final fileLibraryProvider =
@@ -251,7 +252,10 @@ class _FileRowState extends State<_FileRow> {
     final mime = f.mime ?? mimeForName(f.filename);
     final when = f.createdAt == null
         ? null
-        : rowTime(f.createdAt!.toLocal(), DateTime.now());
+        : rowTime(
+            beijing(f.createdAt!.millisecondsSinceEpoch),
+            beijing(DateTime.now().millisecondsSinceEpoch),
+          );
     final meta = [
       if (sizeLabel(f.bytes).isNotEmpty) sizeLabel(f.bytes),
       if (when != null) when,

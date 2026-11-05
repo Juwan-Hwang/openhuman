@@ -19,6 +19,7 @@ import '../../widgets/glyphs.dart';
 import '../../widgets/sheet.dart';
 import '../../core/identity.dart';
 import '../files/file_library.dart';
+import 'stream/message_stream.dart' show beijing;
 
 /// Sidebar width limits; the pane is resizable from its right edge.
 const double kSidebarMin = 232;
@@ -1109,7 +1110,10 @@ class _ConversationTileState extends State<_ConversationTile> {
     final showMenu = touch ? _menuOpen : (_hover || _menuOpen);
     final time = c.lastMessageTime == null
         ? null
-        : rowTime(c.lastMessageTime!.toLocal(), DateTime.now());
+        : rowTime(
+            beijing(c.lastMessageTime!.millisecondsSinceEpoch),
+            beijing(DateTime.now().millisecondsSinceEpoch),
+          );
     // Someone is waiting on me here, or wrote while I was elsewhere: the
     // row is "hot", which is the only time it gets brighter than its
     // neighbours.
