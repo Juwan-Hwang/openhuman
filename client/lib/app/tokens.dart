@@ -1,10 +1,11 @@
 /// Design tokens for the OpenHuman console — the "Darkroom" language.
 ///
-/// The console is a desktop instrument that stays open all day, so it is
-/// dark, warm-neutral and quiet. Exactly one colour is allowed to shout:
-/// [Dk.signal], and only when the human is the one being waited on.
-/// Everything else (running, API task, done) has its own calm hue so a
-/// glance at the window says whose move it is.
+/// OpenHuman is two people in one conversation; the client is where one
+/// of them reads and answers. It stays open all day beside other work,
+/// so it is dark, warm-neutral and quiet. Exactly one colour is allowed
+/// to shout: [Dk.signal], the brand's Apricot, and only for "your move"
+/// (someone is waiting on you) and keyboard focus. Everything else keeps
+/// a calm hue, so a glance at the window says whose move it is.
 ///
 /// Widgets never write a colour, size or duration literal — they read
 /// one of these. Changing the product's look is a change to this file.
@@ -37,7 +38,7 @@ class Dk {
   static const Color t2 = Color(0xFFA9A59E);
   static const Color t3 = Color(0xFF706E6A);
   static const Color t4 = Color(0xFF4B4B53);
-  static const Color prose = Color(0xFFECE7DE); // long agent text
+  static const Color prose = Color(0xFFECE7DE); // long message text
 
   /// Scrim behind modal sheets and overlay panes.
   static const Color scrim = Color(0xB3060709);
@@ -54,7 +55,7 @@ class Dk {
   static const Color signalInk = Color(0xFF1F0D05); // text on signal
   static const Color signalCode = Color(0xFFFFD2BF);
 
-  /// Agent running / success.
+  /// Delivered, online, success.
   static const Color ok = Color(0xFF9BE15D);
   static const Color okSoft = Color(0x1A9BE15D);
   static const Color okEdge = Color(0x479BE15D);
@@ -63,7 +64,7 @@ class Dk {
   static const Color warn = Color(0xFFE0B252);
   static const Color warnSoft = Color(0x1AE0B252);
 
-  /// API task, links, tools.
+  /// Links and technical details.
   static const Color blue = Color(0xFF7AA7FF);
   static const Color blueSoft = Color(0x1A7AA7FF);
   static const Color blueFloor = Color(0xFF10151F);
@@ -73,7 +74,7 @@ class Dk {
   static const Color dangerSoft = Color(0x1AFF6B6B);
   static const Color dangerEdge = Color(0x47FF6B6B);
 
-  /// The human's own bubble: the brand's Paper.
+  /// Paper ink, for the few places that sit on Paper (primary buttons).
   static const Color mine = paper;
   static const Color onMine = ink;
   static const Color mineCode = Color(0xFFE8E1D5);
@@ -99,8 +100,8 @@ class Dk {
   /// Windows' own close-button red, so the caption reads as native.
   static const Color closeRed = Color(0xFFC42B1C);
 
-  /// Identity hues for agents. None sits near Apricot: that hue belongs
-  /// to the human alone.
+  /// Identity hues for people's avatars. None sits near Apricot: that hue
+  /// means "your move" and nothing else.
   static const List<Color> hues = [
     Color(0xFF6E8BE0), // slate blue
     Color(0xFF8BBF5E), // moss
@@ -112,18 +113,95 @@ class Dk {
     Color(0xFFA3B86C), // olive
   ];
   static const Color onHue = Color(0xFF111216);
+
+  /// Keyboard focus ring. Focus is an emphasis, so it may borrow Apricot.
+  static const Color focus = signalEdge;
+
+  /// The floor of my own messages: a breath warmer than the window, so
+  /// the two voices are told apart without one outweighing the other.
+  static const Color mineFloor = Color(0xFF1B1A1E);
+  static const Color mineEdge = Color(0xFF2E2C30);
+
+  /// A row under the pointer.
+  static const Color hover = Color(0x0AF7F2EA);
+
+  /// Placeholder floor while an image decodes.
+  static const Color imageFloor = Color(0xFF17181D);
+}
+
+/// Fixed sizes: chrome, panes, avatars, glyphs.
+class Sz {
+  /// Desktop title bar (own chrome).
+  static const double titleBar = 34;
+  static const double caption = 46;
+
+  /// Pane headers: the list's search bar, the conversation header and
+  /// the details header share one height, so their hairlines meet.
+  static const double bar = 64;
+  static const double barCompact = 56;
+
+  /// Glyphs.
+  static const double glyph = 18;
+  static const double glyphSm = 15;
+  static const double glyphXs = 13;
+  static const double glyphLg = 22;
+  static const double stroke = 1.6;
+
+  /// Avatars.
+  static const double avatarXs = 20;
+  static const double avatarSm = 28;
+  static const double avatar = 34;
+  static const double avatarMd = 40;
+  static const double avatarLg = 64;
+
+  /// Hit targets. Touch is fixed at 44 by the platform guidelines.
+  static const double hit = 32;
+  static const double hitBar = 34;
+  static const double hitTouch = 44;
+
+  /// Panes (resizable).
+  static const double listMin = 248;
+  static const double listDefault = 296;
+  static const double listMax = 420;
+  static const double detailsMin = 300;
+  static const double detailsDefault = 340;
+  static const double detailsMax = 520;
+
+  /// Width the desktop opens with the list showing.
+  static const double listOpensFrom = 840;
+
+  /// Longest comfortable line of message prose.
+  static const double measure = 720;
+
+  /// Widest a single image tile grows.
+  static const double imageMax = 360;
+  static const double imageGridMax = 480;
+
+  /// Status dots.
+  static const double dot = 7;
+  static const double dotSm = 6;
+
+  /// Focus ring width.
+  static const double ring = 2;
 }
 
 /// Spacing on a 4 px grid.
 class Sp {
+  static const double x05 = 2;
   static const double x1 = 4;
+  static const double x15 = 6;
   static const double x2 = 8;
+  static const double x25 = 10;
   static const double x3 = 12;
+  static const double x35 = 14;
   static const double x4 = 16;
   static const double x5 = 20;
   static const double x6 = 24;
+  static const double x7 = 28;
   static const double x8 = 32;
   static const double x9 = 36;
+  static const double x10 = 40;
+  static const double x12 = 48;
 
   /// Width of the timeline gutter (time stamps + rail).
   static const double gutter = 104;
@@ -131,7 +209,7 @@ class Sp {
   /// Widest the stream column grows on a large window.
   static const double column = 1180;
 
-  /// Longest comfortable line of agent prose.
+  /// Longest comfortable line of message prose.
   static const double measure = 760;
 }
 
@@ -152,6 +230,30 @@ class Mo {
   static const Duration slow = Duration(milliseconds: 420);
   static const Cubic expo = Cubic(0.16, 1, 0.3, 1);
   static const Cubic soft = Cubic(0.22, 1, 0.36, 1);
+
+  /// Leaving: quick and plain, so what replaces it is not kept waiting.
+  static const Curve exit = Curves.easeIn;
+
+  /// How far a thing rises as it enters.
+  static const double rise = 8;
+
+  /// Hover and focus need to feel instant.
+  static const Duration instant = Duration(milliseconds: 90);
+
+  /// How long "copied" and similar confirmations stay up.
+  static const Duration confirm = Duration(milliseconds: 1600);
+
+  /// The breathing "your move" dot.
+  static const Duration breath = Duration(milliseconds: 2400);
+
+  /// Whether this context asked for less motion (the platform's
+  /// "reduce motion" switch). Transitions then cut instead of moving.
+  static bool reduced(BuildContext context) =>
+      MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+
+  /// [d], or nothing when motion is reduced.
+  static Duration of(BuildContext context, Duration d) =>
+      reduced(context) ? Duration.zero : d;
 
   /// Ambient motion: loops that run on their own (the mark's wink, the
   /// breathing state dot). Off under test, so frames can settle; the

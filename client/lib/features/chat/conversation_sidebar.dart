@@ -13,7 +13,7 @@ import '../../app/theme.dart';
 import '../../core/sdk_provider.dart';
 import '../../app/adaptive.dart';
 import '../../widgets/brand.dart';
-import '../../widgets/monogram.dart';
+import '../../widgets/avatar.dart';
 
 /// Sidebar width limits; the pane is resizable from its right edge.
 const double kSidebarMin = 232;
@@ -974,11 +974,15 @@ class _ConversationTileState extends State<_ConversationTile> {
               ),
               child: Row(
                 children: [
-                  Monogram(
-                    c.displayName,
-                    size: touch ? 34 : 30,
-                    group: c.isGroup,
-                  ),
+                  c.isGroup
+                      ? RoomAvatar(
+                          title: c.displayName,
+                          size: touch ? 34 : 30,
+                        )
+                      : PersonAvatar(
+                          name: c.displayName,
+                          size: touch ? 34 : 30,
+                        ),
                   SizedBox(width: touch ? 14 : 11),
                   Expanded(
                     child: Column(

@@ -68,7 +68,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
-  bool _turnEnded = false;
+  /// Whether I ended the turn in the open conversation. The controller
+  /// keeps the mark and clears it when the other side writes again.
+  /// Only read during build.
+  bool get _turnEnded {
+    final id = ref.watch(activeConversationIdProvider);
+    return id != null && ref.watch(turnEndedProvider).contains(id);
+  }
+
   bool _reconnecting = false;
 
   /// Reconnect using the credentials saved on the last successful connect.
@@ -104,14 +111,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // opens. The provider is lazy, and the sidebar is often closed —
     // waiting for it to be opened would start the fetch far too late.
     ref.watch(conversationListProvider);
-
-    // A new inbound message from the agent means a new turn has begun —
-    // automatically re-open the input so the human can reply again.
-    ref.listen(chatControllerProvider, (prev, next) {
-      if (next.length > (prev?.length ?? 0) && _turnEnded) {
-        setState(() => _turnEnded = false);
-      }
-    });
 
     final controller = ref.read(chatControllerProvider.notifier);
     final humanUser = controller.humanUser;
@@ -340,7 +339,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     ),
                     if (_turnEnded)
                       _EndedStrip(
-                        onResume: () => setState(() => _turnEnded = false),
+                        onResume: () => ref
+                            .read(chatControllerProvider.notifier)
+                            .reopenTurn(),
                       ),
                     Composer(
                       enabled: !_turnEnded,
@@ -478,28 +479,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _endTurn() {
-    setState(() => _turnEnded = true);
-
-    // Send the end.turn signal to the server, which closes the waiting
-    // SSE stream with `finish_reason: stop` + [DONE]. WorkBuddy then
-    // treats the reply as complete.
-    final client = ref.read(openHumanClientProvider);
-    final conversationId = ref.read(activeConversationIdProvider) ??
-        (client.activeConversations.isNotEmpty
-            ? client.activeConversations.first
-            : null);
-    if (conversationId == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('当前没有可结束的会话。'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
-      return;
+    // end.turn closes the caller's waiting stream (`finish_reason: stop`
+    // + [DONE]), so their tool treats the reply as complete.
+    final ended = ref.read(chatControllerProvider.notifier).endTurn();
+    if (!ended && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('当前没有可结束的会话。'),
+          duration: Duration(seconds: 2),
+        ),
+      );
     }
-    client.endTurn(conversationId);
   }
 
   String _connectionStateLabel(

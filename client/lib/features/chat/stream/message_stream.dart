@@ -18,7 +18,7 @@ import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
 import '../../../app/adaptive.dart';
 import '../../../app/tokens.dart';
 import '../../../widgets/brand.dart';
-import '../../../widgets/monogram.dart';
+import '../../../widgets/avatar.dart';
 import 'rich_text.dart';
 
 /// Messages closer than this from one author fold into one turn.
@@ -517,7 +517,7 @@ class _Who extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Monogram(name),
+          PersonAvatar(name: name),
           const SizedBox(width: 10),
           Flexible(
             child: Text(

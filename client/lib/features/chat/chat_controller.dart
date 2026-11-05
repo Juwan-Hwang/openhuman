@@ -1,35 +1,31 @@
-/// Chat controller — manages chat state and SDK interaction.
+/// Chat controller — one timeline per conversation, and everything I
+/// send into it.
 ///
-/// ## Architectural Principle
+/// Only `message.received` creates timeline entries: those are what
+/// people wrote. System events (`session.connected`, `capability.updated`,
+/// `reply.delivered`, `error`) never become messages; they update state
+/// shown elsewhere.
 ///
-/// The [ChatController] timeline **only** accepts `message.received`
-/// events. These are genuine communication messages from the agent.
+/// The visible [state] is the ACTIVE conversation's timeline, newest
+/// first. Other conversations fill silently in their own buckets.
 ///
-/// System events (`session.connected`, `capability.updated`,
-/// `reply.delivered`, `error`) are **never** injected into the
-/// message timeline. They are handled by separate providers and
-/// rendered in independent UI components.
+/// What I send:
 ///
-/// ## Multi-Conversation Support
-///
-/// Messages are bucketed per conversation. The [state] reflects ONLY
-/// the active conversation (from [activeConversationIdProvider]) —
-/// switching the active conversation swaps the visible timeline.
-///
-/// ## Data Flow
-///
-/// ```
-/// SDK events
-///   ├── message.received  → ChatController → per-conversation buckets
-///   │                                        └─ active bucket → timeline
-///   ├── session.connected → currentHumanProvider (identity only)
-///   ├── capability.updated → capabilityCacheProvider (agent runtime)
-///   ├── reply.delivered   → internal status update (no new message)
-///   └── error             → systemEventsProvider (system event card)
-/// ```
+/// * **Replies** go over the socket (`reply.send`). They show as
+///   "发送中" until the send completes, "已发出" after, and "已送达" once
+///   the server confirms the waiting tool got them (`reply.delivered`).
+///   A send that fails stays in the timeline marked as failed, with a
+///   retry, instead of silently disappearing.
+/// * **Task answers** (a picture, a recording, a verdict…) go through
+///   `POST /v1/seat/reply`, which takes the files and checks the answer
+///   against the task the way the endpoint will; a refusal comes back
+///   with its reason.
+/// * **Ending the turn** (`end.turn`) tells the other person's tool that
+///   I am done for now, so their window stops waiting.
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
@@ -37,13 +33,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
 
 import '../../core/sdk_provider.dart';
+import '../../core/tasks.dart';
 import 'message_adapter.dart';
 
-/// State notifier that manages the chat UI state.
-///
-/// The state is a list of [types.Message] — **only** real
-/// communication messages of the ACTIVE conversation. No system
-/// prompts, no agent metadata, no tool definitions, no runtime context.
+/// Where a task stands, beyond what its card can work out from the clock.
+class TaskOutcome {
+  const TaskOutcome(this.state, {this.note});
+  final TaskState state;
+
+  /// The server's reason for a refusal, or what happened.
+  final String? note;
+}
+
+/// Outcomes by the id of the message that carried the task.
+final taskOutcomesProvider =
+    StateProvider<Map<String, TaskOutcome>>((ref) => const {});
+
+/// Conversations where I said I was done (`end.turn`). A new message
+/// from the other side clears the mark.
+final turnEndedProvider = StateProvider<Set<String>>((ref) => const {});
+
 class ChatController extends StateNotifier<List<types.Message>> {
   ChatController(this._ref) : super(const []) {
     _init();
@@ -51,48 +60,41 @@ class ChatController extends StateNotifier<List<types.Message>> {
 
   final Ref _ref;
 
-  // ── Subscriptions ──────────────────────────────────────────────
-
   StreamSubscription<oh.MessageReceivedData>? _messageSub;
   StreamSubscription<oh.OpenHumanEvent>? _rawEventSub;
   StreamSubscription<oh.ReplyDeliveredData>? _replyAckSub;
   StreamSubscription<oh.ConnectionState>? _connSub;
+  StreamSubscription<oh.AsyncInvocationCreatedData>? _asyncSub;
   ProviderSubscription<String?>? _activeConvSub;
 
-  /// Whether history has been fetched for the current connection.
   bool _historyLoaded = false;
 
-  // ── Cached user objects ────────────────────────────────────────
-
-  /// The Flyer Chat user for the authenticated human.
   types.User _humanUser = const types.User(id: 'unknown');
   types.User get humanUser => _humanUser;
 
-  // ── Per-conversation message buckets ───────────────────────────
-  //
-  // Key: conversation ID. Value: messages with the NEWEST FIRST —
-  // Flyer Chat renders `reverse: true`, so index 0 appears at the
-  // BOTTOM of the viewport (natural chat order).
-
+  /// Messages by conversation, newest first.
   final Map<String, List<types.Message>> _byConversation = {};
 
-  // ═════════════════════════════════════════════════════════════
-  //  Initialization
-  // ═════════════════════════════════════════════════════════════
+  /// Request shapes seen on raw events, by message id. The raw event is
+  /// dispatched before the typed one, so the typed handler finds it here.
+  final Map<String, Map<String, dynamic>> _requests = {};
+
+  /// A non-streaming request that went async leaves an invocation id; the
+  /// reply must carry it to reach the parked caller.
+  final Map<String, String> _invocations = {};
 
   void _init() {
     final client = _ref.read(openHumanClientProvider);
+    final me = client.currentHuman ?? _ref.read(currentHumanProvider);
+    if (me != null) _humanUser = humanSessionToUser(me);
 
-    // Only message.received events enter the chat timeline.
     _messageSub = client.messages.listen(_onMessageReceived);
-
-    // Raw events for session.connected (identity extraction only).
     _rawEventSub = client.rawEvents.listen(_onRawEvent);
-
-    // Reply delivery acks — update status of existing messages only.
     _replyAckSub = client.replyAcks.listen(_onReplyDelivered);
+    _asyncSub = client.asyncInvocations.listen(
+      (a) => _invocations[a.conversationId] = a.invocationId,
+    );
 
-    // Switch the visible timeline when the active conversation changes.
     _activeConvSub = _ref.listen<String?>(
       activeConversationIdProvider,
       (prev, next) {
@@ -101,8 +103,6 @@ class ChatController extends StateNotifier<List<types.Message>> {
           state = bucket != null
               ? List<types.Message>.unmodifiable(bucket)
               : const [];
-          // Conversations beyond the up-front limit have a slot but no
-          // messages yet; fill it the first time one is opened.
           if (bucket == null || bucket.isEmpty) {
             unawaited(_loadMessages(next));
           }
@@ -110,155 +110,119 @@ class ChatController extends StateNotifier<List<types.Message>> {
       },
     );
 
-    // History needs the credentials that `connect` records, and the
-    // controller outlives a single connection. Fetching here would run
-    // before any connect and find nothing, so wait for a live socket.
     _connSub = client.connectionState.listen((connState) {
       if (connState == oh.ConnectionState.connected) {
         unawaited(_loadHistory());
       } else if (connState == oh.ConnectionState.reconnecting ||
           connState == oh.ConnectionState.disconnected ||
           connState == oh.ConnectionState.error) {
-        // The socket dropped — allow a refetch on the next connection.
-        // Without this a reconnected console keeps whatever it had, and
-        // anything that arrived while offline never appears.
+        // Refetch on the next connection, so what arrived while offline
+        // is not missed.
         _historyLoaded = false;
       }
     });
 
-    // Already connected (reconnect into an existing session).
     if (client.currentState == oh.ConnectionState.connected) {
       unawaited(_loadHistory());
     }
   }
 
-  /// Load past conversations and their messages.
-  ///
-  /// The socket only carries what has not been delivered yet, so without
-  /// this a freshly opened console shows an empty timeline even though the
-  /// history is sitting on the server.
   Future<void> _loadHistory() async {
     final client = _ref.read(openHumanClientProvider);
-
-    // One load per connection is enough; without this a flapping socket
-    // would refetch everything repeatedly.
     if (_historyLoaded) return;
     _historyLoaded = true;
-
     try {
-      // One request. Firing a request per conversation — even in
-      // parallel — starves every one of them on a slow link: they all
-      // hit the timeout together and the console ends up with nothing
-      // at all, which is worse than loading them lazily.
+      // One request for the list; messages are fetched when a
+      // conversation is opened, so a slow link is not flooded.
       final conversations = await client.fetchConversations();
       if (conversations.isEmpty) return;
-
-      // Newest activity first, matching what the sidebar implies.
       conversations.sort((a, b) => b.sortKey.compareTo(a.sortKey));
-
-      // Give every conversation a slot so the sidebar can list it.
-      // Messages are not fetched here; opening one fetches its messages.
       for (final conversation in conversations) {
         _byConversation.putIfAbsent(conversation.id, () => []);
       }
-
-      // Open the most recent conversation.
       final active = _ref.read(activeConversationIdProvider);
       final first = active ?? conversations.first.id;
       if (active == null) {
         _ref.read(activeConversationIdProvider.notifier).state = first;
       }
-
-      // Messages for the conversation being shown, so the timeline is
-      // not empty on arrival.
       await _loadMessages(first);
     } catch (e, st) {
-      // History is a nicety and must not take the console down, but
-      // swallowing it silently is what let this stay broken — an empty
-      // timeline looks identical whether the fetch failed or there was
-      // nothing to fetch.
       debugPrint('[Chat] history load failed: $e\n$st');
-      _historyLoaded = false; // allow a retry on the next connection
+      _historyLoaded = false;
     }
   }
 
-  /// Fetch one conversation's messages and show them if it is still open.
   Future<void> _loadMessages(String conversationId) async {
     final client = _ref.read(openHumanClientProvider);
-
     try {
       final messages = await client.fetchMessages(conversationId);
       final bucket = _byConversation.putIfAbsent(conversationId, () => []);
       if (bucket.isNotEmpty) return;
-
       for (final m in messages) {
         bucket.insertAll(
           0,
           historyMessageToMessages(m, humanUser: _humanUser).reversed,
         );
       }
-
-      if (_ref.read(activeConversationIdProvider) == conversationId) {
-        state = List<types.Message>.unmodifiable(bucket);
-      }
+      _publish(conversationId);
     } catch (e, st) {
       debugPrint('[Chat] failed to load $conversationId: $e\n$st');
     }
   }
 
-  // ═════════════════════════════════════════════════════════════
-  //  Event handlers
-  // ═════════════════════════════════════════════════════════════
-
-  /// Handle `session.connected` — extract human identity only.
-  ///
-  /// This does NOT create a chat message. The session connection is
-  /// a system event, displayed in the AppBar / AgentRuntimePanel.
-  void _onRawEvent(oh.OpenHumanEvent event) {
-    if (event.eventType == 'session.connected') {
-      final human = _ref.read(openHumanClientProvider).currentHuman;
-      if (human != null) {
-        _humanUser = humanSessionToUser(human);
-        _ref.read(currentHumanProvider.notifier).state = human;
-      }
+  void _publish(String conversationId) {
+    if (_ref.read(activeConversationIdProvider) == conversationId) {
+      state = List<types.Message>.unmodifiable(
+        _byConversation[conversationId] ?? const [],
+      );
     }
   }
 
-  /// Handle `message.received` — the ONLY event that creates a
-  /// chat message in the timeline.
+  void _onRawEvent(oh.OpenHumanEvent event) {
+    switch (event.eventType) {
+      case 'session.connected':
+        final human = _ref.read(openHumanClientProvider).currentHuman;
+        if (human != null) {
+          _humanUser = humanSessionToUser(human);
+          _ref.read(currentHumanProvider.notifier).state = human;
+        }
+      case 'message.received':
+        final r = event.data['request'];
+        final id = event.data['message_id'];
+        if (r is Map<String, dynamic> && id is String) _requests[id] = r;
+    }
+  }
+
   void _onMessageReceived(oh.MessageReceivedData data) {
-    // Convert to Flyer Chat messages — one for the text, plus one per
-    // image when the agent sent any.
     final messages = messageReceivedToMessages(
       data,
       eventTimestamp: DateTime.now(),
       humanUser: _humanUser,
+      request: _requests.remove(data.messageId),
     );
+    final bucket = _byConversation.putIfAbsent(data.conversationId, () => []);
+    if (bucket.any((m) => m.id == data.messageId)) return;
 
-    // Bucket by conversation, newest first (see field docs).
-    final bucket =
-        _byConversation.putIfAbsent(data.conversationId, () => []);
-
-    // Prevent duplicate messages if already present in this conversation
-    if (bucket.any((m) => m.id == data.messageId)) {
-      return;
-    }
-
-    // The human's own replies are echoed back by the server. Drop the
-    // optimistic local copy, otherwise the same reply shows twice.
-    if (data.senderType.toLowerCase() == 'human') {
+    final mine = data.senderId == _humanUser.id;
+    if (mine) {
+      // The server echoes my own replies back: drop the local copy.
       bucket.removeWhere(
         (m) =>
             m.id.startsWith('outgoing_') &&
             m is types.TextMessage &&
             m.text == data.text,
       );
+    } else {
+      // They wrote again: the turn is open again.
+      final ended = _ref.read(turnEndedProvider);
+      if (ended.contains(data.conversationId)) {
+        _ref.read(turnEndedProvider.notifier).state = {...ended}
+          ..remove(data.conversationId);
+      }
     }
 
-    // Newest first, so later entries are inserted ahead of earlier ones.
     bucket.insertAll(0, messages.reversed);
 
-    // Activate the first conversation we ever see.
     final active = _ref.read(activeConversationIdProvider);
     if (active == null) {
       _ref.read(activeConversationIdProvider.notifier).state =
@@ -266,91 +230,306 @@ class ChatController extends StateNotifier<List<types.Message>> {
       state = List<types.Message>.unmodifiable(bucket);
       return;
     }
-
-    // Update the timeline only if this message belongs to the
-    // active conversation — other conversations update silently.
-    if (data.conversationId == active) {
-      state = List<types.Message>.unmodifiable(bucket);
-    }
+    _publish(data.conversationId);
   }
 
-  /// Handle `reply.delivered` — update message status only.
-  ///
-  /// This does not create a new message. It only updates the delivery
-  /// status of the last outgoing message, in both the bucket and the
-  /// visible timeline — updating only `state` would lose the status as
-  /// soon as the conversation is switched away and back.
+  /// `reply.delivered`: my newest "已发出" reply here reached them.
   void _onReplyDelivered(oh.ReplyDeliveredData data) {
     final conversationId = _ref.read(activeConversationIdProvider);
-    final bucket = conversationId == null
-        ? null
-        : _byConversation[conversationId];
+    final bucket =
+        conversationId == null ? null : _byConversation[conversationId];
     if (bucket == null) return;
-
     for (var i = 0; i < bucket.length; i++) {
       final msg = bucket[i];
-      if (msg.author.id == _humanUser.id &&
-          msg.status == types.Status.sent) {
+      if (msg.author.id == _humanUser.id && msg.status == types.Status.sent) {
         bucket[i] = msg.copyWith(status: types.Status.delivered);
         break;
       }
     }
-    state = List<types.Message>.unmodifiable(bucket);
+    _publish(conversationId!);
   }
 
-  // ═════════════════════════════════════════════════════════════
-  //  Send message
-  // ═════════════════════════════════════════════════════════════
-
-  /// Send a reply via the SDK and immediately add it to the UI.
-  ///
-  /// Returns `false` when the reply could not be sent (no conversation,
-  /// or the socket is down) — the optimistic message is rolled back so
-  /// the timeline never shows a reply that went nowhere.
-  bool sendReply(String text) {
-    if (text.trim().isEmpty) return false;
-
+  String? _conversationForSend() {
     final client = _ref.read(openHumanClientProvider);
-    final conversationId = _ref.read(activeConversationIdProvider) ??
+    return _ref.read(activeConversationIdProvider) ??
         (client.activeConversations.isNotEmpty
             ? client.activeConversations.first
             : null);
+  }
+
+  void _replace(String conversationId, String id,
+      types.Message Function(types.Message) f) {
+    final bucket = _byConversation[conversationId];
+    if (bucket == null) return;
+    final i = bucket.indexWhere((m) => m.id == id);
+    if (i < 0) return;
+    bucket[i] = f(bucket[i]);
+    _publish(conversationId);
+  }
+
+  /// Send a reply. Returns false when there is nowhere to send it.
+  bool sendReply(String text) {
+    if (text.trim().isEmpty) return false;
+    final conversationId = _conversationForSend();
     if (conversationId == null) return false;
-
     final tempId = 'outgoing_${DateTime.now().microsecondsSinceEpoch}';
-
-    final outgoingMessage = buildOutgoingTextMessage(
-      text: text,
-      humanUser: _humanUser,
-      messageId: tempId,
-    );
-
-    // Bucket + timeline (newest first = bottom of the viewport).
     final bucket = _byConversation.putIfAbsent(conversationId, () => []);
-    bucket.insert(0, outgoingMessage);
+    bucket.insert(
+      0,
+      buildOutgoingTextMessage(
+        text: text,
+        humanUser: _humanUser,
+        messageId: tempId,
+      ),
+    );
+    _publish(conversationId);
+    _ref
+        .read(conversationListProvider.notifier)
+        .markAnswered(conversationId, text);
+    _deliver(conversationId, tempId, text);
+    return true;
+  }
 
-    if (conversationId == _ref.read(activeConversationIdProvider)) {
-      state = List<types.Message>.unmodifiable(bucket);
+  void _deliver(String conversationId, String id, String text) {
+    final client = _ref.read(openHumanClientProvider);
+    final inv = _invocations.remove(conversationId);
+    Future<void> send() async =>
+        client.sendReply(conversationId, text, invocationId: inv);
+    send().then(
+      (_) => _replace(
+        conversationId,
+        id,
+        (m) => m.status == types.Status.delivered
+            ? m
+            : m.copyWith(status: types.Status.sent),
+      ),
+      onError: (Object e) {
+        debugPrint('[Chat] send failed: $e');
+        if (inv != null) _invocations[conversationId] = inv;
+        _replace(
+          conversationId,
+          id,
+          (m) => m.copyWith(
+            status: types.Status.error,
+            metadata: {...?m.metadata, kFailure: _why(e)},
+          ),
+        );
+      },
+    );
+  }
+
+  String _why(Object e) {
+    final t = e.toString();
+    if (t.contains('not connected') || t.contains('StateError')) {
+      return '没连上，没发出去';
+    }
+    return '没发出去';
+  }
+
+  /// Send a failed reply again.
+  void retry(String messageId) {
+    final conversationId = _conversationForSend();
+    if (conversationId == null) return;
+    final bucket = _byConversation[conversationId];
+    final m = bucket?.where((m) => m.id == messageId).firstOrNull;
+    if (m is! types.TextMessage) return;
+    _replace(
+      conversationId,
+      messageId,
+      (m) => m.copyWith(
+        status: types.Status.sending,
+        metadata: {...?m.metadata}..remove(kFailure),
+      ),
+    );
+    _deliver(conversationId, messageId, m.text);
+  }
+
+  /// Tell the other person's tool I am done for now (`end.turn`).
+  bool endTurn() {
+    final conversationId = _conversationForSend();
+    if (conversationId == null) return false;
+    try {
+      _ref.read(openHumanClientProvider).endTurn(conversationId);
+    } catch (e) {
+      debugPrint('[Chat] end.turn failed: $e');
+      return false;
+    }
+    _ref.read(turnEndedProvider.notifier).state = {
+      ..._ref.read(turnEndedProvider),
+      conversationId,
+    };
+    return true;
+  }
+
+  /// Undo [endTurn] locally (keep replying into the same turn).
+  void reopenTurn() {
+    final conversationId = _conversationForSend();
+    if (conversationId == null) return;
+    _ref.read(turnEndedProvider.notifier).state = {
+      ..._ref.read(turnEndedProvider),
+    }..remove(conversationId);
+  }
+
+  void _setOutcome(String taskMessageId, TaskOutcome o) {
+    _ref.read(taskOutcomesProvider.notifier).state = {
+      ..._ref.read(taskOutcomesProvider),
+      taskMessageId: o,
+    };
+  }
+
+  /// Answer the task carried by [taskMessageId]: [text] and [files], or
+  /// a decline (text only, which the task contract reads as a refusal).
+  ///
+  /// The answer is checked here first (see `checkAnswer`), then by the
+  /// server; either refusal keeps the task open with the reason.
+  Future<TaskOutcome> answerTask({
+    required String taskMessageId,
+    required ApiTask task,
+    String text = '',
+    List<OutgoingFile> files = const [],
+    bool decline = false,
+  }) async {
+    final conversationId = _conversationForSend();
+    if (conversationId == null) {
+      return const TaskOutcome(TaskState.failed, note: '没有打开的对话');
+    }
+    if (!decline) {
+      final check = checkAnswer(task, text, [for (final f in files) f.draft]);
+      if (!check.ok) {
+        return TaskOutcome(TaskState.open, note: check.error);
+      }
+    }
+    final body = decline && text.trim().isEmpty ? '这个我做不了，抱歉。' : text.trim();
+    _setOutcome(taskMessageId, const TaskOutcome(TaskState.sending));
+
+    // Show my answer at once, the way it will read to them.
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final bucket = _byConversation.putIfAbsent(conversationId, () => []);
+    final ids = <String>[];
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (var i = 0; i < files.length; i++) {
+      final f = files[i];
+      final mime = f.mime ?? mimeForName(f.name);
+      final uri = 'data:$mime;base64,${base64Encode(f.bytes)}';
+      final id = 'outgoing_${stamp}_f$i';
+      ids.add(id);
+      final meta = {kAnswerOf: taskMessageId};
+      bucket.insert(
+        0,
+        mediaOf(mime: mime, name: f.name) == AnswerMedia.image
+            ? types.ImageMessage(
+                author: _humanUser,
+                createdAt: now,
+                id: id,
+                uri: uri,
+                name: f.name,
+                size: f.bytes.length,
+                status: types.Status.sending,
+                metadata: meta,
+              )
+            : types.FileMessage(
+                author: _humanUser,
+                createdAt: now,
+                id: id,
+                uri: uri,
+                name: f.name,
+                mimeType: mime,
+                size: f.bytes.length,
+                status: types.Status.sending,
+                metadata: meta,
+              ),
+      );
+    }
+    if (body.isNotEmpty) {
+      final id = 'outgoing_${stamp}_t';
+      ids.add(id);
+      bucket.insert(
+        0,
+        buildOutgoingTextMessage(
+          text: body,
+          humanUser: _humanUser,
+          messageId: id,
+          answerOf: taskMessageId,
+        ),
+      );
+    }
+    _publish(conversationId);
+
+    void mark(types.Status s, [String? why]) {
+      for (final id in ids) {
+        _replace(
+          conversationId,
+          id,
+          (m) => m.copyWith(
+            status: s,
+            metadata: {
+              ...?m.metadata,
+              if (why != null) kFailure: why,
+            },
+          ),
+        );
+      }
     }
 
     try {
-      unawaited(client.sendReply(conversationId, text));
-      return true;
-    } on StateError catch (e) {
-      // Socket is down: roll the optimistic message back. Showing it as
-      // sent would be a lie — the server never saw it.
-      debugPrint('[Chat] send failed, rolling back: $e');
-      bucket.removeWhere((m) => m.id == tempId);
-      if (conversationId == _ref.read(activeConversationIdProvider)) {
-        state = List<types.Message>.unmodifiable(bucket);
+      final r = await _ref.read(openHumanClientProvider).answer(
+            conversationId,
+            text: body,
+            attachments: [
+              for (final f in files)
+                oh.ReplyAttachment(
+                  name: f.name,
+                  bytes: f.bytes,
+                  mime: f.mime ?? mimeForName(f.name),
+                ),
+            ],
+            invocationId: _invocations.remove(conversationId),
+          );
+      final TaskOutcome out;
+      if (!r.ok) {
+        // Refused: take my answer back out, keep the task open.
+        bucket.removeWhere((m) => ids.contains(m.id));
+        _publish(conversationId);
+        out = TaskOutcome(
+          TaskState.open,
+          note: r.errorCode == 'bad_answer'
+              ? '服务器没收：${r.errorMessage ?? '格式不对'}'
+              : (r.errorMessage ?? '没发出去'),
+        );
+      } else if (r.abandoned) {
+        mark(types.Status.error, '对方已经不等了，没送到');
+        out = const TaskOutcome(
+          TaskState.expired,
+          note: '对方已经不等了，这份回答没送到。',
+        );
+      } else {
+        mark(types.Status.delivered);
+        out = TaskOutcome(decline ? TaskState.declined : TaskState.answered);
+        _ref
+            .read(conversationListProvider.notifier)
+            .markAnswered(conversationId, body.isEmpty ? '[文件]' : body);
       }
-      return false;
+      _setOutcome(taskMessageId, out);
+      return out;
+    } catch (e) {
+      debugPrint('[Chat] task answer failed: $e');
+      bucket.removeWhere((m) => ids.contains(m.id));
+      _publish(conversationId);
+      final out = TaskOutcome(TaskState.open, note: '没发出去：${_short(e)}');
+      _setOutcome(taskMessageId, out);
+      return out;
     }
   }
 
-  // ═════════════════════════════════════════════════════════════
-  //  Cleanup
-  // ═════════════════════════════════════════════════════════════
+  String _short(Object e) {
+    final t = e.toString();
+    if (t.contains('before connect')) return '还没连上服务器';
+    if (t.contains('SocketException') || t.contains('Connection')) {
+      return '网络连不上';
+    }
+    if (t.contains('Timeout')) return '超时了';
+    return '出错了';
+  }
 
   @override
   void dispose() {
@@ -358,12 +537,12 @@ class ChatController extends StateNotifier<List<types.Message>> {
     _rawEventSub?.cancel();
     _replyAckSub?.cancel();
     _connSub?.cancel();
+    _asyncSub?.cancel();
     _activeConvSub?.close();
     super.dispose();
   }
 }
 
-/// Provider for the [ChatController].
 final chatControllerProvider =
     StateNotifierProvider<ChatController, List<types.Message>>((ref) {
   return ChatController(ref);

@@ -22,7 +22,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/sdk_provider.dart';
-import '../../widgets/monogram.dart';
+import '../../widgets/avatar.dart';
 import '../../widgets/sheet.dart';
 
 class RoomPanel {
@@ -129,8 +129,8 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                   ListTile(
                     dense: true,
                     contentPadding: EdgeInsets.zero,
-                    leading: Monogram(
-                      m['display_name'] as String? ??
+                    leading: PersonAvatar(
+                      name: m['display_name'] as String? ??
                           m['human_id'] as String? ??
                           '?',
                       size: 26,

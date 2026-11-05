@@ -18,7 +18,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
 
-import 'package:openhuman_client/widgets/monogram.dart';
+import 'package:openhuman_client/widgets/avatar.dart';
 import 'package:openhuman_client/core/sdk_provider.dart';
 import 'package:openhuman_client/features/chat/conversation_sidebar.dart';
 
@@ -163,7 +163,7 @@ void main() {
     expect(_statusOf(tester), ConversationListStatus.ready);
     // And the recovered row replaces the error message.
     expect(find.text('加载超时'), findsNothing);
-    expect(find.byType(Monogram), findsOneWidget);
+    expect(find.byType(PersonAvatar), findsOneWidget);
   });
 
   testWidgets('an empty account reads as empty, not as loading', (
@@ -199,7 +199,7 @@ void main() {
 
     expect(client.fetchCount, 1);
     expect(find.text('等待连接'), findsNothing);
-    expect(find.byType(Monogram), findsOneWidget);
+    expect(find.byType(PersonAvatar), findsOneWidget);
   });
 
   test('a failed trash load does not read as an empty trash', () async {

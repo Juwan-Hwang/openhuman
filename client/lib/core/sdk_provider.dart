@@ -7,6 +7,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
 
+import 'identity.dart';
+import 'tasks.dart';
+
 // ═══════════════════════════════════════════════════════════════
 //  OpenHumanClient — singleton, app-lifetime
 // ═══════════════════════════════════════════════════════════════
@@ -69,7 +72,8 @@ final serverConfigProvider = StateProvider<ServerConfig>((ref) {
 /// Cached capability updates — always subscribed, even when the
 /// Runtime Panel is closed. This prevents missing capability events.
 final capabilityCacheProvider =
-    StateNotifierProvider<CapabilityCacheNotifier, oh.CapabilityUpdatedData?>((ref) {
+    StateNotifierProvider<CapabilityCacheNotifier, oh.CapabilityUpdatedData?>(
+        (ref) {
   return CapabilityCacheNotifier(ref);
 });
 
@@ -104,16 +108,24 @@ class ConversationInfo {
     this.isGroup = false,
     this.title,
     this.memberCount,
+    this.unread = 0,
+    this.waiting = false,
+    this.task,
+    this.origin,
+    this.lastFromMe = false,
   });
 
   final String id;
   final String agentId;
+
+  /// The name the server knows the caller by — whatever their key or
+  /// seat was called ("林晓的 Claude Code", "Codex"). [caller] splits it
+  /// into the person and the tool.
   final String agentName;
   String? lastMessage;
   DateTime? lastMessageTime;
 
-  /// Group room marker (§10.3): the sidebar shows a group icon and the
-  /// member count instead of a plain agent avatar.
+  /// Group room marker (§10.3).
   final bool isGroup;
 
   /// Room title (groups only).
@@ -122,9 +134,58 @@ class ConversationInfo {
   /// Participant count (groups only).
   final int? memberCount;
 
-  /// What the sidebar and app bar should call this conversation.
-  String get displayName => isGroup ? (title ?? agentName) : agentName;
+  /// Messages that arrived while this conversation was not open.
+  int unread;
+
+  /// The newest message is theirs and nobody has answered it yet.
+  bool waiting;
+
+  /// When the conversation carries an API task: what was asked for.
+  ApiTask? task;
+
+  /// The stateful API a conversation was opened for (assistants, agents,
+  /// chatkit, evals), from the request's `origin`.
+  String? origin;
+
+  /// The newest message is mine.
+  bool lastFromMe;
+
+  /// Who is on the other end.
+  Caller get caller => Caller.parse(agentName);
+
+  /// What the list and the header call this conversation.
+  String get displayName => isGroup ? (title ?? agentName) : caller.name;
+
+  ConversationInfo copyWith({
+    String? agentName,
+    String? title,
+    int? memberCount,
+  }) =>
+      ConversationInfo(
+        id: id,
+        agentId: agentId,
+        agentName: agentName ?? this.agentName,
+        lastMessage: lastMessage,
+        lastMessageTime: lastMessageTime,
+        isGroup: isGroup,
+        title: title ?? this.title,
+        memberCount: memberCount ?? this.memberCount,
+        unread: unread,
+        waiting: waiting,
+        task: task,
+        origin: origin,
+        lastFromMe: lastFromMe,
+      );
 }
+
+/// What a conversation's origin is called.
+String? originLabel(String? origin) => switch (origin) {
+      'assistants' => '来自 Assistants 线程',
+      'agents' => '来自 Agents 会话',
+      'chatkit' => '来自 ChatKit',
+      'evals' => '来自评测',
+      _ => null,
+    };
 
 /// Detail of one group room (members, roles, settings metadata), fetched
 /// on demand when a group conversation is open. `null` when the id is not
@@ -159,7 +220,8 @@ final roomOwnershipProvider = Provider.family<bool, String>((ref, roomId) {
 });
 
 final conversationListProvider =
-    StateNotifierProvider<ConversationListNotifier, ConversationListState>((ref) {
+    StateNotifierProvider<ConversationListNotifier, ConversationListState>(
+        (ref) {
   return ConversationListNotifier(ref);
 });
 
@@ -169,27 +231,50 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
 
     _msgSub = client.messages.listen((data) {
       final entries = state.entries;
-      final existing = entries
-          .where((c) => c.id == data.conversationId)
-          .firstOrNull;
-      if (existing != null) {
-        existing.lastMessage = data.text;
-        existing.lastMessageTime = DateTime.now();
-        state = state.copyWith(entries: [...entries]..sort(_newestFirst));
-      } else {
-        state = state.copyWith(
-          entries: [
-            ConversationInfo(
-              id: data.conversationId,
-              agentId: data.senderId,
-              agentName: data.senderName ?? data.senderId,
-              lastMessage: data.text,
-              lastMessageTime: DateTime.now(),
-            ),
-            ...entries,
-          ],
-        );
+      final me = _ref.read(currentHumanProvider)?.id ?? client.currentHuman?.id;
+      final mine = data.senderId == me;
+      final active = _ref.read(activeConversationIdProvider);
+      final existing =
+          entries.where((c) => c.id == data.conversationId).firstOrNull;
+      final c = existing ??
+          ConversationInfo(
+            id: data.conversationId,
+            agentId: data.senderId,
+            agentName: data.senderName ?? data.senderId,
+          );
+      c.lastMessage = data.text;
+      c.lastMessageTime = DateTime.now();
+      c.lastFromMe = mine;
+      c.waiting = !mine;
+      if (!mine && data.conversationId != active) c.unread++;
+      state = state.copyWith(
+        entries: existing == null
+            ? [c, ...entries]
+            : ([...entries]..sort(_newestFirst)),
+      );
+    });
+
+    // The request shape rides on the raw event: API tasks and where a
+    // conversation came from.
+    _rawSub = client.rawEvents.listen((e) {
+      if (e.eventType == 'conversation.started') {
+        // A new chat from someone: make sure the list knows it.
+        if (!state.entries.any((c) => c.id == e.conversationId)) retry();
+        return;
       }
+      if (e.eventType.startsWith('room.member_')) {
+        _ref.invalidate(roomInfoProvider(e.conversationId));
+        return;
+      }
+      if (e.eventType != 'message.received') return;
+      final r = e.data['request'];
+      if (r is! Map<String, dynamic>) return;
+      final hit =
+          state.entries.where((c) => c.id == e.conversationId).firstOrNull;
+      if (hit == null) return;
+      hit.task = ApiTask.fromRequest(r, receivedAt: DateTime.now()) ?? hit.task;
+      hit.origin = r['origin'] as String? ?? hit.origin;
+      state = state.copyWith(entries: [...state.entries]);
     });
 
     // Live events alone start the list empty — the past has to be asked
@@ -208,6 +293,7 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
   final Ref _ref;
   late final StreamSubscription _msgSub;
   late final StreamSubscription _connSub;
+  late final StreamSubscription _rawSub;
   bool _populated = false;
   bool _loading = false;
 
@@ -234,7 +320,7 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
           ConversationInfo(
             id: c.id,
             agentId: c.agentId ?? '',
-            agentName: c.agentName ?? c.agentId ?? 'Agent',
+            agentName: c.agentName ?? c.agentId ?? '',
             lastMessage: old?.lastMessage,
             // History knows when the last message landed even before
             // this session has seen one, so the row can show a time.
@@ -242,6 +328,11 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
             isGroup: c.isGroup,
             title: c.title,
             memberCount: c.memberCount,
+            unread: old?.unread ?? 0,
+            waiting: old?.waiting ?? false,
+            task: old?.task,
+            origin: old?.origin,
+            lastFromMe: old?.lastFromMe ?? false,
           ),
         );
       }
@@ -319,7 +410,30 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
 
   void selectConversation(String id) {
     _ref.read(activeConversationIdProvider.notifier).state = id;
+    markRead(id);
   }
+
+  /// Clear a conversation's unread count (it is open now).
+  void markRead(String id) {
+    final c = state.entries.where((c) => c.id == id).firstOrNull;
+    if (c == null || c.unread == 0) return;
+    c.unread = 0;
+    state = state.copyWith(entries: [...state.entries]);
+  }
+
+  /// Record that I answered: nobody is waiting on me here any more.
+  void markAnswered(String id, String text) {
+    final c = state.entries.where((c) => c.id == id).firstOrNull;
+    if (c == null) return;
+    c.waiting = false;
+    c.lastFromMe = true;
+    c.lastMessage = text.isEmpty ? c.lastMessage : text;
+    c.lastMessageTime = DateTime.now();
+    state = state.copyWith(entries: [...state.entries]..sort(_newestFirst));
+  }
+
+  /// How many people are waiting on me.
+  int get waitingCount => state.entries.where((c) => c.waiting).length;
 
   /// Save a conversation's messages on the server (see
   /// `OpenHumanClient.saveConversation`).
@@ -340,16 +454,7 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
     state = state.copyWith(
       entries: [
         for (final c in state.entries)
-          if (c.agentId == agentId)
-            ConversationInfo(
-              id: c.id,
-              agentId: c.agentId,
-              agentName: name,
-              lastMessage: c.lastMessage,
-              lastMessageTime: c.lastMessageTime,
-            )
-          else
-            c,
+          if (c.agentId == agentId) c.copyWith(agentName: name) else c,
       ],
     );
     _ref.invalidate(agentNamesProvider);
@@ -379,6 +484,7 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
   void dispose() {
     _msgSub.cancel();
     _connSub.cancel();
+    _rawSub.cancel();
     super.dispose();
   }
 }
@@ -490,7 +596,7 @@ class TrashListNotifier extends StateNotifier<TrashListState> {
             ConversationInfo(
               id: c.id,
               agentId: c.agentId ?? '',
-              agentName: c.agentName ?? c.agentId ?? 'Agent',
+              agentName: c.agentName ?? c.agentId ?? '',
             ),
         ],
         status: ConversationListStatus.ready,
@@ -514,16 +620,12 @@ class TrashListNotifier extends StateNotifier<TrashListState> {
 
   Future<bool> restore(String conversationId) async {
     final client = _ref.read(openHumanClientProvider);
-    final item = state.entries
-        .where((c) => c.id == conversationId)
-        .firstOrNull;
+    final item = state.entries.where((c) => c.id == conversationId).firstOrNull;
     final ok = await client.restoreConversation(conversationId);
     if (!ok || !mounted) return false;
 
     state = state.copyWith(
-      entries: state.entries
-          .where((c) => c.id != conversationId)
-          .toList(),
+      entries: state.entries.where((c) => c.id != conversationId).toList(),
     );
     // Put it straight back into the main list rather than refetching:
     // the entry is already to hand, and a refetch is another round trip
@@ -540,9 +642,7 @@ class TrashListNotifier extends StateNotifier<TrashListState> {
     if (!ok || !mounted) return false;
 
     state = state.copyWith(
-      entries: state.entries
-          .where((c) => c.id != conversationId)
-          .toList(),
+      entries: state.entries.where((c) => c.id != conversationId).toList(),
     );
     return true;
   }
