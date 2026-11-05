@@ -29,11 +29,10 @@ import '../../widgets/glyphs.dart';
 import '../../widgets/motion.dart';
 import 'message_adapter.dart';
 import 'agent_integration_sheet.dart';
-import 'agent_runtime_panel.dart';
+import 'details_panel.dart';
 import 'chat_controller.dart';
 import 'conversation_sidebar.dart';
 import 'room_composer.dart';
-import 'room_panel.dart';
 import 'stream/message_stream.dart';
 import '../../app/adaptive.dart';
 import '../../widgets/pane_divider.dart';
@@ -51,7 +50,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _showSidebar = false;
   bool _sidebarDecided = false;
   double _sidebarWidth = kSidebarDefault;
-  double _runtimeWidth = kRuntimeDefault;
+  double _runtimeWidth = kDetailsDefault;
+
+  /// Whose turn it is, kept for panes opened outside build (the sheet).
+  bool _waitingOnMe = false;
 
   @override
   void didChangeDependencies() {
@@ -149,6 +151,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final waitingOnMe = !_turnEnded &&
         messages.isNotEmpty &&
         messages.first.author.id != humanUser.id;
+    _waitingOnMe = waitingOnMe;
     final openTask = _openFileTask(messages, humanUser.id);
     final mentionNames = isGroup && activeConvId != null
         ? roomMemberNames(
@@ -162,9 +165,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             _focusSearch,
         SingleActivator(LogicalKeyboardKey.keyB, control: mod, meta: !mod):
             () => setState(() => _showSidebar = !_showSidebar),
-        if (showOwnerControls)
-          SingleActivator(LogicalKeyboardKey.keyI, control: mod, meta: !mod):
-              _toggleRuntime,
+        SingleActivator(LogicalKeyboardKey.keyI, control: mod, meta: !mod):
+            _toggleRuntime,
       },
     };
 
@@ -252,8 +254,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           children: [
             const SheetGrip(),
             Expanded(
-              child: AgentRuntimePanel(
+              child: DetailsPanel(
                 width: double.infinity,
+                waitingOnMe: _waitingOnMe,
                 onClose: () => Navigator.of(c).pop(),
               ),
             ),
@@ -331,16 +334,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             busy: _reconnecting,
             onTap: _reconnecting ? null : _reconnect,
           ),
-        if (isGroup && activeConvId != null)
-          _Action(
-            glyph: Glyph.people,
-            label: '群成员与设置',
-            onTap: () => RoomPanel.show(context, activeConvId),
-          ),
-        if (showOwnerControls)
-          _Action(
-            glyph: Glyph.details,
-            label: '对话详情',
+        _Action(
+            glyph: isGroup ? Glyph.people : Glyph.details,
+            label: isGroup ? '群聊详情' : '对话详情',
             shortcut: 'I',
             active: _showRuntimePanel && !fit.isCompact,
             onTap: _toggleRuntime,
@@ -457,7 +453,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       );
     }
 
-    final runtimeOpen = _showRuntimePanel && showOwnerControls;
+    final runtimeOpen = _showRuntimePanel && activeConvId != null;
     final runtimeInline = fit.isExpanded;
 
     return Scaffold(
@@ -494,8 +490,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       open: runtimeOpen,
                       onDismiss: () =>
                           setState(() => _showRuntimePanel = false),
-                      child: AgentRuntimePanel(
-                        width: kRuntimeDefault,
+                      child: DetailsPanel(
+                        width: kDetailsDefault,
+                        waitingOnMe: waitingOnMe,
                         onClose: () =>
                             setState(() => _showRuntimePanel = false),
                       ),
@@ -518,13 +515,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             invert: true,
                             onDrag: (dx) => setState(
                               () => _runtimeWidth = (_runtimeWidth + dx)
-                                  .clamp(kRuntimeMin, kRuntimeMax),
+                                  .clamp(kDetailsMin, kDetailsMax),
                             ),
                             onReset: () => setState(
-                              () => _runtimeWidth = kRuntimeDefault,
+                              () => _runtimeWidth = kDetailsDefault,
                             ),
                           ),
-                          AgentRuntimePanel(width: _runtimeWidth),
+                          DetailsPanel(
+                            width: _runtimeWidth,
+                            waitingOnMe: waitingOnMe,
+                          ),
                         ],
                       )
                     : const SizedBox.shrink(),
@@ -953,7 +953,7 @@ class _ConnBanner extends StatelessWidget {
 
 /// The details pane over the stream on a medium window: slides in from
 /// the right over a scrim; a tap on the scrim or Esc closes it.
-class _OverlayPane extends StatelessWidget {
+class _OverlayPane extends StatefulWidget {
   const _OverlayPane({
     required this.open,
     required this.onDismiss,
@@ -964,7 +964,19 @@ class _OverlayPane extends StatelessWidget {
   final Widget child;
 
   @override
+  State<_OverlayPane> createState() => _OverlayPaneState();
+}
+
+class _OverlayPaneState extends State<_OverlayPane> {
+  /// Built while open and while sliding away; a closed pane is not built
+  /// at all, so it never holds focus or answers a search for its text.
+  bool _built = false;
+
+  @override
   Widget build(BuildContext context) {
+    final open = widget.open;
+    final onDismiss = widget.onDismiss;
+    if (open) _built = true;
     return Positioned.fill(
       child: IgnorePointer(
         ignoring: !open,
@@ -989,7 +1001,10 @@ class _OverlayPane extends StatelessWidget {
                 curve: Mo.expo,
                 top: 0,
                 bottom: 0,
-                right: open ? 0 : -kRuntimeDefault - 24,
+                right: open ? 0 : -kDetailsDefault - 24,
+                onEnd: () {
+                  if (!widget.open && _built) setState(() => _built = false);
+                },
                 child: DecoratedBox(
                   decoration: const BoxDecoration(
                     border: Border(left: BorderSide(color: Dk.line2)),
@@ -997,7 +1012,9 @@ class _OverlayPane extends StatelessWidget {
                       BoxShadow(color: Dk.shadow, blurRadius: 40),
                     ],
                   ),
-                  child: Focus(autofocus: open, child: child),
+                  child: _built
+                      ? Focus(autofocus: open, child: widget.child)
+                      : const SizedBox(width: kDetailsDefault),
                 ),
               ),
             ],

@@ -127,7 +127,7 @@ void main() {
       find.byType(MaterialApp),
       matchesGoldenFile('shots/tablet.png'),
     );
-    await tester.tap(find.byTooltip('对话详情'));
+    await tester.tap(find.byTooltip('群聊详情'));
     await tester.pumpAndSettle();
     fake.caps.add(sampleCaps);
     await tester.pumpAndSettle();

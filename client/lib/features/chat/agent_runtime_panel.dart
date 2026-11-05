@@ -1,4 +1,5 @@
-/// Agent Runtime Panel — displays agent runtime metadata + tool invoker.
+/// The other side's tools — what their tool declared it can do — and the
+/// invoker behind each one, embedded in the details pane.
 ///
 /// Tools are **interactive**: click to expand a form, fill in parameters,
 /// click "Execute" → sends `tool.invoke` via WS → result displayed inline.
@@ -11,7 +12,6 @@ import 'package:flutter/material.dart';
 
 import 'tool_labels.dart';
 import 'package:openhuman_client/app/theme.dart';
-import 'package:openhuman_client/widgets/brand.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
@@ -78,174 +78,53 @@ class ToolInvocationNotifier
 //  Agent Runtime Panel
 // ═══════════════════════════════════════════════════════════════
 
-/// Runtime pane width limits; resizable from its left edge.
-const double kRuntimeMin = 300;
-const double kRuntimeMax = 520;
-const double kRuntimeDefault = 360;
+/// The tools a caller declared, their system prompt and model — the
+/// technical half of the details pane, embedded there under a fold.
+class RuntimeTools extends ConsumerWidget {
+  const RuntimeTools({super.key, required this.data});
 
-class AgentRuntimePanel extends ConsumerWidget {
-  const AgentRuntimePanel({
-    super.key,
-    this.width = kRuntimeDefault,
-    this.onClose,
-  });
-
-  final double width;
-
-  /// Shown as a close button when the pane floats (tablet overlay, phone
-  /// sheet) instead of sitting in the window.
-  final VoidCallback? onClose;
+  final oh.CapabilityUpdatedData data;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Use the always-on cache, not a lazy StreamProvider.
-    final data = ref.watch(capabilityCacheProvider);
     final theme = Theme.of(context);
-
-    return SizedBox(
-      width: width,
-      child: ColoredBox(
-        color: Dk.p1,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // ── Header ──
-            Container(
-              height: 72,
-              padding: const EdgeInsets.symmetric(horizontal: Sp.x5),
-              decoration: const BoxDecoration(
-                border: Border(bottom: BorderSide(color: Dk.line)),
-              ),
-              child: Row(
-                children: [
-                  Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('AI 运行信息', style: Ty.name.copyWith(fontSize: 14)),
-                      const SizedBox(height: 4),
-                      Text(
-                        data == null
-                            ? '等待 AI 上报'
-                            : '${data.capabilities.length} 个工具',
-                        style: Ty.meta,
-                      ),
-                    ],
-                  ),
-                  const Spacer(),
-                  if (onClose != null)
-                    IconButton(
-                      tooltip: '关闭',
-                      onPressed: onClose,
-                      icon: const Icon(
-                        Icons.close_rounded,
-                        size: 18,
-                        color: Dk.t2,
-                      ),
-                    )
-                  else
-                    Text('Ctrl I', style: Ty.meta.copyWith(color: Dk.t4)),
-                ],
-              ),
-            ),
-            Expanded(child: _buildContent(context, ref, data, theme)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildContent(
-    BuildContext context,
-    WidgetRef ref,
-    oh.CapabilityUpdatedData? data,
-    ThemeData theme,
-  ) {
-    if (data == null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(Sp.x6),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // The mark, dimmed and winking now and then: waiting.
-              const BrandMark(
-                size: 40,
-                wink: BrandWink.idle,
-                chevron: Dk.t3,
-                human: Dk.t4,
-              ),
-              const SizedBox(height: Sp.x4),
-              Text('还没有工具信息', style: Ty.small.copyWith(color: Dk.t2)),
-              const SizedBox(height: 6),
-              Text(
-                'AI 连上并上报工具后会显示在这里',
-                textAlign: TextAlign.center,
-                style: Ty.small.copyWith(fontSize: 12, color: Dk.t3),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    return ListView(
-      padding: const EdgeInsets.all(12),
+    final ctx = data.context;
+    final prompt = ctx?['system_prompt'];
+    final model = ctx?['model'];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _InfoRow(
-          label: 'AI 标识',
-          value: data.agentId,
-          icon: Icons.fingerprint,
-        ),
-        const SizedBox(height: 16),
-
-        // ── Tools ──
-        _SectionHeader(
-          title: '可用工具 · ${data.capabilities.length} 个',
-          icon: Icons.build_outlined,
-          theme: theme,
-        ),
-        const SizedBox(height: 8),
         if (data.capabilities.isEmpty)
-          Text('这个 AI 没有声明工具', style: Ty.small.copyWith(color: Dk.t2))
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: Sp.x2),
+            child: Text(
+              '对方的工具没有声明可调用的功能',
+              style: Ty.small.copyWith(color: Dk.t3, fontSize: 12),
+            ),
+          )
         else
-          ...data.capabilities.map((cap) => _ToolCard(
-                capability: cap,
-                theme: theme,
-                conversationId: ref.read(activeConversationIdProvider),
-              )),
-
-        const SizedBox(height: 16),
-
-        // ── System Prompt ──
-        if (data.context != null) ...[
-          _SectionHeader(
-            title: '系统提示词',
-            icon: Icons.description_outlined,
-            theme: theme,
-          ),
-          const SizedBox(height: 8),
-          if (data.context!['system_prompt'] != null)
-            _SystemPromptButton(
-              prompt: data.context!['system_prompt'].toString(),
+          for (final cap in data.capabilities)
+            _ToolCard(
+              capability: cap,
               theme: theme,
+              conversationId: ref.read(activeConversationIdProvider),
             ),
-          const SizedBox(height: 8),
-          if (data.context!['model'] != null)
-            _InfoRow(
-              label: '模型',
-              value: _extractModelName(data.context!['model']),
-              icon: Icons.memory,
-            ),
+        if (prompt != null) ...[
+          const SizedBox(height: Sp.x2),
+          _SystemPromptButton(prompt: prompt.toString(), theme: theme),
+        ],
+        if (model != null) ...[
+          const SizedBox(height: Sp.x3),
+          _InfoRow(
+            label: '对方用的模型',
+            value: model is Map
+                ? (model['name'] as String? ?? model.toString())
+                : model.toString(),
+            icon: Icons.memory,
+          ),
         ],
       ],
     );
-  }
-
-  String _extractModelName(dynamic model) {
-    if (model is String) return model;
-    if (model is Map) return model['name'] as String? ?? model.toString();
-    return model.toString();
   }
 }
 
@@ -1038,25 +917,6 @@ class _SystemPromptFullScreen extends StatelessWidget {
 // ═══════════════════════════════════════════════════════════════
 //  Small reusable widgets
 // ═══════════════════════════════════════════════════════════════
-
-class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({
-    required this.title,
-    required this.icon,
-    required this.theme,
-  });
-  final String title;
-  final IconData icon;
-  final ThemeData theme;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(left: 2, top: 4),
-      child: Text(title, style: Ty.label),
-    );
-  }
-}
 
 class _InfoRow extends StatelessWidget {
   const _InfoRow({

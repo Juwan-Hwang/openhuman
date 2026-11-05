@@ -213,6 +213,11 @@ final roomInfoProvider =
 
 /// Whether the signed-in human owns this room (§10.6: owner-only controls
 /// are guidance; the server enforces the rule regardless).
+/// A room member's id. The server calls it `participant_id`; older
+/// builds and fixtures said `human_id`.
+String? memberId(Map<String, dynamic> m) =>
+    (m['participant_id'] ?? m['human_id']) as String?;
+
 final roomOwnershipProvider = Provider.family<bool, String>((ref, roomId) {
   final room = ref.watch(roomInfoProvider(roomId)).valueOrNull;
   if (room == null) return false;
@@ -220,7 +225,7 @@ final roomOwnershipProvider = Provider.family<bool, String>((ref, roomId) {
   if (me == null) return false;
   final members = (room['members'] as List?) ?? const [];
   return members.whereType<Map<String, dynamic>>().any(
-        (m) => m['human_id'] == me && m['role'] == 'owner',
+        (m) => memberId(m) == me && m['role'] == 'owner',
       );
 });
 

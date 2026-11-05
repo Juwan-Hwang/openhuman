@@ -41,6 +41,14 @@ void main() {
     expect(rowPreview(_c(group: true)), '群聊');
   });
 
+  test('a remark name keeps the tool it came through', () {
+    final stored = remarkToStoredName('小周', 'Cursor');
+    final c = _c(name: stored);
+    expect(c.caller.name, '小周');
+    expect(c.caller.tool, 'Cursor');
+    expect(remarkToStoredName('小周', null), '小周');
+  });
+
   test('markdown is flattened to one line', () {
     expect(rowPreview(_c(last: '**看**\n```rust\nfn a() {}\n```')), '看 fn a() {}');
   });

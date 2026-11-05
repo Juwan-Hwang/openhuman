@@ -130,8 +130,8 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
                 .selectConversation(conv.id);
             widget.onPicked?.call();
           },
-          onRename: () => _askForName(context, ref, conv),
-          onDelete: () => _confirmDelete(context, ref, conv),
+          onRename: () => askForName(context, ref, conv),
+          onDelete: () => confirmTrash(context, ref, conv),
           onSave: () async {
             final ok = await ref
                 .read(conversationListProvider.notifier)
@@ -553,29 +553,41 @@ class _TrashSheetState extends ConsumerState<_TrashSheet> {
   }
 }
 
-/// Ask for a new agent name and apply it.
+/// Ask for a remark name — what this person is called here — and apply it.
 ///
-/// The name belongs to the agent, not the conversation, so every
-/// conversation with that agent changes — which is what the prompt says.
-Future<void> _askForName(
+/// The name belongs to the caller, not the conversation, so every
+/// conversation with them follows. The tool they write from is kept, so
+/// the header still says "经由 Cursor" after a rename.
+Future<void> askForName(
   BuildContext context,
   WidgetRef ref,
   ConversationInfo conversation,
 ) async {
-  final controller = TextEditingController(text: conversation.agentName);
+  final caller = conversation.caller;
+  final controller = TextEditingController(
+    text: caller.anonymous ? '' : caller.name,
+  );
+  controller.selection =
+      TextSelection(baseOffset: 0, extentOffset: controller.text.length);
   final name = await showDialog<String>(
     context: context,
     builder: (dialogContext) => AlertDialog(
-      title: const Text('重命名'),
-      content: TextField(
-        controller: controller,
-        autofocus: true,
-        maxLength: 64,
-        decoration: const InputDecoration(
-          labelText: '名称',
-          helperText: '这个 AI 的所有对话都会用这个名字',
+      title: const Text('改备注名'),
+      content: SizedBox(
+        width: 360,
+        child: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 32,
+          decoration: InputDecoration(
+            hintText: '例如：林晓',
+            helperText: caller.tool == null
+                ? '和这个人的所有对话都会用这个名字'
+                : '和这个人的所有对话都会用这个名字，「经由 ${caller.tool}」会保留',
+            helperMaxLines: 2,
+          ),
+          onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
         ),
-        onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
       ),
       actions: [
         TextButton(
@@ -592,21 +604,26 @@ Future<void> _askForName(
 
   final trimmed = name?.trim() ?? '';
   if (trimmed.isEmpty || !context.mounted) return;
+  if (trimmed == caller.name) return;
 
+  final stored = remarkToStoredName(trimmed, caller.tool);
   final ok = await ref
       .read(conversationListProvider.notifier)
-      .renameAgent(conversation.agentId, trimmed);
+      .renameAgent(conversation.agentId, stored);
 
   if (!context.mounted) return;
   ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: Text(ok ? '已重命名为「$trimmed」' : '重命名失败'),
-    ),
+    SnackBar(content: Text(ok ? '备注名已改为「$trimmed」' : '没改成，稍后再试')),
   );
 }
 
+/// The name the server keeps for a remark: the person, then the tool
+/// they write from, in the form [Caller.parse] reads back.
+String remarkToStoredName(String remark, String? tool) =>
+    tool == null ? remark : '$remark via $tool';
+
 /// Confirm before moving a conversation to the trash.
-Future<void> _confirmDelete(
+Future<void> confirmTrash(
   BuildContext context,
   WidgetRef ref,
   ConversationInfo conversation,
@@ -615,7 +632,7 @@ Future<void> _confirmDelete(
     context: context,
     builder: (dialogContext) => AlertDialog(
       title: const Text('移到回收站'),
-      content: Text('「${conversation.agentName}」的这段对话会被移到回收站，可以恢复。'),
+      content: Text('和「${conversation.displayName}」的这段对话会移到回收站，随时可以恢复。'),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -919,7 +936,7 @@ class _ConversationTileState extends State<_ConversationTile> {
         Offset.zero & overlay.size,
       ),
       items: const [
-        PopupMenuItem(value: 'rename', height: 36, child: Text('重命名')),
+        PopupMenuItem(value: 'rename', height: 36, child: Text('改备注名')),
         // Messages are not kept on the server unless saved.
         PopupMenuItem(value: 'save', height: 36, child: Text('保存会话记录')),
         PopupMenuDivider(height: 8),

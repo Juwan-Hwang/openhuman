@@ -119,7 +119,9 @@ void main() {
       );
     }
 
-    // A tool expanded, and the row menu of a conversation.
+    // The technical fold opened, a tool expanded, and the row menu.
+    await tester.tap(find.text('技术详情'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('读取文件'));
     await tester.pumpAndSettle();
     // The row menu shows on hover.
@@ -138,6 +140,16 @@ void main() {
     }
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pumpAndSettle();
+
+    // The same pane on a room: members, invite, settings.
+    await _open(tester, container, 'room_1');
+    if (enabled) {
+      await expectLater(
+        find.byType(ChatScreen),
+        matchesGoldenFile('shots/chat_room_details.png'),
+      );
+    }
+
     await tester.tap(find.byTooltip('接入指南'));
     await tester.pumpAndSettle();
     if (enabled) {

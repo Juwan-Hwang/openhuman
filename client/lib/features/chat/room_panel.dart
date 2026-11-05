@@ -131,12 +131,12 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                     contentPadding: EdgeInsets.zero,
                     leading: PersonAvatar(
                       name: m['display_name'] as String? ??
-                          m['human_id'] as String? ??
+                          memberId(m) ??
                           '?',
                       size: 26,
                     ),
                     title: Text(m['display_name'] as String? ??
-                        m['human_id'] as String? ??
+                        memberId(m) ??
                         '?'),
                     trailing: m['role'] == 'owner'
                         ? Container(
