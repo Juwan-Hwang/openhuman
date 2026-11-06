@@ -43,6 +43,8 @@ flutter:
     # Windows wants an .ico for the tray, and the runner's own icon is
     # not copied into the build output — so it ships as an asset.
     - assets/tray_icon.ico
+    # Linux tray (AppIndicator) takes a PNG.
+    - assets/tray_icon.png
     - assets/brand/
   fonts:
     - family: Manrope

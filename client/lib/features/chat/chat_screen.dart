@@ -30,7 +30,6 @@ import '../../widgets/controls.dart';
 import '../../widgets/glyphs.dart';
 import '../../widgets/motion.dart';
 import '../../widgets/phone_stack.dart';
-import '../../widgets/window_chrome.dart';
 import 'shortcuts_sheet.dart';
 import 'message_adapter.dart';
 import 'share_sheet.dart';
@@ -89,8 +88,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         primaryColor: 0xFF16171C,
       ),
     );
-    // The desktop window (taskbar, Alt+Tab) on Windows.
-    if (WindowChrome.enabled) {
+    // The desktop window (taskbar, Alt+Tab) on Windows and Linux.
+    if (TrayService.instance.active) {
       windowManager.setTitle(n > 0 ? '($n) OpenHuman' : 'OpenHuman');
     }
   }

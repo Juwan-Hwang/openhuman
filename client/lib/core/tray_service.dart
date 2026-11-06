@@ -25,28 +25,35 @@ class TrayService with WindowListener, TrayListener {
 
   bool _initialised = false;
 
+  /// True on a desktop where this service owns the window (Windows, Linux).
+  bool get active => _initialised;
+
   /// True once the user has asked to really quit from the tray menu.
   bool _quitting = false;
 
   /// Wires the window listener, the tray and its menu.
   Future<void> initialize() async {
-    if (_initialised || kIsWeb || !Platform.isWindows) return;
+    if (_initialised || kIsWeb) return;
+    if (!Platform.isWindows && !Platform.isLinux) return;
     _initialised = true;
-    WindowChrome.enabled = true;
+    final windows = Platform.isWindows;
+    // Windows gets the console's own title bar; Linux keeps the
+    // desktop's, which users there expect to match their theme.
+    WindowChrome.enabled = windows;
 
     await windowManager.ensureInitialized();
 
     // The console draws its own title bar (widgets/window_chrome.dart):
     // the system caption is hidden, and the floor colour is set before
     // the first frame so the window never flashes white.
-    const options = WindowOptions(
-      size: Size(1320, 840),
-      minimumSize: Size(880, 560),
+    final options = WindowOptions(
+      size: const Size(1320, 840),
+      minimumSize: windows ? const Size(880, 560) : const Size(380, 560),
       center: true,
       title: 'OpenHuman',
       backgroundColor: Dk.bg,
-      titleBarStyle: TitleBarStyle.hidden,
-      windowButtonVisibility: false,
+      titleBarStyle: windows ? TitleBarStyle.hidden : TitleBarStyle.normal,
+      windowButtonVisibility: !windows,
     );
     await windowManager.waitUntilReadyToShow(options, () async {
       await windowManager.show();
@@ -81,12 +88,18 @@ class TrayService with WindowListener, TrayListener {
   /// the window would then have no way back.
   Future<void> _setTrayIcon() async {
     final exeDir = p.dirname(Platform.resolvedExecutable);
-    final candidates = <String>[
-      p.join(exeDir, 'data', 'flutter_assets', 'assets', 'tray_icon.ico'),
-      p.join(exeDir, 'app_icon.ico'),
-      'assets/tray_icon.ico',
-      'windows/runner/resources/app_icon.ico',
-    ];
+    final candidates = Platform.isWindows
+        ? <String>[
+            p.join(exeDir, 'data', 'flutter_assets', 'assets', 'tray_icon.ico'),
+            p.join(exeDir, 'app_icon.ico'),
+            'assets/tray_icon.ico',
+            'windows/runner/resources/app_icon.ico',
+          ]
+        // Linux bundles assets under data/flutter_assets beside the binary.
+        : <String>[
+            p.join(exeDir, 'data', 'flutter_assets', 'assets', 'tray_icon.png'),
+            'assets/tray_icon.png',
+          ];
 
     for (final candidate in candidates) {
       if (File(candidate).existsSync()) {
@@ -136,7 +149,8 @@ class TrayService with WindowListener, TrayListener {
   @override
   void onTrayIconMouseDown() async {
     // A single click is enough on Windows, where the tray icon is
-    // always visible rather than tucked into a menu bar.
+    // always visible. On Linux the indicator opens its menu instead,
+    // which carries 打开 OpenHuman.
     await _showWindow();
   }
 
