@@ -239,7 +239,7 @@ class _TaskCardState extends ConsumerState<TaskCard> {
         borderRadius: BorderRadius.circular(Rd.xl),
         border: Border.all(color: hot ? Dk.signalEdge : Dk.line),
         boxShadow: hot
-            ? const [
+            ? [
                 BoxShadow(
                     color: Dk.signalGlow, blurRadius: 28, spreadRadius: -6),
               ]
@@ -261,13 +261,13 @@ class _TaskCardState extends ConsumerState<TaskCard> {
                 ],
               ),
             ),
-          const Divider(height: 1, color: Dk.line),
+          Divider(height: 1, color: Dk.line),
           Padding(
             padding: const EdgeInsets.fromLTRB(Sp.x4, Sp.x3, Sp.x4, Sp.x3),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('原始请求', style: Ty.label),
+                Text('原始请求', style: Ty.label),
                 const SizedBox(height: Sp.x15),
                 _Folded(text: widget.prompt),
                 if (widget.inputs.isNotEmpty) ...[
@@ -309,10 +309,11 @@ class _TaskCardState extends ConsumerState<TaskCard> {
   Widget _answerArea(BuildContext context, TaskState state) {
     final sending = state == TaskState.sending;
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: Dk.p1,
         border: Border(top: BorderSide(color: Dk.line)),
-        borderRadius: BorderRadius.vertical(bottom: Radius.circular(Rd.xl)),
+        borderRadius:
+            const BorderRadius.vertical(bottom: Radius.circular(Rd.xl)),
       ),
       padding: const EdgeInsets.fromLTRB(Sp.x4, Sp.x3, Sp.x4, Sp.x3),
       child: Column(
@@ -320,7 +321,7 @@ class _TaskCardState extends ConsumerState<TaskCard> {
         children: [
           Row(
             children: [
-              const Text('回复', style: Ty.label),
+              Text('回复', style: Ty.label),
               const Spacer(),
               if (t.media == AnswerMedia.json &&
                   t.kind != TaskKind.vectorSearch)

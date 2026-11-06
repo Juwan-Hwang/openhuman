@@ -8,7 +8,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openhuman_client/app/adaptive.dart';
-import 'package:openhuman_client/app/theme.dart';
 import 'package:openhuman_client/core/sdk_provider.dart';
 import 'package:openhuman_client/features/auth/auth_screen.dart';
 import 'package:openhuman_client/features/chat/chat_screen.dart';
@@ -57,7 +56,7 @@ Future<(FakeClient, ProviderContainer)> _boot(
   await tester.pumpWidget(UncontrolledProviderScope(
     container: container,
     child: MaterialApp(
-      theme: darkTheme,
+      theme: shotTheme(),
       debugShowCheckedModeBanner: false,
       home: const WindowChrome(child: ChatScreen()),
     ),
@@ -95,14 +94,14 @@ void main() {
     await settleImages(tester);
     await expectLater(
       find.byType(MaterialApp),
-      matchesGoldenFile('shots/phone_list_large.png'),
+      matchesGoldenFile(shotPath('phone_list_large.png')),
     );
     await tester.tap(find.byKey(const ValueKey('conv-cnv_zhou')));
     await tester.pumpAndSettle();
     await _open(tester, container, 'cnv_zhou');
     await expectLater(
       find.byType(MaterialApp),
-      matchesGoldenFile('shots/phone_chat_large.png'),
+      matchesGoldenFile(shotPath('phone_chat_large.png')),
     );
   }, skip: !enabled);
 
@@ -118,7 +117,7 @@ void main() {
     await settleImages(tester);
     await expectLater(
       find.byType(MaterialApp),
-      matchesGoldenFile('shots/phone_list.png'),
+      matchesGoldenFile(shotPath('phone_list.png')),
     );
 
     await tester.tap(find.byKey(const ValueKey('conv-cnv_zhou')));
@@ -126,7 +125,7 @@ void main() {
     await _open(tester, container, 'cnv_zhou');
     await expectLater(
       find.byType(MaterialApp),
-      matchesGoldenFile('shots/phone_chat.png'),
+      matchesGoldenFile(shotPath('phone_chat.png')),
     );
 
     await tester.tap(find.byTooltip('对话详情'));
@@ -135,7 +134,7 @@ void main() {
     await tester.pumpAndSettle();
     await expectLater(
       find.byType(MaterialApp),
-      matchesGoldenFile('shots/phone_runtime.png'),
+      matchesGoldenFile(shotPath('phone_runtime.png')),
     );
   }, skip: !enabled);
 
@@ -150,7 +149,7 @@ void main() {
     await _open(tester, container, 'room_1');
     await expectLater(
       find.byType(MaterialApp),
-      matchesGoldenFile('shots/tablet.png'),
+      matchesGoldenFile(shotPath('tablet.png')),
     );
     await tester.tap(find.byTooltip('群聊详情'));
     await tester.pumpAndSettle();
@@ -158,7 +157,7 @@ void main() {
     await tester.pumpAndSettle();
     await expectLater(
       find.byType(MaterialApp),
-      matchesGoldenFile('shots/tablet_runtime.png'),
+      matchesGoldenFile(shotPath('tablet_runtime.png')),
     );
   }, skip: !enabled);
 
@@ -174,7 +173,7 @@ void main() {
     await tester.pumpAndSettle(const Duration(milliseconds: 100));
     await expectLater(
       find.byType(MaterialApp),
-      matchesGoldenFile('shots/empty_offline.png'),
+      matchesGoldenFile(shotPath('empty_offline.png')),
     );
   }, skip: !enabled);
 
@@ -192,7 +191,7 @@ void main() {
     await tester.pumpWidget(UncontrolledProviderScope(
       container: container,
       child: MaterialApp(
-        theme: darkTheme,
+        theme: shotTheme(),
         debugShowCheckedModeBanner: false,
         home: const AuthScreen(),
       ),
@@ -201,7 +200,7 @@ void main() {
     await settleImages(tester);
     await expectLater(
       find.byType(MaterialApp),
-      matchesGoldenFile('shots/auth_phone.png'),
+      matchesGoldenFile(shotPath('auth_phone.png')),
     );
   }, skip: !enabled);
 }

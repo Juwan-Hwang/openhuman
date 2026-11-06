@@ -285,7 +285,7 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
                     turns: _expanded ? 0.5 : 0,
                     duration: Mo.base,
                     curve: Mo.expo,
-                    child: const Icon(
+                    child: Icon(
                       Icons.expand_more_rounded,
                       size: 18,
                       color: Dk.t3,
@@ -297,7 +297,7 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
           ),
           // ── Expanded form ──
           if (_expanded) ...[
-            const Divider(height: 1, color: Dk.line),
+            Divider(height: 1, color: Dk.line),
             Padding(
               padding: const EdgeInsets.all(12),
               child: Column(
@@ -861,7 +861,7 @@ class _SystemPromptButton extends StatelessWidget {
       width: double.infinity,
       child: OutlinedButton.icon(
         onPressed: () => _openFullScreen(context),
-        icon: const Icon(Icons.description_outlined, size: 18, color: Dk.t2),
+        icon: Icon(Icons.description_outlined, size: 18, color: Dk.t2),
         label: Text('显示全部（$lineCount 行）'),
         style: OutlinedButton.styleFrom(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),

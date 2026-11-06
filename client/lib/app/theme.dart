@@ -2,9 +2,8 @@
 ///
 /// Values come from `tokens.dart`; this file only maps them onto
 /// Material components so stock widgets (dialogs, menus, fields) look
-/// native to the console. The console is dark only: it is a desktop
-/// instrument that stays open all day, and its one loud colour, the
-/// signal orange, only reads against the dark floor.
+/// native to the console. Light and dark share every shape;
+/// only the palette changes.
 library;
 
 import 'package:flutter/material.dart';
@@ -197,8 +196,8 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
 
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
-        backgroundColor: isDark ? Dk.t1Soft : Dk.p2,
-        foregroundColor: isDark ? Dk.bg : Dk.t1,
+        backgroundColor: Dk.t1Soft,
+        foregroundColor: Dk.bg,
         overlayColor: overlay,
         elevation: 0,
         minimumSize: const Size(0, 40),
@@ -268,7 +267,7 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
 
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: isDark ? Dk.p2 : Dk.mineCode,
+      fillColor: Dk.p2,
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       hintStyle: TextStyle(
         fontFamily: _sans,
@@ -294,14 +293,14 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
 
     dialogTheme: DialogThemeData(
       elevation: 24,
-      shadowColor: const Color(0xCC000000),
+      shadowColor: Dk.shadow,
       backgroundColor: Dk.p1,
       surfaceTintColor: Colors.transparent,
-      barrierColor: const Color(0xB3050506),
+      barrierColor: Dk.scrim,
       insetPadding: const EdgeInsets.all(Sp.x8),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(Rd.xl),
-        side: const BorderSide(color: Dk.line2),
+        side: BorderSide(color: Dk.line2),
       ),
       titleTextStyle: TextStyle(
         fontFamily: _sans,
@@ -328,24 +327,24 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
         fontFamily: _sans,
         fontFamilyFallback: _fallback,
         fontSize: 13,
-        color: isDark ? Dk.t1 : Dk.t1,
+        color: Dk.t1,
       ),
       width: 420,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(Rd.md),
-        side: const BorderSide(color: Dk.line2),
+        side: BorderSide(color: Dk.line2),
       ),
     ),
 
     popupMenuTheme: PopupMenuThemeData(
       elevation: 6,
-      shadowColor: const Color(0x66000000),
+      shadowColor: Dk.shadow,
       color: Dk.p2,
       surfaceTintColor: Colors.transparent,
       menuPadding: const EdgeInsets.all(4),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(Rd.md),
-        side: const BorderSide(color: Dk.line2),
+        side: BorderSide(color: Dk.line2),
       ),
       textStyle: TextStyle(
         fontFamily: _sans,
@@ -355,15 +354,15 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
       ),
     ),
 
-    bottomSheetTheme: const BottomSheetThemeData(
+    bottomSheetTheme: BottomSheetThemeData(
       backgroundColor: Dk.p1,
       surfaceTintColor: Colors.transparent,
-      modalBarrierColor: Color(0xB3050506),
+      modalBarrierColor: const Color(0xB3050506),
       // Sheets that want a handle draw their own.
       showDragHandle: false,
-      constraints: BoxConstraints(maxWidth: 640),
+      constraints: const BoxConstraints(maxWidth: 640),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(Rd.xl)),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(Rd.xl)),
         side: BorderSide(color: Dk.line2),
       ),
     ),
@@ -385,7 +384,7 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
 
     // Selection is inverted rather than tinted, as in Aevum.
     textSelectionTheme: TextSelectionThemeData(
-      selectionColor: (isDark ? Dk.t1 : Dk.bg).withValues(alpha: 0.18),
+      selectionColor: Dk.t1.withValues(alpha: isDark ? 0.18 : 0.14),
       cursorColor: Dk.signal,
       selectionHandleColor: Dk.signal,
     ),
@@ -397,39 +396,42 @@ ThemeData _base(Brightness brightness, ColorScheme scheme) {
   );
 }
 
-/// The dark theme — the only one the console ships.
-final ThemeData darkTheme = _base(
-  Brightness.dark,
-  const ColorScheme(
-    brightness: Brightness.dark,
-    surface: Dk.bg,
-    onSurface: Dk.t1,
-    surfaceContainerLowest: Dk.bg,
-    surfaceContainerLow: Dk.p1,
-    surfaceContainer: Dk.p1,
-    surfaceContainerHigh: Dk.p2,
-    surfaceContainerHighest: Dk.p3,
-    onSurfaceVariant: Dk.t2,
-    primary: Dk.t1,
-    onPrimary: Dk.bg,
-    primaryContainer: Dk.p3,
-    onPrimaryContainer: Dk.t1,
-    secondary: Dk.p3,
-    onSecondary: Dk.t1,
-    secondaryContainer: Dk.p3,
-    onSecondaryContainer: Dk.t1,
-    tertiary: Dk.signal,
-    onTertiary: Dk.signalInk,
-    tertiaryContainer: Dk.signalSoft,
-    onTertiaryContainer: Dk.t1,
-    error: Dk.danger,
-    onError: Dk.bg,
-    outline: Dk.line2,
-    outlineVariant: Dk.line,
-    shadow: Color(0x66000000),
-    scrim: Color(0x99000000),
-  ),
-);
+/// The theme for the palette [Dk] currently draws with.
+ThemeData themeFor(Brightness brightness) {
+  Dk.use(brightness);
+  final dark = brightness == Brightness.dark;
+  return _base(
+    brightness,
+    ColorScheme(
+      brightness: brightness,
+      surface: Dk.bg,
+      onSurface: Dk.t1,
+      surfaceContainerLowest: Dk.bg,
+      surfaceContainerLow: Dk.p1,
+      surfaceContainer: Dk.p1,
+      surfaceContainerHigh: Dk.p2,
+      surfaceContainerHighest: Dk.p3,
+      onSurfaceVariant: Dk.t2,
+      primary: Dk.t1,
+      onPrimary: Dk.bg,
+      primaryContainer: Dk.p3,
+      onPrimaryContainer: Dk.t1,
+      secondary: Dk.p3,
+      onSecondary: Dk.t1,
+      secondaryContainer: Dk.p3,
+      onSecondaryContainer: Dk.t1,
+      tertiary: Dk.signal,
+      onTertiary: Dk.signalInk,
+      tertiaryContainer: Dk.signalSoft,
+      onTertiaryContainer: Dk.t1,
+      error: Dk.danger,
+      onError: Dk.bg,
+      outline: Dk.line2,
+      outlineVariant: Dk.line,
+      shadow: dark ? const Color(0x66000000) : const Color(0x2416171C),
+      scrim: dark ? const Color(0x99000000) : const Color(0x5216171C),
+    ),
+  );
+}
 
-/// Kept for callers that still name it; the console is dark only.
-final ThemeData lightTheme = darkTheme;
+ThemeData get darkTheme => themeFor(Brightness.dark);

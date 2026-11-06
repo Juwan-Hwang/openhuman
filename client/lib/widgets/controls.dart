@@ -258,7 +258,7 @@ class DkIconButton extends StatelessWidget {
               borderRadius: BorderRadius.circular(Rd.md),
             ),
             child: busy
-                ? const SizedBox.square(
+                ? SizedBox.square(
                     dimension: Sz.glyphSm,
                     child: CircularProgressIndicator(
                       strokeWidth: Sz.stroke,
@@ -427,14 +427,15 @@ class Kbd extends StatelessWidget {
 
 /// A small rounded label: "经由 Claude Code", a session tag, "群主".
 class Tag extends StatelessWidget {
-  const Tag(
+  Tag(
     this.text, {
     super.key,
     this.mono = false,
-    this.color = Dk.t3,
-    this.floor = Dk.p3,
+    Color? color,
+    Color? floor,
     this.glyph,
-  });
+  })  : color = color ?? Dk.t3,
+        floor = floor ?? Dk.p3;
   final String text;
   final bool mono;
   final Color color;

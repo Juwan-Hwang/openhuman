@@ -19,14 +19,15 @@ import '../app/tokens.dart';
 
 /// The symbol: chevron + person.
 class BrandMark extends StatefulWidget {
-  const BrandMark({
+  BrandMark({
     super.key,
     this.size = 24,
     this.wink = BrandWink.none,
-    this.chevron = Dk.paper,
-    this.human = Dk.apricot,
+    Color? chevron,
+    Color? human,
     this.tile = false,
-  });
+  })  : chevron = chevron ?? Dk.paper,
+        human = human ?? Dk.apricot;
 
   /// Edge of the square the mark is fitted into.
   final double size;
@@ -271,7 +272,7 @@ class _MarkPainter extends CustomPainter {
       old.small != small;
 }
 
-/// The custom-drawn lowercase wordmark, in Paper.
+/// The custom-drawn lowercase wordmark: Paper on dark, Ink on light.
 class BrandWordmark extends StatelessWidget {
   const BrandWordmark({super.key, this.height = 18});
   final double height;
@@ -279,7 +280,9 @@ class BrandWordmark extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Image.asset(
-      'assets/brand/openhuman-wordmark-paper.png',
+      Dk.light
+          ? 'assets/brand/openhuman-wordmark-ink.png'
+          : 'assets/brand/openhuman-wordmark-paper.png',
       height: height,
       filterQuality: FilterQuality.medium,
       semanticLabel: 'OpenHuman',

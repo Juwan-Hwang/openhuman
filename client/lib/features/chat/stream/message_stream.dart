@@ -678,10 +678,10 @@ class _BubbleState extends State<_Bubble> {
                 ? text
                 : ShaderMask(
                     blendMode: BlendMode.dstIn,
-                    shaderCallback: (b) => const LinearGradient(
+                    shaderCallback: (b) => LinearGradient(
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
-                      stops: [0.7, 1],
+                      stops: const [0.7, 1],
                       colors: [Dk.t1, Colors.transparent],
                     ).createShader(b),
                     child: ConstrainedBox(
@@ -714,7 +714,7 @@ class _BubbleState extends State<_Bubble> {
         borderRadius: radius,
         border: Border.all(color: edge),
         boxShadow: widget.hot
-            ? const [
+            ? [
                 BoxShadow(
                   color: Dk.signalGlow,
                   blurRadius: 24,
@@ -775,7 +775,7 @@ class _DeliveryLine extends StatelessWidget {
       line = Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const GlyphIcon(Glyph.alert, size: Sz.glyphXs, color: Dk.danger),
+          GlyphIcon(Glyph.alert, size: Sz.glyphXs, color: Dk.danger),
           const SizedBox(width: Sp.x15),
           Flexible(
             child: Text(
@@ -830,7 +830,7 @@ class _DayMarker extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final g = StreamScope.of(context);
-    const rule = Expanded(child: Divider(height: 1, color: Dk.line));
+    final rule = Expanded(child: Divider(height: 1, color: Dk.line));
     return Padding(
       padding: EdgeInsets.fromLTRB(g.side, Sp.x6, g.side, Sp.x1),
       child: Row(
@@ -879,7 +879,7 @@ class _JumpPill extends StatelessWidget {
           color: hasNew ? (s.lit ? Dk.signalCode : Dk.signal) : Dk.p3,
           borderRadius: BorderRadius.circular(Rd.pill),
           border: Border.all(color: hasNew ? Dk.signal : Dk.line2),
-          boxShadow: const [BoxShadow(color: Dk.shadow, blurRadius: 18)],
+          boxShadow: [BoxShadow(color: Dk.shadow, blurRadius: 18)],
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -912,7 +912,7 @@ class _EmptyStream extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const SizedBox(
+            SizedBox(
               width: 220,
               height: 150,
               child: BrandHalo(

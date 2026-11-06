@@ -12,8 +12,8 @@ class SheetGrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.only(top: 10, bottom: 6),
+    return Padding(
+      padding: const EdgeInsets.only(top: 10, bottom: 6),
       child: Center(
         child: SizedBox(
           width: 36,
@@ -21,7 +21,7 @@ class SheetGrip extends StatelessWidget {
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: Dk.line2,
-              borderRadius: BorderRadius.all(Radius.circular(Rd.pill)),
+              borderRadius: const BorderRadius.all(Radius.circular(Rd.pill)),
             ),
           ),
         ),
@@ -46,9 +46,10 @@ Future<T?> showDkSheet<T>(
     builder: (c) => Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(c).bottom),
       child: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           color: Dk.p1,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(Rd.xl)),
+          borderRadius:
+              const BorderRadius.vertical(top: Radius.circular(Rd.xl)),
           // A uniform hairline: Flutter cannot round a border whose
           // sides differ in colour.
           border: Border.fromBorderSide(BorderSide(color: Dk.line2)),

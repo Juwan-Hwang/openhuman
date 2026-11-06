@@ -231,15 +231,16 @@ List<InlineSpan> _mentionSplit(
 
 /// Renders a message's text.
 class RichMessageText extends StatelessWidget {
-  const RichMessageText(
+  RichMessageText(
     this.text, {
     super.key,
     required this.style,
-    this.codeInk = Dk.signalCode,
-    this.codeFloor = Dk.p4,
+    Color? codeInk,
+    Color? codeFloor,
     this.mentions = const [],
     this.inverted = false,
-  });
+  })  : codeInk = codeInk ?? Dk.signalCode,
+        codeFloor = codeFloor ?? Dk.p4;
 
   final String text;
   final TextStyle style;
@@ -365,7 +366,7 @@ class _CodePanelState extends State<CodePanel> {
         children: [
           Container(
             padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               color: Dk.codeHead,
               border: Border(bottom: BorderSide(color: Dk.line)),
             ),
@@ -507,7 +508,7 @@ class _FoldBar extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: Sp.x15),
         decoration: BoxDecoration(
           color: s.lit ? Dk.p3 : Dk.codeHead,
-          border: const Border(top: BorderSide(color: Dk.line)),
+          border: Border(top: BorderSide(color: Dk.line)),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,

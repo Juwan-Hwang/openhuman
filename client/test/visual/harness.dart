@@ -17,6 +17,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:openhuman_client/app/theme.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
 
@@ -421,3 +422,12 @@ Future<void> settleImages(WidgetTester tester) async {
   });
   await tester.pump();
 }
+
+
+/// `OH_LIGHT=1` draws the shots with the light palette into shots/light/.
+bool get shotLight => Platform.environment['OH_LIGHT'] == '1';
+
+ThemeData shotTheme() =>
+    themeFor(shotLight ? Brightness.light : Brightness.dark);
+
+String shotPath(String name) => shotLight ? 'shots/light/$name' : 'shots/$name';

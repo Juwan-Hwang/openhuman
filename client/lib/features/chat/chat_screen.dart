@@ -858,7 +858,7 @@ class _TopBar extends StatelessWidget {
       return Container(
         height: Sz.barCompact,
         padding: const EdgeInsets.symmetric(horizontal: Sp.x1),
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           border: Border(bottom: BorderSide(color: Dk.line)),
         ),
         child: Row(
@@ -882,7 +882,7 @@ class _TopBar extends StatelessWidget {
     return Container(
       height: Sz.bar,
       padding: const EdgeInsets.only(left: Sp.x3, right: Sp.x4),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: Dk.line)),
       ),
       child: Row(
@@ -952,7 +952,7 @@ class _Overflow extends StatelessWidget {
   Widget build(BuildContext context) {
     return PopupMenuButton<int>(
       tooltip: '更多',
-      icon: const GlyphIcon(Glyph.more, size: Sz.glyph, color: Dk.t2),
+      icon: GlyphIcon(Glyph.more, size: Sz.glyph, color: Dk.t2),
       position: PopupMenuPosition.under,
       onSelected: (i) => items[i].onTap?.call(),
       itemBuilder: (c) => [
@@ -1123,7 +1123,7 @@ class _OverlayPaneState extends State<_OverlayPane> {
                   child: AnimatedOpacity(
                     duration: Mo.base,
                     opacity: open ? 1 : 0,
-                    child: const ColoredBox(color: Dk.scrim),
+                    child: ColoredBox(color: Dk.scrim),
                   ),
                 ),
               ),
@@ -1137,7 +1137,7 @@ class _OverlayPaneState extends State<_OverlayPane> {
                   if (!widget.open && _built) setState(() => _built = false);
                 },
                 child: DecoratedBox(
-                  decoration: const BoxDecoration(
+                  decoration: BoxDecoration(
                     border: Border(left: BorderSide(color: Dk.line2)),
                     boxShadow: [
                       BoxShadow(color: Dk.shadow, blurRadius: 40),

@@ -116,11 +116,11 @@ class _Thumb extends StatelessWidget {
     final broken = Container(
       padding: const EdgeInsets.all(Sp.x3),
       color: Dk.imageFloor,
-      child: const Row(
+      child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           GlyphIcon(Glyph.image, size: Sz.glyphSm, color: Dk.t3),
-          SizedBox(width: Sp.x2),
+          const SizedBox(width: Sp.x2),
           Text('图片无法显示', style: Ty.small),
         ],
       ),
@@ -502,10 +502,10 @@ class _AudioTileState extends State<AudioTile> {
             height: 3,
             child: Stack(
               children: [
-                const Positioned.fill(child: ColoredBox(color: Dk.p4)),
+                Positioned.fill(child: ColoredBox(color: Dk.p4)),
                 FractionallySizedBox(
                   widthFactor: v,
-                  child: const ColoredBox(color: Dk.t1),
+                  child: ColoredBox(color: Dk.t1),
                 ),
               ],
             ),
@@ -613,7 +613,7 @@ class VideoTile extends StatelessWidget {
                   bottom: Sp.x1,
                   child: Row(
                     children: [
-                      const GlyphIcon(
+                      GlyphIcon(
                         Glyph.image,
                         size: Sz.glyphXs,
                         color: Dk.t3,
@@ -785,8 +785,7 @@ class DraftChip extends StatelessWidget {
               child: media == AnswerMedia.image
                   ? Image.memory(file.bytes,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) =>
-                          const ColoredBox(color: Dk.p4))
+                      errorBuilder: (_, __, ___) => ColoredBox(color: Dk.p4))
                   : ColoredBox(
                       color: Dk.p4,
                       child: Center(

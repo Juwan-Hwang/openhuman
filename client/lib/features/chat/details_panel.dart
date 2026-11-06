@@ -86,7 +86,7 @@ class _Header extends StatelessWidget {
     return Container(
       height: 72,
       padding: const EdgeInsets.only(left: Sp.x5, right: Sp.x3),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: Dk.line)),
       ),
       child: Row(
@@ -186,7 +186,7 @@ class _PersonDetails extends ConsumerWidget {
               label: '名称',
               value: caller.anonymous ? '添加名称' : caller.name,
               valueMuted: caller.anonymous,
-              trailing: const GlyphIcon(Glyph.edit, size: 14, color: Dk.t3),
+              trailing: GlyphIcon(Glyph.edit, size: 14, color: Dk.t3),
               onTap: () => askForName(context, ref, info),
             ),
             // Only when the raw name says more than the person and tool
@@ -207,7 +207,7 @@ class _PersonDetails extends ConsumerWidget {
           children: [
             _Row(
               label: '保存记录',
-              trailing: const GlyphIcon(Glyph.save, size: 14, color: Dk.t3),
+              trailing: GlyphIcon(Glyph.save, size: 14, color: Dk.t3),
               onTap: () async {
                 final ok = await ref
                     .read(conversationListProvider.notifier)
@@ -218,8 +218,7 @@ class _PersonDetails extends ConsumerWidget {
             _Row(
               label: '移到废纸篓',
               danger: true,
-              trailing:
-                  const GlyphIcon(Glyph.trash, size: 14, color: Dk.danger),
+              trailing: GlyphIcon(Glyph.trash, size: 14, color: Dk.danger),
               onTap: () => confirmTrash(context, ref, info),
             ),
           ],
@@ -425,8 +424,7 @@ class _RoomDetailsState extends ConsumerState<_RoomDetails> {
                 _Row(
                   key: const ValueKey('details-invite'),
                   label: '创建邀请码',
-                  trailing:
-                      const GlyphIcon(Glyph.invite, size: 14, color: Dk.t3),
+                  trailing: GlyphIcon(Glyph.invite, size: 14, color: Dk.t3),
                   onTap: () => _run(() async {
                     final res = await client.mintInvite(info.id);
                     setState(() => _invite = res['code'] as String?);
@@ -460,12 +458,12 @@ class _RoomDetailsState extends ConsumerState<_RoomDetails> {
             if (isOwner)
               _Row(
                 label: '群聊设置',
-                trailing: const GlyphIcon(Glyph.more, size: 14, color: Dk.t3),
+                trailing: GlyphIcon(Glyph.more, size: 14, color: Dk.t3),
                 onTap: () => RoomPanel.show(context, info.id),
               ),
             _Row(
               label: '保存记录',
-              trailing: const GlyphIcon(Glyph.save, size: 14, color: Dk.t3),
+              trailing: GlyphIcon(Glyph.save, size: 14, color: Dk.t3),
               onTap: () async {
                 final ok = await ref
                     .read(conversationListProvider.notifier)
@@ -593,11 +591,11 @@ class _MemberRow extends StatelessWidget {
           ),
           if (me) ...[
             const SizedBox(width: Sp.x15),
-            const Tag('我'),
+            Tag('我'),
           ],
           if (owner) ...[
             const SizedBox(width: Sp.x15),
-            const Tag('群主', color: Dk.signal, floor: Dk.signalSoft),
+            Tag('群主', color: Dk.signal, floor: Dk.signalSoft),
           ],
           const Spacer(),
           if (onRemove != null)
@@ -641,7 +639,7 @@ class _Spinner extends StatelessWidget {
   const _Spinner();
 
   @override
-  Widget build(BuildContext context) => const SizedBox.square(
+  Widget build(BuildContext context) => SizedBox.square(
         dimension: 14,
         child: CircularProgressIndicator(strokeWidth: Sz.stroke, color: Dk.t2),
       );
@@ -657,7 +655,7 @@ class _Group extends StatelessWidget {
     final rows = <Widget>[];
     for (var i = 0; i < children.length; i++) {
       if (i > 0) {
-        rows.add(const Divider(height: 1, thickness: 1, color: Dk.line));
+        rows.add(Divider(height: 1, thickness: 1, color: Dk.line));
       }
       rows.add(children[i]);
     }
@@ -753,7 +751,7 @@ class _Row extends StatelessWidget {
           ),
           if (copy) ...[
             const SizedBox(width: Sp.x2),
-            const GlyphIcon(Glyph.copy, size: 14, color: Dk.t3),
+            GlyphIcon(Glyph.copy, size: 14, color: Dk.t3),
           ] else if (trailing != null) ...[
             const SizedBox(width: Sp.x2),
             trailing!,
@@ -816,7 +814,7 @@ class _FoldState extends State<_Fold> {
                   AnimatedRotation(
                     turns: _open ? 0.25 : 0,
                     duration: Mo.fast,
-                    child: const Icon(
+                    child: Icon(
                       Icons.chevron_right_rounded,
                       size: 16,
                       color: Dk.t3,

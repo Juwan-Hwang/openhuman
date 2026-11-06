@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
 
+import '../../app/appearance.dart';
 import '../../app/theme.dart';
 import '../../core/sdk_provider.dart';
 import '../../app/adaptive.dart';
@@ -305,7 +306,7 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
               height: widget.onPicked != null ? 64 : 72,
               padding: const EdgeInsets.symmetric(horizontal: 12),
               alignment: Alignment.center,
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 border: Border(bottom: BorderSide(color: Dk.line)),
               ),
               child: AnimatedSwitcher(
@@ -381,7 +382,7 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
                 6,
                 8 + MediaQuery.viewPaddingOf(context).bottom,
               ),
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 border: Border(top: BorderSide(color: Dk.line)),
               ),
               child: selecting
@@ -391,36 +392,40 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
                       onSave: () => _bulk('save', ordered),
                       onTrash: () => _bulk('trash', ordered),
                     )
-                  : Row(
-                      children: [
-                        _CreateRoomButton(onPicked: widget.onPicked),
-                        _FootButton(
-                          key: const ValueKey('join-room'),
-                          icon: Icons.login_rounded,
-                          label: '加入',
-                          tooltip: '加入群聊',
-                          onTap: () => joinRoomByCode(
-                            context,
-                            ref,
-                            onPicked: widget.onPicked,
+                  : LayoutBuilder(
+                      builder: (context, box) => Row(
+                        children: [
+                          _CreateRoomButton(onPicked: widget.onPicked),
+                          _FootButton(
+                            key: const ValueKey('join-room'),
+                            compact: box.maxWidth < 280,
+                            icon: Icons.login_rounded,
+                            label: '加入',
+                            tooltip: '加入群聊',
+                            onTap: () => joinRoomByCode(
+                              context,
+                              ref,
+                              onPicked: widget.onPicked,
+                            ),
                           ),
-                        ),
-                        const Spacer(),
-                        DkIconButton(
-                          key: const ValueKey('open-files'),
-                          glyph: Glyph.folder,
-                          label: '文件',
-                          glyphSize: Sz.glyphSm,
-                          onTap: () => FileLibrarySheet.show(context),
-                        ),
-                        DkIconButton(
-                          key: const ValueKey('open-trash'),
-                          glyph: Glyph.trash,
-                          label: '废纸篓',
-                          glyphSize: Sz.glyphSm,
-                          onTap: () => _openTrash(context),
-                        ),
-                      ],
+                          const Spacer(),
+                          DkIconButton(
+                            key: const ValueKey('open-files'),
+                            glyph: Glyph.folder,
+                            label: '文件',
+                            glyphSize: Sz.glyphSm,
+                            onTap: () => FileLibrarySheet.show(context),
+                          ),
+                          const _AppearanceButton(),
+                          DkIconButton(
+                            key: const ValueKey('open-trash'),
+                            glyph: Glyph.trash,
+                            label: '废纸篓',
+                            glyphSize: Sz.glyphSm,
+                            onTap: () => _openTrash(context),
+                          ),
+                        ],
+                      ),
                     ),
             ),
           ],
@@ -453,7 +458,7 @@ class _SearchField extends StatelessWidget {
           fillColor: Dk.bg,
           hintText: '搜索',
           hintStyle: Ty.small.copyWith(color: Dk.t3, fontSize: 13),
-          prefixIcon: const Icon(Icons.search_rounded, size: 16, color: Dk.t3),
+          prefixIcon: Icon(Icons.search_rounded, size: 16, color: Dk.t3),
           prefixIconConstraints:
               const BoxConstraints(minWidth: 34, minHeight: 34),
           suffixIcon: touch
@@ -477,15 +482,15 @@ class _SearchField extends StatelessWidget {
           contentPadding: EdgeInsets.symmetric(vertical: touch ? 12 : 8),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(Rd.md),
-            borderSide: const BorderSide(color: Dk.line),
+            borderSide: BorderSide(color: Dk.line),
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(Rd.md),
-            borderSide: const BorderSide(color: Dk.line),
+            borderSide: BorderSide(color: Dk.line),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(Rd.md),
-            borderSide: const BorderSide(color: Dk.t4),
+            borderSide: BorderSide(color: Dk.t4),
           ),
         ),
       ),
@@ -653,8 +658,11 @@ class _FootButton extends StatelessWidget {
     required this.label,
     required this.onTap,
     this.tooltip,
+    this.compact = false,
   });
 
+  /// Icon only, for a narrow list; the tooltip still names it.
+  final bool compact;
   final IconData icon;
   final String label;
   final VoidCallback onTap;
@@ -679,8 +687,10 @@ class _FootButton extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(icon, size: 15, color: Dk.t2),
-              const SizedBox(width: 8),
-              Text(label, style: Ty.small.copyWith(color: Dk.t2)),
+              if (!compact) ...[
+                const SizedBox(width: 8),
+                Text(label, style: Ty.small.copyWith(color: Dk.t2)),
+              ],
             ],
           ),
         ),
@@ -1069,8 +1079,8 @@ class _SelectionActions extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Widget action(String key, IconData icon, String label, VoidCallback f,
-        {Color color = Dk.t1Soft}) {
-      final c = enabled ? color : Dk.t3;
+        {Color? color}) {
+      final c = enabled ? (color ?? Dk.t1Soft) : Dk.t3;
       return Expanded(
         child: InkWell(
           key: ValueKey(key),
@@ -1282,7 +1292,7 @@ class _CenteredNote extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (loading)
-              const SizedBox(
+              SizedBox(
                 width: 20,
                 height: 20,
                 child: CircularProgressIndicator(
@@ -1640,8 +1650,7 @@ class _WaitingTag extends StatelessWidget {
         Container(
           width: Sz.dotSm,
           height: Sz.dotSm,
-          decoration:
-              const BoxDecoration(color: Dk.signal, shape: BoxShape.circle),
+          decoration: BoxDecoration(color: Dk.signal, shape: BoxShape.circle),
         ),
         const SizedBox(width: 5),
         Text(
@@ -1668,8 +1677,8 @@ class _RowMenuButton extends StatelessWidget {
       child: InkResponse(
         onTap: onPressed,
         radius: 14,
-        child: const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 4),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
           child: Icon(Icons.more_horiz_rounded, size: 16, color: Dk.t2),
         ),
       ),
@@ -1692,7 +1701,7 @@ class _SelectMark extends StatelessWidget {
       curve: Mo.expo,
       width: shown ? 34 : 0,
       height: 22,
-        child: ClipRect(
+      child: ClipRect(
         child: OverflowBox(
           alignment: Alignment.centerLeft,
           minWidth: 0,
@@ -1708,11 +1717,54 @@ class _SelectMark extends StatelessWidget {
               color: on ? Dk.t1 : Colors.transparent,
               border: Border.all(color: on ? Dk.t1 : Dk.t3, width: 1.5),
             ),
-            child: on
-                ? const Icon(Icons.check_rounded, size: 15, color: Dk.ink)
-                : null,
+            child:
+                on ? Icon(Icons.check_rounded, size: 15, color: Dk.ink) : null,
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Light, dark, or the system's.
+class _AppearanceButton extends ConsumerWidget {
+  const _AppearanceButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final mode = ref.watch(appearanceProvider);
+    return Builder(
+      builder: (context) => DkIconButton(
+        key: const ValueKey('open-appearance'),
+        glyph: Glyph.appearance,
+        label: '外观',
+        glyphSize: Sz.glyphSm,
+        onTap: () async {
+          final box = context.findRenderObject() as RenderBox;
+          final at = box.localToGlobal(Offset.zero);
+          final picked = await showMenu<ThemeMode>(
+            context: context,
+            position: RelativeRect.fromLTRB(
+              at.dx,
+              at.dy - 4,
+              at.dx + box.size.width,
+              at.dy,
+            ),
+            items: [
+              for (final m in ThemeMode.values)
+                CheckedPopupMenuItem(
+                  key: ValueKey('appearance-${m.name}'),
+                  value: m,
+                  checked: m == mode,
+                  height: 36,
+                  child: Text(appearanceLabel(m)),
+                ),
+            ],
+          );
+          if (picked != null) {
+            await ref.read(appearanceProvider.notifier).set(picked);
+          }
+        },
       ),
     );
   }

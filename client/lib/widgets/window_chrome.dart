@@ -90,7 +90,7 @@ class _TitleBarState extends State<TitleBar> with WindowListener {
     final ink = _focused ? Dk.t2 : Dk.t4;
     return Container(
       height: WindowChrome.height,
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: Dk.bg,
         border: Border(bottom: BorderSide(color: Dk.line)),
       ),
@@ -108,7 +108,7 @@ class _TitleBarState extends State<TitleBar> with WindowListener {
                     AnimatedOpacity(
                       duration: Mo.base,
                       opacity: _focused ? 1 : 0.45,
-                      child: const BrandMark(size: 16),
+                      child: BrandMark(size: 16),
                     ),
                     const SizedBox(width: 9),
                     Text(

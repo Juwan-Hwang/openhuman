@@ -358,7 +358,7 @@ export OPENAI_API_KEY="$apiKey"''';
                   children: [
                     Text('分享联系方式', style: Ty.title.copyWith(fontSize: 18)),
                     const SizedBox(height: 4),
-                    const Text(
+                    Text(
                       '适用于兼容 OpenAI API 的工具',
                       style: Ty.small,
                     ),
@@ -367,7 +367,7 @@ export OPENAI_API_KEY="$apiKey"''';
               ),
               IconButton(
                 tooltip: '关闭',
-                icon: const Icon(Icons.close_rounded, size: 18, color: Dk.t2),
+                icon: Icon(Icons.close_rounded, size: 18, color: Dk.t2),
                 onPressed: () => Navigator.of(context).pop(),
               ),
             ],
@@ -408,7 +408,7 @@ export OPENAI_API_KEY="$apiKey"''';
                     canHide: fresh == null,
                   ),
                   const SizedBox(height: Sp.x5),
-                  const Text('复制', style: Ty.label),
+                  Text('复制', style: Ty.label),
                   const SizedBox(height: Sp.x2),
                   _CopyAction(
                     key: const ValueKey('share-friend'),
@@ -461,12 +461,12 @@ export OPENAI_API_KEY="$apiKey"''';
                 // ── Who holds one ──
                 if (loading) ...[
                   const SizedBox(height: Sp.x5),
-                  const Text('有访问权限的人', style: Ty.label),
+                  Text('有访问权限的人', style: Ty.label),
                   const SizedBox(height: Sp.x2),
                   const _HoldersPlaceholder(),
                 ] else if (perPerson && keys.value!.isNotEmpty) ...[
                   const SizedBox(height: Sp.x5),
-                  const Text('有访问权限的人', style: Ty.label),
+                  Text('有访问权限的人', style: Ty.label),
                   const SizedBox(height: Sp.x2),
                   _Holders(keys: keys.value!, onRevoke: _revoke),
                 ],
@@ -474,8 +474,8 @@ export OPENAI_API_KEY="$apiKey"''';
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Padding(
-                      padding: EdgeInsets.only(top: 2),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
                       child:
                           Icon(Icons.shield_outlined, size: 14, color: Dk.t3),
                     ),
@@ -557,7 +557,7 @@ class _SpecRow extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.fromLTRB(Sp.x4, Sp.x3, Sp.x2, Sp.x3),
       decoration: BoxDecoration(
-        border: last ? null : const Border(bottom: BorderSide(color: Dk.line)),
+        border: last ? null : Border(bottom: BorderSide(color: Dk.line)),
       ),
       child: narrow
           ? Column(
@@ -717,7 +717,7 @@ class _NewKey extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('添加联系人', style: Ty.name),
+          Text('添加联系人', style: Ty.name),
           const SizedBox(height: Sp.x3),
           Row(
             children: [
@@ -770,7 +770,7 @@ class _FreshBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Icon(Icons.key_rounded, size: 16, color: Dk.signal),
+          Icon(Icons.key_rounded, size: 16, color: Dk.signal),
           const SizedBox(width: Sp.x3),
           Expanded(
             child: Text(
@@ -811,7 +811,7 @@ class _Holders extends StatelessWidget {
               decoration: BoxDecoration(
                 border: i == rows.length - 1
                     ? null
-                    : const Border(bottom: BorderSide(color: Dk.line)),
+                    : Border(bottom: BorderSide(color: Dk.line)),
               ),
               child: Row(
                 children: [
@@ -872,16 +872,15 @@ class _HoldersPlaceholder extends StatelessWidget {
               height: 48,
               padding: const EdgeInsets.symmetric(horizontal: Sp.x4),
               decoration: BoxDecoration(
-                border: i == 2
-                    ? null
-                    : const Border(bottom: BorderSide(color: Dk.line)),
+                border:
+                    i == 2 ? null : Border(bottom: BorderSide(color: Dk.line)),
               ),
               child: Row(
                 children: [
                   Container(
                     width: 26,
                     height: 26,
-                    decoration: const BoxDecoration(
+                    decoration: BoxDecoration(
                       color: Dk.line,
                       shape: BoxShape.circle,
                     ),

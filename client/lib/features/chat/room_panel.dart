@@ -81,7 +81,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
       child: SizedBox(
         height: MediaQuery.of(context).size.height * 0.75,
         child: roomAsync.when(
-          loading: () => const Center(
+          loading: () => Center(
             child: SizedBox(
               width: 18,
               height: 18,
@@ -110,7 +110,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                     Text(title, style: Ty.title.copyWith(fontSize: 16)),
                     const Spacer(),
                     if (_busy)
-                      const SizedBox(
+                      SizedBox(
                         width: 16,
                         height: 16,
                         child: CircularProgressIndicator(
@@ -156,7 +156,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
 
                 if (isOwner) ...[
                   // ── 邀请 ──
-                  const Text('邀请', style: Ty.label),
+                  Text('邀请', style: Ty.label),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
@@ -192,7 +192,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                   const Divider(height: 32),
 
                   // ── 连接配置 ──
-                  const Text('接入', style: Ty.label),
+                  Text('接入', style: Ty.label),
                   const SizedBox(height: 8),
                   _CopyRow(
                     label: 'Base URL',
@@ -244,7 +244,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                   const Divider(height: 32),
 
                   // ── 设置 ──
-                  const Text('群聊设置', style: Ty.label),
+                  Text('群聊设置', style: Ty.label),
                   const SizedBox(height: 8),
                   _SettingsEditor(
                     idleSecs: metadata['room_idle_secs'] as int?,
@@ -430,7 +430,7 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
       children: [
         Row(
           children: [
-            const Text('已连接的工具', style: Ty.label),
+            Text('已连接的工具', style: Ty.label),
             const Spacer(),
             IconButton(
               icon: const Icon(Icons.refresh, size: 18),
@@ -451,7 +451,7 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
             if (snap.hasError) return const Text('无法加载');
             final callers = snap.data ?? const [];
             if (callers.isEmpty) {
-              return const Text(
+              return Text(
                 '无已连接的工具',
                 style: Ty.small,
               );

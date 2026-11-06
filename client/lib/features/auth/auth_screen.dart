@@ -180,7 +180,6 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
 
   @override
   Widget build(BuildContext context) {
-
     return Scaffold(
       backgroundColor: Dk.bg,
       body: CallbackShortcuts(
@@ -228,7 +227,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                       color: Dk.p1,
                       borderRadius: BorderRadius.circular(Rd.xl),
                       border: Border.all(color: Dk.line),
-                      boxShadow: const [
+                      boxShadow: [
                         BoxShadow(
                           color: Dk.shadow,
                           blurRadius: 80,
@@ -304,8 +303,9 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                                           crossAxisAlignment:
                                               CrossAxisAlignment.start,
                                           children: [
-                                            const Padding(
-                                              padding: EdgeInsets.only(top: 1),
+                                            Padding(
+                                              padding:
+                                                  const EdgeInsets.only(top: 1),
                                               child: Icon(
                                                 Icons.error_outline_rounded,
                                                 color: Dk.danger,
@@ -346,7 +346,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                                   ),
                                   onPressed: _connecting ? null : _connect,
                                   child: _connecting
-                                      ? const Row(
+                                      ? Row(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
                                             SizedBox(
@@ -357,8 +357,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                                                 color: Dk.t2,
                                               ),
                                             ),
-                                            SizedBox(width: 10),
-                                            Text('正在连接…'),
+                                            const SizedBox(width: 10),
+                                            const Text('正在连接…'),
                                           ],
                                         )
                                       : const Text('连接'),

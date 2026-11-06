@@ -60,18 +60,19 @@ enum Glyph {
   quiz,
   attach,
   folder,
+  appearance,
 }
 
 /// A glyph at [size] in [color]. Purely decorative unless [semantic] is
 /// given; buttons carry their own label.
 class GlyphIcon extends StatelessWidget {
-  const GlyphIcon(
+  GlyphIcon(
     this.glyph, {
     super.key,
     this.size = Sz.glyph,
-    this.color = Dk.t2,
+    Color? color,
     this.semantic,
-  });
+  }) : color = color ?? Dk.t2;
 
   final Glyph glyph;
   final double size;
@@ -398,6 +399,15 @@ class _GlyphPainter extends CustomPainter {
           ..cubicTo(7.1, 15.7, 7.1, 14.6, 7.9, 13.8)
           ..lineTo(13.8, 7.9);
         c.drawPath(p, s);
+      case Glyph.appearance:
+        circle(12, 12, 8.5);
+        c.drawArc(
+          Rect.fromCircle(center: const Offset(12, 12), radius: 8.5),
+          -1.5708,
+          3.14159,
+          true,
+          f,
+        );
       case Glyph.folder:
         poly([
           3.5,

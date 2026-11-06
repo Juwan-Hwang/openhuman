@@ -417,7 +417,7 @@ class _FileRowState extends State<_FileRow> {
                   curve: Mo.expo,
                   width: widget.picking ? 34 : 0,
                   height: 22,
-                    child: ClipRect(
+                  child: ClipRect(
                     child: OverflowBox(
                       alignment: Alignment.centerLeft,
                       minWidth: 0,
@@ -436,7 +436,7 @@ class _FileRowState extends State<_FileRow> {
                           ),
                         ),
                         child: widget.picked
-                            ? const Icon(
+                            ? Icon(
                                 Icons.check_rounded,
                                 size: 15,
                                 color: Dk.ink,
@@ -468,7 +468,7 @@ class _FileRowState extends State<_FileRow> {
                 ),
                 const SizedBox(width: Sp.x2),
                 if (widget.busy)
-                  const SizedBox.square(
+                  SizedBox.square(
                     dimension: Sz.glyphSm,
                     child: CircularProgressIndicator(
                       strokeWidth: Sz.stroke,
@@ -555,7 +555,7 @@ class _Note extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (loading)
-            const SizedBox.square(
+            SizedBox.square(
               dimension: 20,
               child: CircularProgressIndicator(
                 strokeWidth: Sz.stroke,

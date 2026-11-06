@@ -372,9 +372,7 @@ class ChatController extends StateNotifier<List<types.Message>> {
       ..._ref.read(turnEndedProvider),
       conversationId,
     };
-    _ref
-        .read(conversationListProvider.notifier)
-        .markTurnEnded(conversationId);
+    _ref.read(conversationListProvider.notifier).markTurnEnded(conversationId);
     return true;
   }
 

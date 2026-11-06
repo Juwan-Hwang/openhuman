@@ -116,7 +116,7 @@ class _PhoneStackState extends State<PhoneStack>
             if (t > 0)
               IgnorePointer(
                 child: ColoredBox(
-                  color: Colors.black.withValues(alpha: 0.38 * t),
+                  color: Dk.scrim.withValues(alpha: Dk.scrim.a * 0.5 * t),
                 ),
               ),
             if (convShown)

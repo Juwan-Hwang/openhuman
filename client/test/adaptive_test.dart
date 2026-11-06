@@ -97,7 +97,7 @@ void main() {
   });
 
   testWidgets('the mark paints at small and large sizes', (tester) async {
-    await tester.pumpWidget(const Directionality(
+    await tester.pumpWidget(Directionality(
       textDirection: TextDirection.ltr,
       child: Row(children: [
         BrandMark(size: 16),

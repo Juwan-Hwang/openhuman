@@ -340,11 +340,11 @@ class _ComposerState extends State<Composer> {
                           ? Dk.signalRing
                           : Dk.line2,
                 ),
-                boxShadow: const [
+                boxShadow: [
                   BoxShadow(
                     color: Dk.bgFade,
                     blurRadius: 40,
-                    offset: Offset(0, -16),
+                    offset: const Offset(0, -16),
                   ),
                 ],
               ),
@@ -416,7 +416,7 @@ class _Ended extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const GlyphIcon(Glyph.done, size: Sz.glyphSm, color: Dk.t3),
+          GlyphIcon(Glyph.done, size: Sz.glyphSm, color: Dk.t3),
           const SizedBox(width: Sp.x25),
           Expanded(
             child: Text(
@@ -462,7 +462,7 @@ class _Suggestions extends StatelessWidget {
           color: Dk.p2,
           borderRadius: BorderRadius.circular(Rd.lg),
           border: Border.all(color: Dk.line2),
-          boxShadow: const [BoxShadow(color: Dk.shadow, blurRadius: 24)],
+          boxShadow: [BoxShadow(color: Dk.shadow, blurRadius: 24)],
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,

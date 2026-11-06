@@ -12,13 +12,13 @@ import '../app/tokens.dart';
 import 'haptics.dart';
 
 class SwipeAction {
-  const SwipeAction({
+  SwipeAction({
     required this.label,
     required this.icon,
     required this.color,
     required this.onTap,
-    this.foreground = Dk.t1,
-  });
+    Color? foreground,
+  }) : foreground = foreground ?? Dk.t1;
 
   final String label;
   final IconData icon;

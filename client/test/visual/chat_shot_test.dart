@@ -11,7 +11,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:openhuman_client/app/theme.dart';
 import 'package:openhuman_client/core/sdk_provider.dart';
 import 'package:openhuman_client/features/auth/auth_screen.dart';
 import 'package:openhuman_client/features/chat/chat_screen.dart';
@@ -62,7 +61,7 @@ void main() {
     await tester.pumpWidget(UncontrolledProviderScope(
       container: container,
       child: MaterialApp(
-        theme: darkTheme,
+        theme: shotTheme(),
         debugShowCheckedModeBanner: false,
         home: const WindowChrome(child: ChatScreen()),
       ),
@@ -87,7 +86,7 @@ void main() {
     if (enabled) {
       await expectLater(
         find.byType(ChatScreen),
-        matchesGoldenFile('shots/chat.png'),
+        matchesGoldenFile(shotPath('chat.png')),
       );
     }
 
@@ -96,7 +95,7 @@ void main() {
     if (enabled) {
       await expectLater(
         find.byType(ChatScreen),
-        matchesGoldenFile('shots/chat_task.png'),
+        matchesGoldenFile(shotPath('chat_task.png')),
       );
     }
 
@@ -105,7 +104,7 @@ void main() {
     if (enabled) {
       await expectLater(
         find.byType(ChatScreen),
-        matchesGoldenFile('shots/chat_room.png'),
+        matchesGoldenFile(shotPath('chat_room.png')),
       );
     }
 
@@ -121,7 +120,7 @@ void main() {
     if (enabled) {
       await expectLater(
         find.byType(ChatScreen),
-        matchesGoldenFile('shots/chat_runtime.png'),
+        matchesGoldenFile(shotPath('chat_runtime.png')),
       );
     }
 
@@ -141,7 +140,7 @@ void main() {
     if (enabled) {
       await expectLater(
         find.byType(MaterialApp),
-        matchesGoldenFile('shots/chat_menu.png'),
+        matchesGoldenFile(shotPath('chat_menu.png')),
       );
     }
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
@@ -152,7 +151,7 @@ void main() {
     if (enabled) {
       await expectLater(
         find.byType(ChatScreen),
-        matchesGoldenFile('shots/chat_room_details.png'),
+        matchesGoldenFile(shotPath('chat_room_details.png')),
       );
     }
 
@@ -161,7 +160,7 @@ void main() {
     if (enabled) {
       await expectLater(
         find.byType(MaterialApp),
-        matchesGoldenFile('shots/share.png'),
+        matchesGoldenFile(shotPath('share.png')),
       );
     }
     // A key for someone new: shown once, with the words to send them.
@@ -172,7 +171,7 @@ void main() {
     if (enabled) {
       await expectLater(
         find.byType(MaterialApp),
-        matchesGoldenFile('shots/share_fresh.png'),
+        matchesGoldenFile(shotPath('share_fresh.png')),
       );
     }
 
@@ -184,7 +183,7 @@ void main() {
     if (enabled) {
       await expectLater(
         find.byType(MaterialApp),
-        matchesGoldenFile('shots/files.png'),
+        matchesGoldenFile(shotPath('files.png')),
       );
     }
   }, skip: !enabled);
@@ -203,7 +202,7 @@ void main() {
     await tester.pumpWidget(UncontrolledProviderScope(
       container: container,
       child: MaterialApp(
-        theme: darkTheme,
+        theme: shotTheme(),
         debugShowCheckedModeBanner: false,
         home: const WindowChrome(child: AuthScreen()),
       ),
@@ -214,7 +213,7 @@ void main() {
     await settleImages(tester);
     await expectLater(
       find.byType(WindowChrome),
-      matchesGoldenFile('shots/auth.png'),
+      matchesGoldenFile(shotPath('auth.png')),
     );
   }, skip: !enabled);
 }
