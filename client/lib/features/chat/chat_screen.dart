@@ -427,7 +427,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ? (activeInfo?.memberCount == null
               ? '群聊'
               : '群聊 · ${activeInfo!.memberCount} 人')
-          : caller?.via,
+          : activeInfo?.via ?? caller?.via,
       // My own connection only speaks up when it is not fine.
       connection: activeInfo != null || connected
           ? null

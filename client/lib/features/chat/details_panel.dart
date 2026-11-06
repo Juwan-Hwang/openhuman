@@ -131,12 +131,15 @@ class _PersonDetails extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final caller = info.caller;
     final caps = ref.watch(capabilityCacheProvider);
-    // The cache holds the latest report from anyone; only show it here
-    // when it is this person's.
-    final mine =
-        caps != null && (caps.agentId == info.agentId || caps.agentId.isEmpty)
-            ? caps
-            : null;
+    // What the server last saw this conversation's caller send wins; then
+    // the live report for this agent; a report for anyone else never shows.
+    final convCtx = ref.watch(conversationContextProvider(info.id)).valueOrNull;
+    final live =
+        ref.read(capabilityCacheProvider.notifier).byAgent[info.agentId] ??
+            (caps != null && caps.agentId == info.agentId ? caps : null);
+    final mine = convCtx?.tools ?? live;
+    final from =
+        clientLabel(convCtx?.client ?? info.client) ?? originLabel(info.origin);
 
     return ListView(
       key: const ValueKey('details-person'),
@@ -233,8 +236,7 @@ class _PersonDetails extends ConsumerWidget {
               children: [
                 _Row(label: 'ID', value: info.agentId, mono: true, copy: true),
                 _Row(label: '对话 ID', value: info.id, mono: true, copy: true),
-                if (info.origin != null)
-                  _Row(label: '来自', value: info.origin!, mono: true),
+                if (from != null) _Row(label: '来自', value: from),
               ],
             ),
             const SizedBox(height: Sp.x4),

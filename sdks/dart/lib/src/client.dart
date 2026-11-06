@@ -960,6 +960,22 @@ class OpenHumanClient {
     ];
   }
 
+  /// What the server last saw a conversation's caller send: the client it
+  /// runs in (`workbuddy`, `cursor`, …), its tool list and context. `null`
+  /// when the server holds nothing for it yet.
+  Future<Map<String, dynamic>?> conversationContext(
+    String conversationId,
+  ) async {
+    try {
+      return await _getJson(
+        '/v1/seat/capabilities?view=full&conversation_id='
+        '${Uri.encodeQueryComponent(conversationId)}',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Make a key for one person. The raw key is on the result only now.
   Future<CallerKey> createCallerKey(String name) async {
     final j = await _sendJson('/v1/seat/caller-keys', body: {'name': name});

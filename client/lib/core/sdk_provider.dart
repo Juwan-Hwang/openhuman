@@ -80,9 +80,14 @@ final capabilityCacheProvider =
 class CapabilityCacheNotifier extends StateNotifier<oh.CapabilityUpdatedData?> {
   CapabilityCacheNotifier(this._ref) : super(null) {
     _sub = _ref.read(openHumanClientProvider).capabilityUpdates.listen((data) {
+      byAgent[data.agentId] = data;
       state = data;
     });
   }
+
+  /// Every agent's latest report, so switching conversations does not
+  /// lose the one before.
+  final byAgent = <String, oh.CapabilityUpdatedData>{};
 
   final Ref _ref;
   late final StreamSubscription _sub;
@@ -112,6 +117,7 @@ class ConversationInfo {
     this.waiting = false,
     this.task,
     this.origin,
+    this.client,
     this.lastFromMe = false,
     this.lastFailed = false,
   });
@@ -148,6 +154,19 @@ class ConversationInfo {
   /// chatkit, evals), from the request's `origin`.
   String? origin;
 
+  /// The client the caller writes from (`workbuddy`, `cursor`, …), as the
+  /// server detected it on their requests.
+  String? client;
+
+  /// "通过 WorkBuddy": from the caller's name when it says, else from what
+  /// the server detected.
+  String? get via {
+    final v = caller.via;
+    if (v != null) return v;
+    final c = clientLabel(client);
+    return c == null ? null : '通过 $c';
+  }
+
   /// The newest message is mine.
   bool lastFromMe;
 
@@ -178,9 +197,64 @@ class ConversationInfo {
         waiting: waiting,
         task: task,
         origin: origin,
+        client: client,
         lastFromMe: lastFromMe,
         lastFailed: lastFailed,
       );
+}
+
+/// What the server last saw a conversation's caller send, fetched when
+/// its details open: the client it runs in and its tools.
+class ConversationContext {
+  const ConversationContext({this.client, this.tools});
+  final String? client;
+  final oh.CapabilityUpdatedData? tools;
+}
+
+final conversationContextProvider = FutureProvider.autoDispose
+    .family<ConversationContext?, String>((ref, conversationId) async {
+  // A fresh report for anyone may mean fresh tools here too.
+  ref.watch(capabilityCacheProvider);
+  final j = await ref
+      .read(openHumanClientProvider)
+      .conversationContext(conversationId);
+  if (j == null) return null;
+  final tools = (j['tools'] as List?)
+          ?.whereType<Map<String, dynamic>>()
+          .map((t) => {...t, 'name': t['name'] ?? t['id']})
+          .toList() ??
+      const <Map<String, dynamic>>[];
+  return ConversationContext(
+    client: j['client'] as String?,
+    tools: tools.isEmpty
+        ? null
+        : oh.CapabilityUpdatedData(
+            agentId: '',
+            capabilities: tools,
+            context: j['context'] as Map<String, dynamic>?,
+          ),
+  );
+});
+
+/// The product a caller writes from, as people know it. `null` for an
+/// unknown or generic client.
+String? clientLabel(String? client) {
+  final c = (client ?? '').trim().toLowerCase();
+  return switch (c) {
+    '' || 'unknown' || 'custom' => null,
+    'workbuddy' => 'WorkBuddy',
+    'claude_code' => 'Claude Code',
+    'trae' => 'Trae',
+    'codex' => 'Codex',
+    'cursor' => 'Cursor',
+    'qoder' => 'Qoder',
+    'deepseek_harness' => 'DeepSeek',
+    'opencode' => 'opencode',
+    'pi' => 'pi',
+    'copilot' => 'GitHub Copilot',
+    'cline' => 'Cline',
+    _ => client!.trim(),
+  };
 }
 
 /// What a conversation's origin is called.
@@ -285,6 +359,7 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
       if (hit == null) return;
       hit.task = ApiTask.fromRequest(r, receivedAt: DateTime.now()) ?? hit.task;
       hit.origin = r['origin'] as String? ?? hit.origin;
+      hit.client = r['client'] as String? ?? hit.client;
       state = state.copyWith(entries: [...state.entries]);
     });
 
@@ -343,6 +418,7 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
             waiting: old?.waiting ?? false,
             task: old?.task,
             origin: old?.origin,
+            client: old?.client,
             lastFromMe: old?.lastFromMe ?? false,
             lastFailed: old?.lastFailed ?? false,
           ),

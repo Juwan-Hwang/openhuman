@@ -195,6 +195,16 @@ impl ConnectionRegistry {
             .unwrap_or(false)
     }
 
+    /// How many real client devices (not agent seats) this human has open.
+    pub async fn human_device_count(&self, human_id: &str) -> usize {
+        let inner = self.inner.lock().await;
+        inner
+            .connections
+            .get(human_id)
+            .map(|d| d.keys().filter(|id| !id.starts_with("seat_")).count())
+            .unwrap_or(0)
+    }
+
     /// Get the number of active connections for a human.
     pub async fn connection_count(&self, human_id: &str) -> usize {
         let inner = self.inner.lock().await;

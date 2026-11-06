@@ -676,15 +676,25 @@ pub(crate) fn is_auxiliary_request(req: &ChatCompletionRequest) -> bool {
     .any(|k| head.contains(k))
 }
 
+static CAPS_SENT: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Vec<u8>>>> =
+    std::sync::OnceLock::new();
+
+/// Forget what was sent to this human, so the next request reports its
+/// tools again. Called when a client connects: it starts with none.
+pub(crate) fn forget_capabilities_sent(human_id: &str) {
+    let prefix = format!("{}\u{1f}", human_id);
+    if let Some(m) = CAPS_SENT.get() {
+        m.lock().unwrap().retain(|k, _| !k.starts_with(&prefix));
+    }
+}
+
 /// Whether this capability snapshot differs from the last one sent to this
 /// human for this agent (process-local; a restart sends one fresh copy).
 fn capability_changed(human_id: &str, agent_id: &str, data: &Value) -> bool {
     use sha2::{Digest, Sha256};
-    use std::sync::{Mutex, OnceLock};
-    static LAST: OnceLock<Mutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
     let digest = Sha256::digest(data.to_string().as_bytes()).to_vec();
     let key = format!("{}\u{1f}{}", human_id, agent_id);
-    let mut map = LAST.get_or_init(Default::default).lock().unwrap();
+    let mut map = CAPS_SENT.get_or_init(Default::default).lock().unwrap();
     if map.get(&key) == Some(&digest) {
         return false;
     }

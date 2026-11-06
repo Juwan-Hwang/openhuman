@@ -159,8 +159,16 @@ async fn handle_connection(socket: WebSocket, app: AppState, headers: HeaderMap,
 
     // 8b. Tell whoever is waiting that a human just showed up. Only when a
     //     request is actually in flight: announcing presence into the void
-    //     would park the notice and deliver it out of context later.
-    announce_online(&app, &human_id).await;
+    //     would park the notice and deliver it out of context later. A
+    //     second device, or a reconnect while another device is still
+    //     attached, is not "coming online" and says nothing.
+    if app.connections.human_device_count(&human_id).await <= 1 {
+        announce_online(&app, &human_id).await;
+    }
+
+    // 8c. A fresh client has no tool lists yet: let the next request of
+    //     every agent report them again even if nothing changed.
+    crate::api::openai::forget_capabilities_sent(&human_id);
 
     // 9. Spawn the sender task — drains push_rx and writes to the WebSocket.
     //
@@ -446,6 +454,12 @@ pub(crate) async fn announce_online(app: &AppState, human_id: &str) {
         if !belongs {
             continue;
         }
+        // Once per waiting request: a flaky link that reconnects every few
+        // seconds would otherwise stack the same notice into the caller's
+        // answer over and over.
+        if !first_announce(&conversation_id) {
+            continue;
+        }
         if app.reply.deliver(&conversation_id, &notice).await {
             tracing::info!(
                 conversation_id = %conversation_id,
@@ -453,6 +467,24 @@ pub(crate) async fn announce_online(app: &AppState, human_id: &str) {
             );
         }
     }
+}
+
+/// Whether no online notice went to this conversation in the last
+/// stretch of time one request can stay open (process-local).
+fn first_announce(conversation_id: &str) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    static SENT: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    const WINDOW: Duration = Duration::from_secs(30 * 60);
+    let now = Instant::now();
+    let mut map = SENT.get_or_init(Default::default).lock().unwrap();
+    map.retain(|_, at| now.duration_since(*at) < WINDOW);
+    if map.contains_key(conversation_id) {
+        return false;
+    }
+    map.insert(conversation_id.to_string(), now);
+    true
 }
 
 /// Handle `reply.send` from the human client.
