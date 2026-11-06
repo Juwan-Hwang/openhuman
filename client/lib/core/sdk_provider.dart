@@ -576,6 +576,58 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
     return true;
   }
 
+  /// Move several conversations to the trash at once. Returns how many
+  /// went; the ones the server refused stay in the list.
+  Future<int> trashMany(Iterable<String> ids) async {
+    final client = _ref.read(openHumanClientProvider);
+    final list = ids.toList();
+    final results = await Future.wait(
+      list.map((id) => client.deleteConversation(id).catchError((_) => false)),
+    );
+    final gone = {
+      for (var i = 0; i < list.length; i++)
+        if (results[i]) list[i],
+    };
+    if (!mounted) return gone.length;
+    if (gone.isNotEmpty) {
+      state = state.copyWith(
+        entries: state.entries.where((c) => !gone.contains(c.id)).toList(),
+      );
+      _ref.invalidate(trashListProvider);
+    }
+    return gone.length;
+  }
+
+  /// Undo a move to the trash: restore on the server, put the row back
+  /// where it was.
+  Future<bool> untrash(ConversationInfo conversation, {int? at}) async {
+    final client = _ref.read(openHumanClientProvider);
+    final ok = await client
+        .restoreConversation(conversation.id)
+        .catchError((_) => false);
+    if (!ok || !mounted) return false;
+    if (state.entries.any((c) => c.id == conversation.id)) return true;
+    final entries = [...state.entries];
+    entries.insert((at ?? 0).clamp(0, entries.length), conversation);
+    state = state.copyWith(entries: entries);
+    _ref.invalidate(trashListProvider);
+    return true;
+  }
+
+  /// Clear the unread count on several rows.
+  void markReadMany(Iterable<String> ids) {
+    var changed = false;
+    for (final id in ids) {
+      for (final c in state.entries) {
+        if (c.id == id && c.unread > 0) {
+          c.unread = 0;
+          changed = true;
+        }
+      }
+    }
+    if (changed) state = state.copyWith(entries: [...state.entries]);
+  }
+
   @override
   void dispose() {
     _msgSub.cancel();
@@ -730,6 +782,52 @@ class TrashListNotifier extends StateNotifier<TrashListState> {
       _ref.read(conversationListProvider.notifier).add(item);
     }
     return true;
+  }
+
+  /// Restore everything in the trash. Returns how many came back.
+  Future<int> restoreAll() async {
+    final items = [...state.entries];
+    final client = _ref.read(openHumanClientProvider);
+    final results = await Future.wait(
+      items.map(
+        (c) => client.restoreConversation(c.id).catchError((_) => false),
+      ),
+    );
+    if (!mounted) return 0;
+    final back = [
+      for (var i = 0; i < items.length; i++)
+        if (results[i]) items[i],
+    ];
+    final ids = {for (final c in back) c.id};
+    state = state.copyWith(
+      entries: state.entries.where((c) => !ids.contains(c.id)).toList(),
+    );
+    final list = _ref.read(conversationListProvider.notifier);
+    for (final c in back.reversed) {
+      list.add(c);
+    }
+    return back.length;
+  }
+
+  /// Empty the trash for good. Returns how many were destroyed.
+  Future<int> destroyAll() async {
+    final items = [...state.entries];
+    final client = _ref.read(openHumanClientProvider);
+    final results = await Future.wait(
+      items.map(
+        (c) =>
+            client.deleteConversationPermanently(c.id).catchError((_) => false),
+      ),
+    );
+    if (!mounted) return 0;
+    final gone = {
+      for (var i = 0; i < items.length; i++)
+        if (results[i]) items[i].id,
+    };
+    state = state.copyWith(
+      entries: state.entries.where((c) => !gone.contains(c.id)).toList(),
+    );
+    return gone.length;
   }
 
   Future<bool> destroy(String conversationId) async {

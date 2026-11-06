@@ -20,6 +20,7 @@ import '../../widgets/sheet.dart';
 import '../../core/identity.dart';
 import '../files/file_library.dart';
 import '../../widgets/haptics.dart';
+import '../../widgets/swipe_actions.dart';
 import 'stream/message_stream.dart' show beijing;
 
 /// Sidebar width limits; the pane is resizable from its right edge.
@@ -30,6 +31,10 @@ const double kSidebarDefault = 284;
 /// Keyboard focus target for the sidebar's filter, so Ctrl/⌘+K anywhere
 /// in the console can jump to it.
 final sidebarSearchFocus = FocusNode(debugLabel: 'sidebar-search');
+
+/// The rows picked for a bulk action. `null` when the list is not in
+/// selection mode; an empty set while it is but nothing is picked yet.
+final conversationSelectionProvider = StateProvider<Set<String>?>((_) => null);
 
 class ConversationSidebar extends ConsumerStatefulWidget {
   const ConversationSidebar({
@@ -51,6 +56,88 @@ class ConversationSidebar extends ConsumerStatefulWidget {
 
 class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
   final _query = TextEditingController();
+  final _swipe = SwipeGroup();
+
+  /// A phone's row actions, from the "更多" swipe button.
+  Future<void> _rowSheet(
+    BuildContext context,
+    ConversationInfo conv,
+    void Function(String) startSelecting,
+  ) async {
+    final pick = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Dk.p1,
+      useSafeArea: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(Rd.xl)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: Sp.x2),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final (v, icon, label) in const [
+                ('select', Icons.check_circle_outline_rounded, '选择'),
+                ('read', Icons.mark_chat_read_outlined, '标为已读'),
+                ('rename', Icons.edit_outlined, '编辑名称'),
+                ('save', Icons.bookmark_border_rounded, '保存记录'),
+              ])
+                ListTile(
+                  key: ValueKey('row-sheet-$v'),
+                  leading: Icon(icon, color: Dk.t2, size: 20),
+                  title: Text(label, style: Ty.body),
+                  onTap: () => Navigator.of(ctx).pop(v),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!context.mounted) return;
+    final list = ref.read(conversationListProvider.notifier);
+    switch (pick) {
+      case 'select':
+        startSelecting(conv.id);
+      case 'read':
+        list.markReadMany([conv.id]);
+      case 'rename':
+        await askForName(context, ref, conv);
+      case 'save':
+        final ok = await list.saveConversation(conv.id);
+        if (context.mounted) toast(context, ok ? '已保存' : '无法保存');
+    }
+  }
+
+  Future<void> _bulk(String action, List<ConversationInfo> all) async {
+    final ids = ref.read(conversationSelectionProvider) ?? const <String>{};
+    if (ids.isEmpty) return;
+    final list = ref.read(conversationListProvider.notifier);
+    final sel = ref.read(conversationSelectionProvider.notifier);
+    switch (action) {
+      case 'read':
+        list.markReadMany(ids);
+        sel.state = null;
+      case 'save':
+        final results =
+            await Future.wait(ids.map((id) => list.saveConversation(id)));
+        final n = results.where((ok) => ok).length;
+        sel.state = null;
+        if (mounted) {
+          toast(context, n == ids.length ? '已保存 $n 个对话' : '已保存 $n 个，其余无法保存');
+        }
+      case 'trash':
+        final n = await list.trashMany(ids);
+        sel.state = null;
+        if (!mounted) return;
+        Haptic.tick();
+        toast(
+          context,
+          n == ids.length ? '已将 $n 个对话移到废纸篓' : '已移动 $n 个，其余无法删除',
+        );
+    }
+  }
+
   int _cursor = -1;
 
   List<ConversationInfo> _filter(List<ConversationInfo> all) {
@@ -104,6 +191,7 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
   @override
   void dispose() {
     _query.dispose();
+    _swipe.dispose();
     super.dispose();
   }
 
@@ -122,32 +210,76 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
     final direct = shown.where((c) => !c.isGroup).toList();
     final ordered = [...direct, ...groups];
 
+    final selection = ref.watch(conversationSelectionProvider);
+    final selecting = selection != null;
+    final touch = Touch.primary;
+
+    void toggle(String id) {
+      final cur = {...?ref.read(conversationSelectionProvider)};
+      cur.contains(id) ? cur.remove(id) : cur.add(id);
+      Haptic.tick();
+      ref.read(conversationSelectionProvider.notifier).state = cur;
+    }
+
+    void startSelecting(String id) {
+      Haptic.menu();
+      _swipe.closeAll();
+      ref.read(conversationSelectionProvider.notifier).state = {id};
+    }
+
     Widget tile(ConversationInfo conv) {
       final i = ordered.indexOf(conv);
+      final row = _ConversationTile(
+        key: ValueKey('conv-${conv.id}'),
+        conversation: conv,
+        isActive: !selecting && conv.id == activeId,
+        isCursor: !selecting && i == _cursor,
+        selecting: selecting,
+        selected: selection?.contains(conv.id) ?? false,
+        onSelect: () => startSelecting(conv.id),
+        onTap: () {
+          if (selecting) {
+            toggle(conv.id);
+            return;
+          }
+          ref
+              .read(conversationListProvider.notifier)
+              .selectConversation(conv.id);
+          widget.onPicked?.call();
+        },
+        onRename: () => askForName(context, ref, conv),
+        onDelete: () => trashWithUndo(context, ref, conv),
+        onSave: () async {
+          final ok = await ref
+              .read(conversationListProvider.notifier)
+              .saveConversation(conv.id);
+          if (!context.mounted) return;
+          toast(context, ok ? '已保存' : '无法保存');
+        },
+      );
       return Padding(
+        key: ValueKey('conv-row-${conv.id}'),
         padding: const EdgeInsets.only(bottom: 2),
-        child: _ConversationTile(
-          key: ValueKey('conv-${conv.id}'),
-          conversation: conv,
-          isActive: conv.id == activeId,
-          isCursor: i == _cursor,
-          onTap: () {
-            ref
-                .read(conversationListProvider.notifier)
-                .selectConversation(conv.id);
-            widget.onPicked?.call();
-          },
-          onRename: () => askForName(context, ref, conv),
-          onDelete: () => confirmTrash(context, ref, conv),
-          onSave: () async {
-            final ok = await ref
-                .read(conversationListProvider.notifier)
-                .saveConversation(conv.id);
-            if (!context.mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(ok ? '已保存' : '无法保存')),
-            );
-          },
+        child: SwipeRow(
+          id: conv.id,
+          group: _swipe,
+          enabled: touch && !selecting,
+          actions: [
+            SwipeAction(
+              label: '更多',
+              icon: Icons.more_horiz_rounded,
+              color: Dk.p4,
+              onTap: () => _rowSheet(context, conv, startSelecting),
+            ),
+            SwipeAction(
+              label: '删除',
+              icon: Icons.delete_outline_rounded,
+              color: Dk.danger,
+              foreground: Dk.ink,
+              onTap: () => trashWithUndo(context, ref, conv),
+            ),
+          ],
+          child: row,
         ),
       );
     }
@@ -176,14 +308,37 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
               decoration: const BoxDecoration(
                 border: Border(bottom: BorderSide(color: Dk.line)),
               ),
-              child: Focus(
-                canRequestFocus: false,
-                onKeyEvent: (node, e) =>
-                    _onSearchKey(sidebarSearchFocus, e, ordered),
-                child: _SearchField(
-                  controller: _query,
-                  onChanged: () => setState(() => _cursor = -1),
-                ),
+              child: AnimatedSwitcher(
+                duration: Mo.fast,
+                child: selecting
+                    ? _SelectionBar(
+                        key: const ValueKey('selection-bar'),
+                        count: selection.length,
+                        allSelected: ordered.isNotEmpty &&
+                            ordered.every((c) => selection.contains(c.id)),
+                        onCancel: () => ref
+                            .read(conversationSelectionProvider.notifier)
+                            .state = null,
+                        onAll: () {
+                          final all =
+                              ordered.every((c) => selection.contains(c.id));
+                          Haptic.tick();
+                          ref
+                                  .read(conversationSelectionProvider.notifier)
+                                  .state =
+                              all ? {} : {for (final c in ordered) c.id};
+                        },
+                      )
+                    : Focus(
+                        key: const ValueKey('search'),
+                        canRequestFocus: false,
+                        onKeyEvent: (node, e) =>
+                            _onSearchKey(sidebarSearchFocus, e, ordered),
+                        child: _SearchField(
+                          controller: _query,
+                          onChanged: () => setState(() => _cursor = -1),
+                        ),
+                      ),
               ),
             ),
             const SizedBox(height: Sp.x2),
@@ -229,37 +384,44 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
               decoration: const BoxDecoration(
                 border: Border(top: BorderSide(color: Dk.line)),
               ),
-              child: Row(
-                children: [
-                  _CreateRoomButton(onPicked: widget.onPicked),
-                  _FootButton(
-                    key: const ValueKey('join-room'),
-                    icon: Icons.login_rounded,
-                    label: '加入',
-                    tooltip: '加入群聊',
-                    onTap: () => joinRoomByCode(
-                      context,
-                      ref,
-                      onPicked: widget.onPicked,
+              child: selecting
+                  ? _SelectionActions(
+                      enabled: selection.isNotEmpty,
+                      onRead: () => _bulk('read', ordered),
+                      onSave: () => _bulk('save', ordered),
+                      onTrash: () => _bulk('trash', ordered),
+                    )
+                  : Row(
+                      children: [
+                        _CreateRoomButton(onPicked: widget.onPicked),
+                        _FootButton(
+                          key: const ValueKey('join-room'),
+                          icon: Icons.login_rounded,
+                          label: '加入',
+                          tooltip: '加入群聊',
+                          onTap: () => joinRoomByCode(
+                            context,
+                            ref,
+                            onPicked: widget.onPicked,
+                          ),
+                        ),
+                        const Spacer(),
+                        DkIconButton(
+                          key: const ValueKey('open-files'),
+                          glyph: Glyph.folder,
+                          label: '文件',
+                          glyphSize: Sz.glyphSm,
+                          onTap: () => FileLibrarySheet.show(context),
+                        ),
+                        DkIconButton(
+                          key: const ValueKey('open-trash'),
+                          glyph: Glyph.trash,
+                          label: '废纸篓',
+                          glyphSize: Sz.glyphSm,
+                          onTap: () => _openTrash(context),
+                        ),
+                      ],
                     ),
-                  ),
-                  const Spacer(),
-                  DkIconButton(
-                    key: const ValueKey('open-files'),
-                    glyph: Glyph.folder,
-                    label: '文件',
-                    glyphSize: Sz.glyphSm,
-                    onTap: () => FileLibrarySheet.show(context),
-                  ),
-                  DkIconButton(
-                    key: const ValueKey('open-trash'),
-                    glyph: Glyph.trash,
-                    label: '废纸篓',
-                    glyphSize: Sz.glyphSm,
-                    onTap: () => _openTrash(context),
-                  ),
-                ],
-              ),
             ),
           ],
         ),
@@ -536,6 +698,46 @@ class _TrashSheet extends ConsumerStatefulWidget {
 }
 
 class _TrashSheetState extends ConsumerState<_TrashSheet> {
+  bool _working = false;
+
+  Future<void> _restoreAll(TrashListNotifier notifier) async {
+    final total = ref.read(trashListProvider).entries.length;
+    setState(() => _working = true);
+    final n = await notifier.restoreAll();
+    if (!mounted) return;
+    setState(() => _working = false);
+    toast(context, n == total ? '已恢复 $n 个对话' : '已恢复 $n 个，其余无法恢复');
+  }
+
+  Future<void> _emptyTrash(TrashListNotifier notifier, int count) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('清空废纸篓'),
+        content: Text('将永久删除 $count 个对话。此操作无法撤销。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('trash-empty-confirm'),
+            style: FilledButton.styleFrom(backgroundColor: Dk.danger),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() => _working = true);
+    final n = await notifier.destroyAll();
+    if (!mounted) return;
+    setState(() => _working = false);
+    Haptic.tick();
+    toast(context, n == count ? '已清空' : '已删除 $n 个，其余无法删除');
+  }
+
   @override
   void initState() {
     super.initState();
@@ -569,6 +771,22 @@ class _TrashSheetState extends ConsumerState<_TrashSheet> {
                     ],
                   ),
                 ),
+                if (trash.entries.isNotEmpty) ...[
+                  TextButton(
+                    key: const ValueKey('trash-restore-all'),
+                    onPressed: _working ? null : () => _restoreAll(notifier),
+                    child: const Text('全部恢复'),
+                  ),
+                  TextButton(
+                    key: const ValueKey('trash-empty'),
+                    style: TextButton.styleFrom(foregroundColor: Dk.danger),
+                    onPressed: _working
+                        ? null
+                        : () => _emptyTrash(notifier, trash.entries.length),
+                    child: const Text('清空'),
+                  ),
+                  const SizedBox(width: Sp.x1),
+                ],
                 DkIconButton(
                   glyph: Glyph.close,
                   label: '关闭',
@@ -757,39 +975,131 @@ Future<void> askForName(
 String remarkToStoredName(String remark, String? tool) =>
     tool == null ? remark : '$remark via $tool';
 
-/// Confirm before moving a conversation to the trash.
-Future<void> confirmTrash(
+/// Move a conversation to the trash at once, with an undo. The trash
+/// is itself the safety net, so no dialog stands in the way.
+Future<void> trashWithUndo(
   BuildContext context,
   WidgetRef ref,
   ConversationInfo conversation,
 ) async {
-  final confirmed = await showDialog<bool>(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      title: const Text('移到废纸篓'),
-      content: const Text('可在废纸篓中恢复。'),
-      actions: [
+  final list = ref.read(conversationListProvider.notifier);
+  final at = ref
+      .read(conversationListProvider)
+      .entries
+      .indexWhere((c) => c.id == conversation.id);
+  final ok = await list.trash(conversation.id);
+  if (!context.mounted) return;
+  if (!ok) {
+    Haptic.warn();
+    toast(context, '无法删除');
+    return;
+  }
+  Haptic.tick();
+  toast(
+    context,
+    '已移到废纸篓',
+    action: '撤销',
+    onAction: () => list.untrash(conversation, at: at),
+  );
+}
+
+/// Kept for callers that still say "confirm": same behaviour.
+Future<void> confirmTrash(
+  BuildContext context,
+  WidgetRef ref,
+  ConversationInfo conversation,
+) =>
+    trashWithUndo(context, ref, conversation);
+
+/// Selection mode's header: cancel, how many, select all.
+class _SelectionBar extends StatelessWidget {
+  const _SelectionBar({
+    super.key,
+    required this.count,
+    required this.allSelected,
+    required this.onCancel,
+    required this.onAll,
+  });
+
+  final int count;
+  final bool allSelected;
+  final VoidCallback onCancel;
+  final VoidCallback onAll;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
         TextButton(
-          onPressed: () => Navigator.of(dialogContext).pop(false),
+          key: const ValueKey('selection-cancel'),
+          onPressed: onCancel,
           child: const Text('取消'),
         ),
-        FilledButton(
-          onPressed: () => Navigator.of(dialogContext).pop(true),
-          child: const Text('移到废纸篓'),
+        Expanded(
+          child: Text(
+            count == 0 ? '选择对话' : '已选择 $count 个',
+            textAlign: TextAlign.center,
+            style: Ty.name.copyWith(color: Dk.t1),
+          ),
+        ),
+        TextButton(
+          key: const ValueKey('selection-all'),
+          onPressed: onAll,
+          child: Text(allSelected ? '取消全选' : '全选'),
         ),
       ],
-    ),
-  );
+    );
+  }
+}
 
-  if (confirmed != true || !context.mounted) return;
+/// Selection mode's footer: what can be done to the picked rows.
+class _SelectionActions extends StatelessWidget {
+  const _SelectionActions({
+    required this.enabled,
+    required this.onRead,
+    required this.onSave,
+    required this.onTrash,
+  });
 
-  final ok =
-      await ref.read(conversationListProvider.notifier).trash(conversation.id);
+  final bool enabled;
+  final VoidCallback onRead;
+  final VoidCallback onSave;
+  final VoidCallback onTrash;
 
-  if (!context.mounted) return;
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(ok ? '已移到废纸篓' : '无法删除')),
-  );
+  @override
+  Widget build(BuildContext context) {
+    Widget action(String key, IconData icon, String label, VoidCallback f,
+        {Color color = Dk.t1Soft}) {
+      final c = enabled ? color : Dk.t3;
+      return Expanded(
+        child: InkWell(
+          key: ValueKey(key),
+          borderRadius: BorderRadius.circular(Rd.md),
+          onTap: enabled ? f : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 20, color: c),
+                const SizedBox(height: 3),
+                Text(label, style: Ty.small.copyWith(fontSize: 11.5, color: c)),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Row(
+      children: [
+        action('bulk-read', Icons.mark_chat_read_outlined, '标为已读', onRead),
+        action('bulk-save', Icons.bookmark_border_rounded, '保存记录', onSave),
+        action('bulk-trash', Icons.delete_outline_rounded, '删除', onTrash,
+            color: Dk.danger),
+      ],
+    );
+  }
 }
 
 /// What the list area shows when there is nothing to list.
@@ -1034,9 +1344,17 @@ class _ConversationTile extends StatefulWidget {
     required this.onRename,
     required this.onDelete,
     required this.onSave,
+    this.selecting = false,
+    this.selected = false,
+    this.onSelect,
   });
 
   final ConversationInfo conversation;
+  final bool selecting;
+  final bool selected;
+
+  /// Enter selection mode with this row picked.
+  final VoidCallback? onSelect;
   final bool isActive;
 
   /// Highlighted by the keyboard while filtering.
@@ -1065,6 +1383,7 @@ class _ConversationTileState extends State<_ConversationTile> {
         Offset.zero & overlay.size,
       ),
       items: const [
+        PopupMenuItem(value: 'select', height: 36, child: Text('选择')),
         PopupMenuItem(value: 'rename', height: 36, child: Text('编辑名称')),
         // Messages are not kept on the server unless saved.
         PopupMenuItem(value: 'save', height: 36, child: Text('保存记录')),
@@ -1074,6 +1393,8 @@ class _ConversationTileState extends State<_ConversationTile> {
     );
     if (mounted) setState(() => _menuOpen = false);
     switch (value) {
+      case 'select':
+        widget.onSelect?.call();
       case 'rename':
         widget.onRename();
       case 'save':
@@ -1091,7 +1412,8 @@ class _ConversationTileState extends State<_ConversationTile> {
     // A phone has no hover: its row menu opens on a long press, and the
     // row keeps showing its time.
     final touch = Touch.primary;
-    final showMenu = touch ? _menuOpen : (_hover || _menuOpen);
+    final showMenu =
+        !widget.selecting && (touch ? _menuOpen : (_hover || _menuOpen));
     final time = c.lastMessageTime == null
         ? null
         : rowTime(
@@ -1114,8 +1436,11 @@ class _ConversationTileState extends State<_ConversationTile> {
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
-        onSecondaryTapDown: (d) => _menu(d.globalPosition),
-        onLongPressStart: touch ? (d) => _menu(d.globalPosition) : null,
+        onSecondaryTapDown:
+            widget.selecting ? null : (d) => _menu(d.globalPosition),
+        // On a phone a long press picks the row, as in Messages and Files;
+        // its other actions sit behind a swipe.
+        onLongPress: touch && !widget.selecting ? widget.onSelect : null,
         child: Material(
           color: Colors.transparent,
           child: InkWell(
@@ -1129,11 +1454,16 @@ class _ConversationTileState extends State<_ConversationTile> {
                   ? const EdgeInsets.fromLTRB(12, 12, 10, 12)
                   : const EdgeInsets.fromLTRB(10, 9, 6, 9),
               decoration: BoxDecoration(
-                color: lit ? Dk.p3 : Colors.transparent,
+                color: lit || widget.selected ? Dk.p3 : Colors.transparent,
                 borderRadius: BorderRadius.circular(Rd.md),
               ),
               child: Row(
                 children: [
+                  _SelectMark(
+                    shown: widget.selecting,
+                    on: widget.selected,
+                    id: c.id,
+                  ),
                   c.isGroup
                       ? RoomAvatar(
                           title: c.displayName,
@@ -1341,6 +1671,47 @@ class _RowMenuButton extends StatelessWidget {
         child: const Padding(
           padding: EdgeInsets.symmetric(horizontal: 4),
           child: Icon(Icons.more_horiz_rounded, size: 16, color: Dk.t2),
+        ),
+      ),
+    );
+  }
+}
+
+/// The tick at the head of a row in selection mode; slides in from the
+/// left and pushes the row over.
+class _SelectMark extends StatelessWidget {
+  const _SelectMark({required this.shown, required this.on, required this.id});
+  final bool shown;
+  final bool on;
+  final String id;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: Mo.of(context, const Duration(milliseconds: 220)),
+      curve: Mo.expo,
+      width: shown ? 34 : 0,
+      height: 22,
+        child: ClipRect(
+        child: OverflowBox(
+          alignment: Alignment.centerLeft,
+          minWidth: 0,
+          maxWidth: 34,
+          maxHeight: 22,
+          child: AnimatedContainer(
+            key: ValueKey('conv-check-$id'),
+            duration: Mo.fast,
+            width: 22,
+            height: 22,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: on ? Dk.t1 : Colors.transparent,
+              border: Border.all(color: on ? Dk.t1 : Dk.t3, width: 1.5),
+            ),
+            child: on
+                ? const Icon(Icons.check_rounded, size: 15, color: Dk.ink)
+                : null,
+          ),
         ),
       ),
     );

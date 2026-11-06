@@ -256,11 +256,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     final fit = Fit.of(context);
     final phoneList = fit.isCompact && (_phoneList || activeConvId == null);
-    return PopScope(
-      // Android back on a phone: from a conversation, back to the list.
-      canPop: !fit.isCompact || phoneList,
+    final selecting = ref.watch(conversationSelectionProvider) != null;
+    if (selecting) {
+      shortcuts[const SingleActivator(LogicalKeyboardKey.escape)] =
+          () => ref.read(conversationSelectionProvider.notifier).state = null;
+    }
+
+    /// One level back, the way a phone expects: a sheet or dialog closes
+    /// first (the navigator owns those), then selection mode ends, then
+    /// the conversation slides back to the list. Only from the list does
+    /// back leave the app.
+    bool stepBack() {
+      if (ref.read(conversationSelectionProvider) != null) {
+        ref.read(conversationSelectionProvider.notifier).state = null;
+        return true;
+      }
+      if (fit.isCompact && !phoneList) {
+        setState(() => _phoneList = true);
+        return true;
+      }
+      return false;
+    }
+
+    Widget body = PopScope(
+      canPop: !selecting && (!fit.isCompact || phoneList),
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) setState(() => _phoneList = true);
+        if (!didPop) stepBack();
       },
       child: CallbackShortcuts(
         bindings: shortcuts,
@@ -286,6 +307,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       ),
     );
+    // Under go_router the root route can never "pop", so the system back
+    // button skips PopScope and closes the app. A back-button listener
+    // runs first and takes the step itself.
+    if (Router.maybeOf(context)?.backButtonDispatcher != null) {
+      body = BackButtonListener(
+        onBackButtonPressed: () async {
+          // A sheet or dialog over the console closes first.
+          if (Navigator.of(context).canPop()) return false;
+          return stepBack();
+        },
+        child: body,
+      );
+    }
+    return body;
   }
 
   /// The newest task in this conversation that is still open and wants
