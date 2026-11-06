@@ -45,16 +45,17 @@ void main() {
     final (fake, _) = await _pump(tester);
     await tester.tap(find.byKey(const ValueKey('open-files')));
     await tester.pumpAndSettle();
-    expect(find.text('文件库'), findsOneWidget);
+    expect(find.text('文件'), findsOneWidget);
     expect(find.text('海边日落.png'), findsOneWidget);
     expect(find.textContaining('2.3 MB'), findsOneWidget);
-    expect(find.textContaining('你交出去的'), findsWidgets);
+    expect(find.textContaining('已发送'), findsWidgets);
     expect(find.text('3 个文件 · 8.7 MB'), findsOneWidget);
 
     // Row actions show on hover.
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
     await mouse.addPointer(
-      location: tester.getCenter(find.byKey(const ValueKey('file-file_review'))),
+      location:
+          tester.getCenter(find.byKey(const ValueKey('file-file_review'))),
     );
     await tester.pumpAndSettle();
     await tester.tap(find.descendant(
@@ -72,11 +73,12 @@ void main() {
     final (_, c) = await _pump(tester);
     await tester.tap(find.byKey(const ValueKey('join-room')));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const ValueKey('join-code')), 'K7Q2-9XMA');
+    await tester.enterText(
+        find.byKey(const ValueKey('join-code')), 'K7Q2-9XMA');
     await tester.tap(find.widgetWithText(FilledButton, '加入'));
     await tester.pumpAndSettle();
     expect(c.read(activeConversationIdProvider), 'room_1');
-    expect(find.text('已加入「发布评审」'), findsOneWidget);
+    expect(find.text('已加入“发布评审”'), findsOneWidget);
   });
 
   testWidgets('a wrong code says so, plainly', (tester) async {
@@ -86,6 +88,6 @@ void main() {
     await tester.enterText(find.byKey(const ValueKey('join-code')), 'NOPE');
     await tester.tap(find.widgetWithText(FilledButton, '加入'));
     await tester.pumpAndSettle();
-    expect(find.text('这个邀请码不对，或者已经作废了'), findsOneWidget);
+    expect(find.text('邀请码无效'), findsOneWidget);
   });
 }

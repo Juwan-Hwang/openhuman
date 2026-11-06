@@ -496,7 +496,7 @@ class _FoldBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final label = open ? '收起' : '展开其余 $hidden 行';
+    final label = open ? '收起' : '显示更多';
     return Pressable(
       semanticLabel: label,
       onTap: onTap,

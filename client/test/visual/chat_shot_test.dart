@@ -126,7 +126,7 @@ void main() {
     }
 
     // The technical fold opened, a tool expanded, and the row menu.
-    await tester.tap(find.text('技术详情'));
+    await tester.tap(find.text('高级'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('读取文件'));
     await tester.pumpAndSettle();
@@ -156,7 +156,7 @@ void main() {
       );
     }
 
-    await tester.tap(find.byTooltip('让别人联系你'));
+    await tester.tap(find.byTooltip('分享联系方式'));
     await tester.pumpAndSettle();
     if (enabled) {
       await expectLater(

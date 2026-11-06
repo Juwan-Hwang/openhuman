@@ -170,7 +170,8 @@ class ChatController extends StateNotifier<List<types.Message>> {
         _ref.read(conversationListProvider.notifier).applyLastMessage(
               conversationId,
               messages.last,
-              me: _ref.read(currentHumanProvider)?.id ?? client.currentHuman?.id,
+              me: _ref.read(currentHumanProvider)?.id ??
+                  client.currentHuman?.id,
             );
       }
     } catch (e, st) {
@@ -334,9 +335,9 @@ class ChatController extends StateNotifier<List<types.Message>> {
   String _why(Object e) {
     final t = e.toString();
     if (t.contains('not connected') || t.contains('StateError')) {
-      return '没连上，没发出去';
+      return '未连接，无法发送';
     }
-    return '没发出去';
+    return '未发送';
   }
 
   /// Send a failed reply again.
@@ -404,7 +405,7 @@ class ChatController extends StateNotifier<List<types.Message>> {
   }) async {
     final conversationId = _conversationForSend();
     if (conversationId == null) {
-      return const TaskOutcome(TaskState.failed, note: '没有打开的对话');
+      return const TaskOutcome(TaskState.failed, note: '未选择对话');
     }
     if (!decline) {
       final check = checkAnswer(task, text, [for (final f in files) f.draft]);
@@ -412,7 +413,7 @@ class ChatController extends StateNotifier<List<types.Message>> {
         return TaskOutcome(TaskState.open, note: check.error);
       }
     }
-    final body = decline && text.trim().isEmpty ? '这个我做不了，抱歉。' : text.trim();
+    final body = decline && text.trim().isEmpty ? '无法完成此请求。' : text.trim();
     _setOutcome(taskMessageId, const TaskOutcome(TaskState.sending));
 
     // Show my answer at once, the way it will read to them.
@@ -506,14 +507,14 @@ class ChatController extends StateNotifier<List<types.Message>> {
         out = TaskOutcome(
           TaskState.open,
           note: r.errorCode == 'bad_answer'
-              ? '服务器没收：${r.errorMessage ?? '格式不对'}'
-              : (r.errorMessage ?? '没发出去'),
+              ? '服务器拒绝：${r.errorMessage ?? '格式不对'}'
+              : (r.errorMessage ?? '未发送'),
         );
       } else if (r.abandoned) {
-        mark(types.Status.error, '对方已经不等了，没送到');
+        mark(types.Status.error, '对方已离开，未送达');
         out = const TaskOutcome(
           TaskState.expired,
-          note: '对方已经不等了，这份回答没送到。',
+          note: '对方已离开，回答未送达。',
         );
       } else {
         mark(types.Status.delivered);
@@ -528,7 +529,7 @@ class ChatController extends StateNotifier<List<types.Message>> {
       debugPrint('[Chat] task answer failed: $e');
       bucket.removeWhere((m) => ids.contains(m.id));
       _publish(conversationId);
-      final out = TaskOutcome(TaskState.open, note: '没发出去：${_short(e)}');
+      final out = TaskOutcome(TaskState.open, note: '未发送：${_short(e)}');
       _setOutcome(taskMessageId, out);
       return out;
     }
@@ -536,12 +537,12 @@ class ChatController extends StateNotifier<List<types.Message>> {
 
   String _short(Object e) {
     final t = e.toString();
-    if (t.contains('before connect')) return '还没连上服务器';
+    if (t.contains('before connect')) return '未连接服务器';
     if (t.contains('SocketException') || t.contains('Connection')) {
-      return '网络连不上';
+      return '无法连接网络';
     }
-    if (t.contains('Timeout')) return '超时了';
-    return '出错了';
+    if (t.contains('Timeout')) return '超时';
+    return '出现错误';
   }
 
   @override

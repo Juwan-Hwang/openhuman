@@ -158,4 +158,4 @@ class TrayService with WindowListener, TrayListener {
 
 /// The tray's hover text.
 String trayTooltip(int waiting) =>
-    waiting <= 0 ? 'OpenHuman · 没有人在等你回复' : 'OpenHuman · $waiting 人在等你回复';
+    waiting <= 0 ? 'OpenHuman' : 'OpenHuman · $waiting 条待回复';

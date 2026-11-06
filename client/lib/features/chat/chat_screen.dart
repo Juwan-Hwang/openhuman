@@ -138,7 +138,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     void sendText(String text) {
       final sent = controller.sendReply(text);
-      if (!sent && mounted) toast(context, '还没有打开的对话，发不出去');
+      if (!sent && mounted) toast(context, '未选择对话');
     }
 
     // Group-room context (§10.6): end.turn and the tool-invoke panel are
@@ -348,15 +348,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             onTap: _reconnecting ? null : _reconnect,
           ),
         _Action(
-            glyph: isGroup ? Glyph.people : Glyph.details,
-            label: isGroup ? '群聊详情' : '对话详情',
-            shortcut: 'I',
-            active: _showRuntimePanel && !fit.isCompact,
-            onTap: _toggleRuntime,
-          ),
+          glyph: isGroup ? Glyph.people : Glyph.details,
+          label: isGroup ? '群聊详情' : '对话详情',
+          shortcut: 'I',
+          active: _showRuntimePanel && !fit.isCompact,
+          onTap: _toggleRuntime,
+        ),
         _Action(
           glyph: Glyph.link,
-          label: '让别人联系你',
+          label: '分享联系方式',
           onTap: () => ShareSheet.show(context),
         ),
       ],
@@ -553,7 +553,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // (`finish_reason: stop` + [DONE]), so their tool shows my reply as
     // complete.
     final ended = ref.read(chatControllerProvider.notifier).endTurn();
-    if (!ended && mounted) toast(context, '现在没有可以结束的对话');
+    if (!ended && mounted) toast(context, '没有进行中的对话');
   }
 
   /// Words and files from the composer, as the answer to an open task.
@@ -759,7 +759,7 @@ class _TopBar extends StatelessWidget {
           children: [
             DkIconButton(
               glyph: Glyph.back,
-              label: '会话列表',
+              label: '对话列表',
               bar: true,
               onTap: onSidebar,
             ),
@@ -783,7 +783,7 @@ class _TopBar extends StatelessWidget {
         children: [
           DkIconButton(
             glyph: Glyph.sidebar,
-            label: '会话列表',
+            label: '对话列表',
             shortcut: 'B',
             bar: true,
             active: sidebarOpen,
@@ -820,10 +820,10 @@ class _TopBar extends StatelessWidget {
 
 /// What the header says about whose move it is, and in what colour.
 (String, Color)? _turnLabel(_TurnState s, bool short) => switch (s) {
-      _TurnState.yours => (short ? '等你回复' : '在等你回复', Dk.signal),
-      _TurnState.theirs => ('等对方回复', Dk.t2),
-      _TurnState.failed => (short ? '没发出去' : '你的回复没发出去', Dk.danger),
-      _TurnState.ended => (short ? '你已说完' : '这一轮你说完了', Dk.t3),
+      _TurnState.yours => (short ? '待回复' : '待回复', Dk.signal),
+      _TurnState.theirs => ('等待回复', Dk.t2),
+      _TurnState.failed => (short ? '未发送' : '回复未发送', Dk.danger),
+      _TurnState.ended => (short ? '已结束' : '已结束本轮', Dk.t3),
       _TurnState.idle => null,
     };
 
@@ -930,8 +930,8 @@ class _ConnBanner extends StatelessWidget {
     final retrying = state == oh.ConnectionState.connecting ||
         state == oh.ConnectionState.reconnecting;
     final (fg, bg, edge, text) = retrying
-        ? (Dk.warn, Dk.warnSoft, Dk.warnSoft, '正在重新连接，连上之前消息发不出去。')
-        : (Dk.danger, Dk.dangerSoft, Dk.dangerEdge, '连接断开了，暂时收不到新消息。');
+        ? (Dk.warn, Dk.warnSoft, Dk.warnSoft, '正在重新连接…')
+        : (Dk.danger, Dk.dangerSoft, Dk.dangerEdge, '已断开连接。');
     return Semantics(
       liveRegion: true,
       child: Container(

@@ -238,15 +238,15 @@ Future<void> saveAttachment(
   final bytes = await bytesOf(uri);
   if (!context.mounted) return;
   if (bytes == null) {
-    toast(context, '这个文件拿不到了');
+    toast(context, '文件不可用');
     return;
   }
   try {
     final where = await FilesIo.save(_safeName(name, uri), bytes);
     if (!context.mounted || where == null) return;
-    toast(context, '已保存到 $where');
+    toast(context, '已保存');
   } catch (_) {
-    if (context.mounted) toast(context, '保存失败');
+    if (context.mounted) toast(context, '无法保存');
   }
 }
 
@@ -256,11 +256,11 @@ Future<void> openAttachment(
   final bytes = await bytesOf(uri);
   if (!context.mounted) return;
   if (bytes == null) {
-    toast(context, '这个文件拿不到了');
+    toast(context, '文件不可用');
     return;
   }
   final ok = await FilesIo.open(_safeName(name, uri), bytes);
-  if (!ok && context.mounted) toast(context, '没有能打开它的应用');
+  if (!ok && context.mounted) toast(context, '没有可打开此文件的应用');
 }
 
 String _safeName(String name, String uri) {
@@ -457,7 +457,7 @@ class _AudioTileState extends State<AudioTile> {
     final meta = [
       if (len != null) '${_t(_pos)} / ${_t(len)}',
       if (len == null) sizeLabel(widget.size),
-      if (_failed) '这里放不了，可以保存后播放',
+      if (_failed) '无法播放',
     ].where((s) => s.isNotEmpty).join(' · ');
     return _TileShell(
       glyph: Glyph.bell,
@@ -565,7 +565,7 @@ class VideoTile extends StatelessWidget {
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: Sz.imageMax),
       child: Pressable(
-        semanticLabel: '用系统播放器打开 $name',
+        semanticLabel: '打开 $name',
         radius: Rd.lg,
         onTap: () => openAttachment(context, name, uri),
         builder: (context, s) => AspectRatio(

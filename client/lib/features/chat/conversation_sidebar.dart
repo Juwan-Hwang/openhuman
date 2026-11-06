@@ -144,7 +144,7 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
                 .saveConversation(conv.id);
             if (!context.mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(ok ? '会话记录已保存' : '保存失败')),
+              SnackBar(content: Text(ok ? '已保存' : '无法保存')),
             );
           },
         ),
@@ -200,7 +200,7 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
                       ? _CenteredNote(
                           theme: theme,
                           icon: Icons.search_off_rounded,
-                          title: '没有匹配「${_query.text.trim()}」的会话',
+                          title: '无结果',
                         )
                       : ListView(
                           padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
@@ -235,7 +235,7 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
                     key: const ValueKey('join-room'),
                     icon: Icons.login_rounded,
                     label: '加入',
-                    tooltip: '用邀请码加入群聊',
+                    tooltip: '加入群聊',
                     onTap: () => joinRoomByCode(
                       context,
                       ref,
@@ -246,14 +246,14 @@ class _ConversationSidebarState extends ConsumerState<ConversationSidebar> {
                   DkIconButton(
                     key: const ValueKey('open-files'),
                     glyph: Glyph.folder,
-                    label: '文件库',
+                    label: '文件',
                     glyphSize: Sz.glyphSm,
                     onTap: () => FileLibrarySheet.show(context),
                   ),
                   DkIconButton(
                     key: const ValueKey('open-trash'),
                     glyph: Glyph.trash,
-                    label: '回收站',
+                    label: '废纸篓',
                     glyphSize: Sz.glyphSm,
                     onTap: () => _openTrash(context),
                   ),
@@ -288,7 +288,7 @@ class _SearchField extends StatelessWidget {
           isDense: true,
           filled: true,
           fillColor: Dk.bg,
-          hintText: '搜索会话',
+          hintText: '搜索',
           hintStyle: Ty.small.copyWith(color: Dk.t3, fontSize: 13),
           prefixIcon: const Icon(Icons.search_rounded, size: 16, color: Dk.t3),
           prefixIconConstraints:
@@ -370,8 +370,7 @@ Future<void> joinRoomByCode(
           textCapitalization: TextCapitalization.characters,
           style: Ty.code.copyWith(fontSize: 15, letterSpacing: 1.2),
           decoration: const InputDecoration(
-            hintText: '粘贴群主发给你的邀请码',
-            helperText: '进群后能看到之后的消息，之前的看不到',
+            hintText: '邀请码',
           ),
           onSubmitted: (v) => Navigator.of(c).pop(v.trim()),
         ),
@@ -399,7 +398,7 @@ Future<void> joinRoomByCode(
     }
     if (context.mounted) {
       final title = room['title'] as String?;
-      toast(context, title == null ? '已加入群聊' : '已加入「$title」');
+      toast(context, title == null ? '已加入' : '已加入“$title”');
     }
   } catch (e) {
     if (!context.mounted) return;
@@ -407,10 +406,10 @@ Future<void> joinRoomByCode(
     toast(
       context,
       t.contains('404') || t.contains('not_found') || t.contains('invalid')
-          ? '这个邀请码不对，或者已经作废了'
+          ? '邀请码无效'
           : t.contains('full')
-              ? '这个群已经满了'
-              : '没加入成功，稍后再试',
+              ? '群聊已满'
+              : '无法加入，请稍后再试',
     );
   }
 }
@@ -434,7 +433,7 @@ class _CreateRoomButton extends ConsumerWidget {
     return _FootButton(
       icon: Icons.group_add_outlined,
       label: '新建群聊',
-      tooltip: '新建一个群，邀请朋友进来',
+      tooltip: '新建群聊',
       onTap: () => _createRoom(context, ref),
     );
   }
@@ -448,7 +447,7 @@ class _CreateRoomButton extends ConsumerWidget {
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(hintText: '群名称'),
+          decoration: const InputDecoration(hintText: '名称'),
           onSubmitted: (v) => Navigator.of(dialogContext).pop(v.trim()),
         ),
         actions: [
@@ -477,7 +476,7 @@ class _CreateRoomButton extends ConsumerWidget {
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('创建失败：$e')),
+          SnackBar(content: Text('无法创建：$e')),
         );
       }
     }
@@ -565,12 +564,7 @@ class _TrashSheetState extends ConsumerState<_TrashSheet> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('回收站', style: Ty.title.copyWith(fontSize: 18)),
-                      const SizedBox(height: 4),
-                      const Text(
-                        '移进来的对话随时可以恢复；彻底删除后就找不回了',
-                        style: Ty.small,
-                      ),
+                      Text('废纸篓', style: Ty.title.copyWith(fontSize: 18)),
                     ],
                   ),
                 ),
@@ -646,23 +640,22 @@ class _TrashSheetState extends ConsumerState<_TrashSheet> {
                               onTap: () async {
                                 final ok = await notifier.restore(item.id);
                                 if (!context.mounted) return;
-                                toast(context,
-                                    ok ? '已恢复「${caller.name}」' : '没恢复成功');
+                                toast(context, ok ? '已恢复' : '无法恢复');
                               },
                             ),
                             const SizedBox(width: Sp.x1),
                             DkIconButton(
                               glyph: Glyph.trash,
-                              label: '彻底删除',
+                              label: '永久删除',
                               color: Dk.danger,
                               glyphSize: Sz.glyphSm,
                               onTap: () async {
                                 final confirmed = await showDialog<bool>(
                                   context: context,
                                   builder: (dialogContext) => AlertDialog(
-                                    title: const Text('彻底删除'),
-                                    content: Text(
-                                      '和「${caller.name}」的这段对话会被永久删除，无法恢复。',
+                                    title: const Text('永久删除'),
+                                    content: const Text(
+                                      '此操作无法撤销。',
                                     ),
                                     actions: [
                                       TextButton(
@@ -717,19 +710,15 @@ Future<void> askForName(
   final name = await showDialog<String>(
     context: context,
     builder: (dialogContext) => AlertDialog(
-      title: const Text('改备注名'),
+      title: const Text('编辑名称'),
       content: SizedBox(
         width: 360,
         child: TextField(
           controller: controller,
           autofocus: true,
           maxLength: 32,
-          decoration: InputDecoration(
+          decoration: const InputDecoration(
             hintText: '例如：林晓',
-            helperText: caller.tool == null
-                ? '和这个人的所有对话都会用这个名字'
-                : '和这个人的所有对话都会用这个名字，「经由 ${caller.tool}」会保留',
-            helperMaxLines: 2,
           ),
           onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
         ),
@@ -758,7 +747,7 @@ Future<void> askForName(
 
   if (!context.mounted) return;
   ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(ok ? '备注名已改为「$trimmed」' : '没改成，稍后再试')),
+    SnackBar(content: Text(ok ? '已更新' : '无法更新，请稍后再试')),
   );
 }
 
@@ -776,8 +765,8 @@ Future<void> confirmTrash(
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (dialogContext) => AlertDialog(
-      title: const Text('移到回收站'),
-      content: Text('和「${conversation.displayName}」的这段对话会移到回收站，随时可以恢复。'),
+      title: const Text('移到废纸篓'),
+      content: const Text('可在废纸篓中恢复。'),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -785,7 +774,7 @@ Future<void> confirmTrash(
         ),
         FilledButton(
           onPressed: () => Navigator.of(dialogContext).pop(true),
-          child: const Text('移到回收站'),
+          child: const Text('移到废纸篓'),
         ),
       ],
     ),
@@ -798,7 +787,7 @@ Future<void> confirmTrash(
 
   if (!context.mounted) return;
   ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(ok ? '已移到回收站' : '删除失败')),
+    SnackBar(content: Text(ok ? '已移到废纸篓' : '无法删除')),
   );
 }
 
@@ -827,7 +816,7 @@ class _ListPlaceholder extends StatelessWidget {
       case ConversationListStatus.loading:
         return _CenteredNote(
           theme: theme,
-          title: '正在加载会话…',
+          title: '正在加载…',
           loading: true,
         );
 
@@ -835,8 +824,7 @@ class _ListPlaceholder extends StatelessWidget {
         return _CenteredNote(
           theme: theme,
           icon: Icons.cloud_off_outlined,
-          title: listState.error ?? '加载失败',
-          subtitle: '网络可能不太稳定，可以重试',
+          title: listState.error ?? '无法加载',
           action: TextButton.icon(
             onPressed: onRetry,
             icon: const Icon(Icons.refresh_rounded, size: 16),
@@ -848,8 +836,8 @@ class _ListPlaceholder extends StatelessWidget {
         return _CenteredNote(
           theme: theme,
           icon: Icons.forum_outlined,
-          title: '还没有会话',
-          subtitle: '有人发来消息后，会出现在这里。\n可以先在「让别人联系你」里把联系方式发给朋友',
+          title: '没有对话',
+          subtitle: '分享联系方式，即可收到消息。',
         );
 
       case ConversationListStatus.idle:
@@ -859,10 +847,6 @@ class _ListPlaceholder extends StatelessWidget {
           theme: theme,
           icon: _connIcon,
           title: _connTitle,
-          subtitle: connState == oh.ConnectionState.connecting ||
-                  connState == oh.ConnectionState.reconnecting
-              ? '连上之后会自动加载'
-              : '检查网络或点右上角重连',
           action: TextButton.icon(
             onPressed: onRetry,
             icon: const Icon(Icons.refresh_rounded, size: 16),
@@ -897,7 +881,7 @@ class _ListPlaceholder extends StatelessWidget {
         return '未连接';
       case oh.ConnectionState.idle:
       case oh.ConnectionState.connected:
-        return '等待连接';
+        return '未连接';
     }
   }
 }
@@ -925,7 +909,7 @@ class _TrashPlaceholder extends StatelessWidget {
       case ConversationListStatus.idle:
         return _CenteredNote(
           theme: theme,
-          title: '正在加载回收站…',
+          title: '正在加载…',
           loading: true,
         );
 
@@ -933,8 +917,7 @@ class _TrashPlaceholder extends StatelessWidget {
         return _CenteredNote(
           theme: theme,
           icon: Icons.cloud_off_outlined,
-          title: error ?? '加载失败',
-          subtitle: '没能读取回收站，内容没有丢',
+          title: error ?? '无法加载',
           action: TextButton.icon(
             onPressed: onRetry,
             icon: const Icon(Icons.refresh_rounded, size: 16),
@@ -946,8 +929,7 @@ class _TrashPlaceholder extends StatelessWidget {
         return _CenteredNote(
           theme: theme,
           icon: Icons.delete_outline,
-          title: '回收站是空的',
-          subtitle: '移到回收站的对话会保留在这里',
+          title: '废纸篓为空',
         );
     }
   }
@@ -1001,7 +983,7 @@ class _CenteredNote extends StatelessWidget {
               Icon(icon, size: 20, color: Dk.t3),
             const SizedBox(height: 12),
             Text(title, textAlign: TextAlign.center, style: style),
-            if (subtitle != null) ...[
+            if (subtitle != null && subtitle!.isNotEmpty) ...[
               const SizedBox(height: 6),
               Text(
                 subtitle!,
@@ -1081,11 +1063,11 @@ class _ConversationTileState extends State<_ConversationTile> {
         Offset.zero & overlay.size,
       ),
       items: const [
-        PopupMenuItem(value: 'rename', height: 36, child: Text('改备注名')),
+        PopupMenuItem(value: 'rename', height: 36, child: Text('编辑名称')),
         // Messages are not kept on the server unless saved.
-        PopupMenuItem(value: 'save', height: 36, child: Text('保存会话记录')),
+        PopupMenuItem(value: 'save', height: 36, child: Text('保存记录')),
         PopupMenuDivider(height: 8),
-        PopupMenuItem(value: 'delete', height: 36, child: Text('移到回收站')),
+        PopupMenuItem(value: 'delete', height: 36, child: Text('移到废纸篓')),
       ],
     );
     if (mounted) setState(() => _menuOpen = false);
@@ -1267,12 +1249,12 @@ class _ConversationTileState extends State<_ConversationTile> {
 String rowPreview(ConversationInfo c) {
   final raw = c.lastMessage == null ? '' : previewText(c.lastMessage!);
   if (raw.isEmpty) {
-    if (c.task != null) return '发来一个请求';
+    if (c.task != null) return '请求';
     if (c.isGroup) return '群聊';
     final via = c.caller.tool;
     return via == null ? '' : '经由 $via';
   }
-  if (c.lastFailed) return '未发出：$raw';
+  if (c.lastFailed) return '未发送：$raw';
   return c.lastFromMe ? '你：$raw' : raw;
 }
 
@@ -1327,7 +1309,7 @@ class _WaitingTag extends StatelessWidget {
         ),
         const SizedBox(width: 5),
         Text(
-          '等你回复',
+          '待回复',
           style: Ty.meta.copyWith(
             fontSize: 10.5,
             color: Dk.signal,

@@ -53,24 +53,22 @@ class _FileLibrarySheetState extends ConsumerState<FileLibrarySheet> {
     try {
       await action();
     } catch (e) {
-      if (mounted) toast(context, '没成功，稍后再试');
+      if (mounted) toast(context, '请稍后再试');
     } finally {
       if (mounted) setState(() => _busy.remove(id));
     }
   }
 
   Future<void> _save(oh.StoredFileInfo f) => _withRow(f.id, () async {
-        final bytes =
-            await ref.read(openHumanClientProvider).fileContent(f.id);
+        final bytes = await ref.read(openHumanClientProvider).fileContent(f.id);
         final where = await FilesIo.save(f.filename, bytes);
-        if (where != null && mounted) toast(context, '已保存「${f.filename}」');
+        if (where != null && mounted) toast(context, '已保存');
       });
 
   Future<void> _open(oh.StoredFileInfo f) => _withRow(f.id, () async {
-        final bytes =
-            await ref.read(openHumanClientProvider).fileContent(f.id);
+        final bytes = await ref.read(openHumanClientProvider).fileContent(f.id);
         final ok = await FilesIo.open(f.filename, bytes);
-        if (!ok && mounted) toast(context, '这台设备打不开这种文件，可以先保存');
+        if (!ok && mounted) toast(context, '无法打开此文件');
       });
 
   Future<void> _delete(oh.StoredFileInfo f) async {
@@ -78,7 +76,7 @@ class _FileLibrarySheetState extends ConsumerState<FileLibrarySheet> {
       context: context,
       builder: (c) => AlertDialog(
         title: const Text('删除文件'),
-        content: Text('「${f.filename}」会从服务器上删掉，已经发出去的消息里也就打不开了。'),
+        content: const Text('此操作无法撤销。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(c).pop(false),
@@ -112,11 +110,10 @@ class _FileLibrarySheetState extends ConsumerState<FileLibrarySheet> {
       }
       ref.invalidate(fileLibraryProvider);
       if (mounted) {
-        toast(context,
-            picked.length == 1 ? '已上传「${picked.first.name}」' : '已上传 ${picked.length} 个文件');
+        toast(context, picked.length == 1 ? '已上传' : '已上传 ${picked.length} 个文件');
       }
     } catch (_) {
-      if (mounted) toast(context, '上传没成功，稍后再试');
+      if (mounted) toast(context, '无法上传');
     } finally {
       if (mounted) setState(() => _uploading = false);
     }
@@ -140,12 +137,12 @@ class _FileLibrarySheetState extends ConsumerState<FileLibrarySheet> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('文件库', style: Ty.title.copyWith(fontSize: 18)),
+                    Text('文件', style: Ty.title.copyWith(fontSize: 18)),
                     const SizedBox(height: 4),
                     Text(
                       files.hasValue && list.isNotEmpty
                           ? '${list.length} 个文件 · ${sizeLabel(total)}'
-                          : '别人发给你的、你在回答里交出去的文件都在这里',
+                          : '',
                       style: Ty.small,
                     ),
                   ],
@@ -170,11 +167,10 @@ class _FileLibrarySheetState extends ConsumerState<FileLibrarySheet> {
         ),
         Flexible(
           child: files.when(
-            loading: () => const _Note(loading: true, title: '正在读取文件库…'),
+            loading: () => const _Note(loading: true, title: '正在加载…'),
             error: (_, __) => _Note(
               icon: Icons.cloud_off_outlined,
-              title: '没能读取文件库',
-              subtitle: '文件都还在，网络好些时再打开看看',
+              title: '无法加载文件',
               action: DkButton(
                 label: '重试',
                 glyph: Glyph.retry,
@@ -185,8 +181,7 @@ class _FileLibrarySheetState extends ConsumerState<FileLibrarySheet> {
             data: (list) => list.isEmpty
                 ? const _Note(
                     icon: Icons.folder_open_outlined,
-                    title: '还没有文件',
-                    subtitle: '有人发来文件，或者你用文件回答请求后，会出现在这里',
+                    title: '没有文件',
                   )
                 : ListView.separated(
                     shrinkWrap: true,
@@ -216,10 +211,10 @@ class _FileLibrarySheetState extends ConsumerState<FileLibrarySheet> {
 String fileOrigin(oh.StoredFileInfo f) {
   final p = (f.purpose ?? '').toLowerCase();
   if (p.contains('answer') || p.contains('output') || p.contains('result')) {
-    return '你交出去的';
+    return '已发送';
   }
-  if (p == 'user_data' || p.isEmpty) return '上传的';
-  if (p.contains('vision') || p.contains('assistants')) return '对方发来的';
+  if (p == 'user_data' || p.isEmpty) return '已上传';
+  if (p.contains('vision') || p.contains('assistants')) return '已接收';
   return p;
 }
 
@@ -318,7 +313,7 @@ class _FileRowState extends State<_FileRow> {
                       children: [
                         DkIconButton(
                           glyph: Glyph.save,
-                          label: '保存到本机',
+                          label: '保存',
                           glyphSize: Sz.glyphSm,
                           onTap: showActions ? widget.onSave : null,
                         ),
@@ -371,10 +366,9 @@ class _Note extends StatelessWidget {
   const _Note({
     required this.title,
     this.icon,
-    this.subtitle,
     this.action,
     this.loading = false,
-  });
+  }) : subtitle = null;
 
   final String title;
   final IconData? icon;
@@ -401,7 +395,7 @@ class _Note extends StatelessWidget {
             Icon(icon, size: 22, color: Dk.t3),
           const SizedBox(height: Sp.x3),
           Text(title, style: Ty.small.copyWith(color: Dk.t2)),
-          if (subtitle != null) ...[
+          if (subtitle != null && subtitle!.isNotEmpty) ...[
             const SizedBox(height: Sp.x15),
             Text(
               subtitle!,

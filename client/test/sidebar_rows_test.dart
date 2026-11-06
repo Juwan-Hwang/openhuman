@@ -33,7 +33,7 @@ void main() {
   test('a reply that never left does not read as said', () {
     expect(
       rowPreview(_c(last: '可以', mine: true, failed: true)),
-      '未发出：可以',
+      '未发送：可以',
     );
   });
 
@@ -51,11 +51,12 @@ void main() {
   });
 
   test('the tray says how many people are waiting', () {
-    expect(trayTooltip(0), 'OpenHuman · 没有人在等你回复');
-    expect(trayTooltip(2), 'OpenHuman · 2 人在等你回复');
+    expect(trayTooltip(0), 'OpenHuman');
+    expect(trayTooltip(2), 'OpenHuman · 2 条待回复');
   });
 
   test('markdown is flattened to one line', () {
-    expect(rowPreview(_c(last: '**看**\n```rust\nfn a() {}\n```')), '看 fn a() {}');
+    expect(
+        rowPreview(_c(last: '**看**\n```rust\nfn a() {}\n```')), '看 fn a() {}');
   });
 }

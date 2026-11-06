@@ -29,7 +29,7 @@ void main() {
       expect(t.kind, TaskKind.imageGenerate);
       expect(t.media, AnswerMedia.image);
       expect(t.count, 2);
-      expect(t.ask, '请你生成 2 张图片');
+      expect(t.ask, '生成 2 张图片');
       expect(t.chips, ['1024×1024', '2 张', 'PNG', '高质量', '透明背景']);
       expect(t.deadline,
           DateTime.fromMillisecondsSinceEpoch(1700000000 * 1000 + 900000));
@@ -50,25 +50,25 @@ void main() {
       final s = _t('audio.speech',
           'voice alloy, mp3, speed 1.25: speak the message text aloud',
           files: true);
-      expect(s.ask, '请你把一段文字读出来');
+      expect(s.ask, '朗读文字');
       expect(s.chips, ['声音 alloy', 'MP3', '1.25 倍速']);
       expect(s.audioFormat, 'mp3');
 
       final tr = _t('audio.transcriptions',
           'transcribe the attached audio (language zh); answer with the text as SRT (numbered cues with HH:MM:SS,mmm --> HH:MM:SS,mmm timings), each cue starting with its speaker and a colon (A: ...)');
       expect(tr.wantsSrt, isTrue);
-      expect(tr.chips, ['语言 zh', '带时间轴（SRT）', '标出说话人']);
+      expect(tr.chips, ['语言 zh', 'SRT 字幕', '区分说话人']);
 
       final v = _t('videos',
           '8s video, 720x1280: continue the attached video as the message says (attach the whole extended video) and attach it',
           files: true);
-      expect(v.ask, '请你把一段视频接着拍下去');
+      expect(v.ask, '延长视频');
       expect(v.chips, ['8 秒', '720×1280', 'MP4']);
 
       final c = _t('completions',
           'max 40 tokens; 3 different continuations, separated by a line `@@@`: answer with the continuation only');
       expect(c.count, 3);
-      expect(c.ask, '请你续写 3 个版本');
+      expect(c.ask, '续写 3 个版本');
     });
 
     test('countdown', () {
@@ -168,7 +168,7 @@ void main() {
       expect(
           checkDecisions(
               '[{"answer": 0.5, "confidence": 3}, "red", "low"]', spec),
-          contains('把握'));
+          contains('0 到 1'));
     });
 
     test('vector search hits name a file of the store', () {
@@ -182,8 +182,8 @@ void main() {
           isNull);
       expect(checkHits('[]', spec), isNull);
       expect(
-          checkHits('[{"file": "b.txt", "text": "x"}]', spec), contains('不在'));
-      expect(checkHits('[{"file": "a.txt"}]', spec), contains('段落'));
+          checkHits('[{"file": "b.txt", "text": "x"}]', spec), contains('未找到'));
+      expect(checkHits('[{"file": "a.txt"}]', spec), contains('text'));
       expect(
           checkHits(
               '[{"file":"a.txt","text":"x"},{"file":"a.txt","text":"x"},{"file":"a.txt","text":"x"}]',
@@ -220,7 +220,7 @@ void main() {
               '2\n00:00:03,000 --> 00:00:04,000\nA: 再见'),
           isNull);
       expect(checkSrt('你好'), contains('时间轴'));
-      expect(checkSrt('1\n00:00:01,000 --> 00:00:02,500'), contains('没有文字'));
+      expect(checkSrt('1\n00:00:01,000 --> 00:00:02,500'), contains('缺少文字'));
     });
 
     test('completion versions are counted by @@@ lines', () {

@@ -57,17 +57,16 @@ Future<(_Invites, ProviderContainer)> _pump(
 }
 
 void main() {
-  testWidgets('a person: name and tool first, ids folded away',
-      (tester) async {
+  testWidgets('a person: name and tool first, ids folded away', (tester) async {
     await _pump(tester, 'cnv_lin');
     expect(find.byKey(const ValueKey('details-person')), findsOneWidget);
     expect(find.text('林晓'), findsWidgets);
     expect(find.text('经由 Claude Code'), findsOneWidget);
-    expect(find.text('备注名'), findsOneWidget);
+    expect(find.text('名称'), findsOneWidget);
     // The technical side is there, but closed.
-    expect(find.text('技术详情'), findsOneWidget);
+    expect(find.text('高级'), findsOneWidget);
     expect(find.text('agt_lin'), findsNothing);
-    await tester.tap(find.text('技术详情'));
+    await tester.tap(find.text('高级'));
     await tester.pumpAndSettle();
     expect(find.text('agt_lin'), findsOneWidget);
   });
@@ -79,7 +78,7 @@ void main() {
     expect(find.text('成员'), findsOneWidget);
     expect(find.text('群主'), findsOneWidget);
     expect(find.text('Mia Chen'), findsOneWidget);
-    await tester.tap(find.text('生成邀请码'));
+    await tester.tap(find.text('创建邀请码'));
     await tester.pumpAndSettle();
     expect(fake.minted, 1);
     expect(find.text('K7Q2-9XMA'), findsOneWidget);

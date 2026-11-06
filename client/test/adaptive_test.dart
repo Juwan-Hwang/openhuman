@@ -63,7 +63,7 @@ void main() {
     expect(find.byType(Composer), findsOneWidget);
     expect(find.byType(ConversationSidebar), findsNothing);
 
-    await tester.tap(find.byTooltip('会话列表'));
+    await tester.tap(find.byTooltip('对话列表'));
     await tester.pumpAndSettle();
     expect(find.byType(ConversationSidebar), findsOneWidget);
   });

@@ -185,10 +185,10 @@ class ConversationInfo {
 
 /// What a conversation's origin is called.
 String? originLabel(String? origin) => switch (origin) {
-      'assistants' => '来自 Assistants 线程',
-      'agents' => '来自 Agents 会话',
+      'assistants' => 'Assistants 线程',
+      'agents' => 'Agents 会话',
       'chatkit' => '来自 ChatKit',
-      'evals' => '来自评测',
+      'evals' => '评测',
       _ => null,
     };
 
@@ -455,15 +455,15 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
     final text = error.toString();
     // Raised by the SDK when history is asked for before credentials
     // exist — i.e. the socket never got far enough to register.
-    if (text.contains('before connect')) return '还没连接上';
+    if (text.contains('before connect')) return '未连接';
     if (text.contains('Timeout') || text.contains('timed out')) {
-      return '加载超时';
+      return '连接超时';
     }
     if (text.contains('SocketException') ||
         text.contains('Failed host lookup')) {
-      return '网络连不上';
+      return '无法连接网络';
     }
-    return '加载失败';
+    return '无法加载';
   }
 
   int _newestFirst(ConversationInfo a, ConversationInfo b) {
@@ -692,7 +692,7 @@ class TrashListNotifier extends StateNotifier<TrashListState> {
       debugPrint('[Trash] load failed: $e');
       state = state.copyWith(
         status: ConversationListStatus.error,
-        error: '加载失败',
+        error: '无法加载',
       );
     }
   }
@@ -755,30 +755,34 @@ final agentNamesProvider = FutureProvider<Map<String, String>>((ref) async {
 String? serverNotice(String code, String message) {
   switch (code) {
     case 'not_a_member':
-      return '你已经不在这个群里，消息没发出去';
+      return '你已不在此群聊中';
     case 'owner_only':
-      return '只有群主能这么做';
+      return '仅群主可执行此操作';
     case 'tool_not_found':
-      return '对方现在没有这个工具，调用没发出去';
+      return '对方没有此工具';
     case 'target_not_found':
-      return '对方已经不在线，调用没发出去';
+      return '对方不在线';
     case 'target_required':
-      return '好几个人都有这个工具，先选一个人再调用';
+      return '请选择要调用的成员';
     case 'queued':
-      return '对方现在没在等回复，这一步会在对方下次发消息时带过去';
+      return '将在对方下次发送消息时送达';
     case 'serialize_failed':
-      return '服务器出了点问题，刚才那一步没成功';
+      return '服务器错误';
     default:
-      return '服务器没接受刚才那一步';
+      return '操作未完成';
   }
 }
 
 /// Each `error` event the server sends, already in words.
 final serverNoticeProvider = StreamProvider.autoDispose<String>((ref) {
   final client = ref.watch(openHumanClientProvider);
-  return client.rawEvents.where((e) => e.eventType == 'error').map((e) {
-    final code = e.data['code'] as String? ?? '';
-    final message = e.data['message'] as String? ?? '';
-    return serverNotice(code, message);
-  }).where((t) => t != null).cast<String>();
+  return client.rawEvents
+      .where((e) => e.eventType == 'error')
+      .map((e) {
+        final code = e.data['code'] as String? ?? '';
+        final message = e.data['message'] as String? ?? '';
+        return serverNotice(code, message);
+      })
+      .where((t) => t != null)
+      .cast<String>();
 });

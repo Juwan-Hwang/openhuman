@@ -153,7 +153,7 @@ class _TaskCardState extends ConsumerState<TaskCard> {
         _check(quiet: true);
       });
     } catch (_) {
-      if (mounted) toast(context, '没能打开文件选择');
+      if (mounted) toast(context, '无法打开文件');
     }
   }
 
@@ -200,18 +200,18 @@ class _TaskCardState extends ConsumerState<TaskCard> {
   Future<bool?> _confirmRefusal() => showDialog<bool>(
         context: context,
         builder: (c) => AlertDialog(
-          title: const Text('没有附文件'),
-          content: Text(
-            '只发文字，${widget.person} 那边会把它当作你婉拒了这个请求。确定这样发吗？',
+          title: const Text('未添加文件'),
+          content: const Text(
+            '仅发送文字将视为拒绝此请求。',
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(c).pop(false),
-              child: const Text('再想想'),
+              child: const Text('取消'),
             ),
             FilledButton(
               onPressed: () => Navigator.of(c).pop(true),
-              child: const Text('就这样发'),
+              child: const Text('发送'),
             ),
           ],
         ),
@@ -263,7 +263,7 @@ class _TaskCardState extends ConsumerState<TaskCard> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('${widget.person} 的原话', style: Ty.label),
+                const Text('原始请求', style: Ty.label),
                 const SizedBox(height: Sp.x15),
                 _Folded(text: widget.prompt),
                 if (widget.inputs.isNotEmpty) ...[
@@ -316,12 +316,12 @@ class _TaskCardState extends ConsumerState<TaskCard> {
         children: [
           Row(
             children: [
-              const Text('你的回答', style: Ty.label),
+              const Text('回答', style: Ty.label),
               const Spacer(),
               if (t.media == AnswerMedia.json &&
                   t.kind != TaskKind.vectorSearch)
                 _LinkButton(
-                  label: _rawJson ? '用选项作答' : '直接写 JSON',
+                  label: _rawJson ? '选项' : 'JSON',
                   onTap: () => setState(() {
                     if (!_rawJson) _text.text = _answerText();
                     _rawJson = !_rawJson;
@@ -329,8 +329,10 @@ class _TaskCardState extends ConsumerState<TaskCard> {
                 ),
             ],
           ),
-          const SizedBox(height: Sp.x1),
-          Text(t.howTo, style: Ty.small.copyWith(color: Dk.t2)),
+          if (t.howTo.isNotEmpty) ...[
+            const SizedBox(height: Sp.x1),
+            Text(t.howTo, style: Ty.small.copyWith(color: Dk.t2)),
+          ],
           const SizedBox(height: Sp.x3),
           _editor(),
           const SizedBox(height: Sp.x3),
@@ -341,9 +343,9 @@ class _TaskCardState extends ConsumerState<TaskCard> {
                   t.media == AnswerMedia.video)
                 DkButton(
                   label: switch (t.media) {
-                    AnswerMedia.image => '附上图片',
-                    AnswerMedia.audio => '附上音频',
-                    _ => '附上视频',
+                    AnswerMedia.image => '添加图片',
+                    AnswerMedia.audio => '添加音频',
+                    _ => '添加视频',
                   },
                   glyph: Glyph.attach,
                   dense: true,
@@ -351,16 +353,16 @@ class _TaskCardState extends ConsumerState<TaskCard> {
                 ),
               const Spacer(),
               DkButton(
-                label: '婉拒',
+                label: '拒绝',
                 kind: DkButtonKind.quiet,
                 dense: true,
-                semanticLabel: '婉拒这个请求',
+                semanticLabel: '拒绝请求',
                 onTap: sending ? null : () => _send(decline: true),
               ),
               const SizedBox(width: Sp.x2),
               DkButton(
                 key: ValueKey('task-send-${widget.messageId}'),
-                label: '发送回答',
+                label: '发送',
                 kind: DkButtonKind.signal,
                 trailing: Glyph.send,
                 dense: true,
@@ -378,11 +380,11 @@ class _TaskCardState extends ConsumerState<TaskCard> {
     final textBox = _AnswerField(
       controller: _text,
       hint: switch (t.media) {
-        AnswerMedia.image => '补充一句说明（可选）',
-        AnswerMedia.audio || AnswerMedia.video => '补充一句说明（可选）',
+        AnswerMedia.image => '说明（可选）',
+        AnswerMedia.audio || AnswerMedia.video => '说明（可选）',
         AnswerMedia.json => '[ … ]',
         AnswerMedia.text =>
-          t.wantsSrt ? '1\n00:00:00,000 --> 00:00:02,000\n第一句话' : '在这里写回答',
+          t.wantsSrt ? '1\n00:00:00,000 --> 00:00:02,000\n第一句话' : '回答',
       },
       mono: t.media == AnswerMedia.json || t.wantsSrt,
       minLines:
@@ -516,7 +518,7 @@ class _TaskCardState extends ConsumerState<TaskCard> {
                         }),
                       )),
               _Choice(
-                label: '不作答',
+                label: '跳过',
                 on: _decisions[i] == null,
                 quiet: true,
                 onTap: () => setState(() {
@@ -585,15 +587,15 @@ class _Head extends StatelessWidget {
     final soon = left != null && left.inMinutes < 2;
     final (label, fg, bg) = switch (state) {
       TaskState.open => (
-          left == null ? '等你回答' : '剩余 ${countdown(left)}',
+          left == null ? '待回答' : '剩余 ${countdown(left)}',
           soon ? Dk.warn : Dk.signal,
           soon ? Dk.warnSoft : Dk.signalSoft,
         ),
-      TaskState.sending => ('发送中…', Dk.t2, Dk.p3),
+      TaskState.sending => ('正在发送…', Dk.t2, Dk.p3),
       TaskState.answered => ('已回答', Dk.ok, Dk.okSoft),
-      TaskState.declined => ('已婉拒', Dk.t2, Dk.p3),
+      TaskState.declined => ('已拒绝', Dk.t2, Dk.p3),
       TaskState.expired => ('已过期', Dk.t3, Dk.p3),
-      TaskState.failed => ('没成功', Dk.danger, Dk.dangerSoft),
+      TaskState.failed => ('失败', Dk.danger, Dk.dangerSoft),
     };
     final compact = Fit.of(context).isCompact;
     final title = Text.rich(
@@ -723,7 +725,7 @@ class _FoldedState extends State<_Folded> {
                 ),
         ),
         _LinkButton(
-          label: _open ? '收起' : '展开全文（约 ${widget.text.length} 字）',
+          label: _open ? '收起' : '显示更多',
           onTap: () => setState(() => _open = !_open),
         ),
       ],

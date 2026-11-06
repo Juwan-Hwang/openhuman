@@ -5,7 +5,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
 
-import '../../core/notification_service.dart';
 import '../../core/sdk_provider.dart';
 import '../../app/adaptive.dart';
 import '../../widgets/avatar.dart';
@@ -84,7 +83,7 @@ class _ShareSheetState extends ConsumerState<ShareSheet> {
       });
       ref.invalidate(callerKeysProvider);
     } catch (_) {
-      if (mounted) toast(context, '没生成出来，名字最长 48 个字');
+      if (mounted) toast(context, '无法创建密钥');
     } finally {
       if (mounted) setState(() => _making = false);
     }
@@ -94,8 +93,8 @@ class _ShareSheetState extends ConsumerState<ShareSheet> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
-        title: Text('收回${k.name}的钥匙？'),
-        content: const Text('收回后对方就发不进来了。以前的对话还在。'),
+        title: Text('要停用“${k.name}”的密钥吗？'),
+        content: const Text('对方将无法再发送消息。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(c).pop(false),
@@ -103,7 +102,7 @@ class _ShareSheetState extends ConsumerState<ShareSheet> {
           ),
           FilledButton(
             onPressed: () => Navigator.of(c).pop(true),
-            child: const Text('收回'),
+            child: const Text('停用'),
           ),
         ],
       ),
@@ -113,7 +112,7 @@ class _ShareSheetState extends ConsumerState<ShareSheet> {
     if (!mounted) return;
     if (_fresh?.id == k.id) setState(() => _fresh = null);
     ref.invalidate(callerKeysProvider);
-    toast(context, done ? '已收回${k.name}的钥匙' : '没收回成功，再试一次');
+    toast(context, done ? '已停用密钥' : '无法停用，请稍后再试');
   }
 
   /// Automatically derives the OpenAI-compatible HTTP Base URL
@@ -156,9 +155,9 @@ class _ShareSheetState extends ConsumerState<ShareSheet> {
   void _copyToClipboard(BuildContext context, String text, String label) {
     Clipboard.setData(ClipboardData(text: text));
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('已复制 $label 到剪贴板'),
-        duration: const Duration(seconds: 2),
+      const SnackBar(
+        content: Text('已复制'),
+        duration: Duration(seconds: 2),
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -171,15 +170,13 @@ class _ShareSheetState extends ConsumerState<ShareSheet> {
     required String apiKey,
     required String modelName,
   }) {
-    return '''请将以下 OpenHuman 真人联系端点配置到你当前所在的 Agent 环境中：
+    return '''将以下服务添加为 OpenAI 兼容的模型提供方：
 
-【端点参数 (OpenAI Compatible)】：
-- API Base URL: $baseUrl
-- API Key: $apiKey
-- Model Name: $modelName
+Base URL：$baseUrl
+API 密钥：$apiKey
+模型：$modelName
 
-【端点说明与使用约定】：
-该端点对应的是真实人类（开发者/联系人）。当你或你的用户想要联系我、向我留言、咨询事宜、或需要与我沟通时，可直接通过调用该模型（或通过该 Provider）向我发送消息。消息会实时推送至我的移动端/客户端，并在我回复后流式返回给你。''';
+发送到此模型的消息会由真人接收并回复。''';
   }
 
   Future<void> _renameModel(String current) async {
@@ -188,7 +185,7 @@ class _ShareSheetState extends ConsumerState<ShareSheet> {
     final name = await showDialog<String>(
       context: context,
       builder: (c) => AlertDialog(
-        title: const Text('改模型名'),
+        title: const Text('编辑模型名称'),
         content: SizedBox(
           width: 360,
           child: TextField(
@@ -197,7 +194,7 @@ class _ShareSheetState extends ConsumerState<ShareSheet> {
             style: Ty.code.copyWith(fontSize: 14),
             decoration: const InputDecoration(
               hintText: '例如：huang-zhiwen',
-              helperText: '朋友在模型列表里看到的就是这个名字。改了之后，旧名字就不能用了',
+              helperText: '旧名称将停用。',
               helperMaxLines: 2,
             ),
             onSubmitted: (v) => Navigator.of(c).pop(v.trim()),
@@ -217,17 +214,17 @@ class _ShareSheetState extends ConsumerState<ShareSheet> {
     );
     if (name == null || name.isEmpty || name == current || !mounted) return;
     try {
-      final now = await ref.read(openHumanClientProvider).setModelName(name);
+      await ref.read(openHumanClientProvider).setModelName(name);
       ref.invalidate(modelNameProvider);
-      if (mounted) toast(context, '模型名已改为 $now');
+      if (mounted) toast(context, '已更新');
     } catch (e) {
       if (!mounted) return;
       final t = e.toString();
       toast(
         context,
         t.contains('locked') || t.contains('pinned')
-            ? '服务器管理员固定了模型名，不能改'
-            : '这个名字用不了：只能用字母、数字和 - _ .',
+            ? '模型名称由服务器设定'
+            : '仅可使用字母、数字和 - _ .',
       );
     }
   }
@@ -259,19 +256,19 @@ export OPENAI_API_KEY="$apiKey"''';
       child: Column(
         children: [
           _SpecRow(
-            label: '接口地址',
-            hint: '对方工具里的 Base URL',
+            label: 'Base URL',
+            hint: '',
             value: baseUrl.isNotEmpty ? baseUrl : '未连接',
             empty: baseUrl.isEmpty,
             onCopy: baseUrl.isNotEmpty
-                ? () => _copyToClipboard(context, baseUrl, '接口地址')
+                ? () => _copyToClipboard(context, baseUrl, 'Base URL')
                 : null,
           ),
           _SpecRow(
             label: keyLabel,
             hint: keyHint,
             value: apiKey.isEmpty
-                ? '未配置'
+                ? '未设置'
                 : showKey
                     ? apiKey
                     : '${apiKey.substring(0, apiKey.length.clamp(0, 4))}'
@@ -287,12 +284,12 @@ export OPENAI_API_KEY="$apiKey"''';
                     onTap: () => setState(() => _showApiKey = !_showApiKey),
                   ),
             onCopy: apiKey.isNotEmpty
-                ? () => _copyToClipboard(context, apiKey, '密钥')
+                ? () => _copyToClipboard(context, apiKey, 'API 密钥')
                 : null,
           ),
           _SpecRow(
             label: '模型',
-            hint: '对方要选的模型名',
+            hint: '',
             last: true,
             value: modelName,
             // A name of your own reads better in a friend's
@@ -303,10 +300,10 @@ export OPENAI_API_KEY="$apiKey"''';
                 : _MiniIcon(
                     key: const ValueKey('share-rename-model'),
                     icon: Icons.edit_outlined,
-                    tooltip: '改模型名',
+                    tooltip: '编辑模型名称',
                     onTap: () => _renameModel(modelName),
                   ),
-            onCopy: () => _copyToClipboard(context, modelName, '模型名'),
+            onCopy: () => _copyToClipboard(context, modelName, '模型'),
           ),
         ],
       ),
@@ -326,7 +323,6 @@ export OPENAI_API_KEY="$apiKey"''';
     final model = ref.watch(modelNameProvider).valueOrNull;
     final modelName = model?.name ?? 'openhuman-human';
     final me = ref.watch(currentHumanProvider)?.displayName;
-    final fcmToken = NotificationService.fcmToken;
     final ready = baseUrl.isNotEmpty && apiKey.isNotEmpty;
     final connected = baseUrl.isNotEmpty;
 
@@ -343,11 +339,10 @@ export OPENAI_API_KEY="$apiKey"''';
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('让别人联系你', style: Ty.title.copyWith(fontSize: 18)),
+                    Text('分享联系方式', style: Ty.title.copyWith(fontSize: 18)),
                     const SizedBox(height: 4),
                     const Text(
-                      '对方在自己常用的工具里填三项，打的字就会到你这里，'
-                      '你在这里回复。每人一把钥匙，随时能单独收回。',
+                      '任何兼容 OpenAI API 的工具都可以给你发消息。',
                       style: Ty.small,
                     ),
                   ],
@@ -390,8 +385,8 @@ export OPENAI_API_KEY="$apiKey"''';
                     model: model,
                     modelName: modelName,
                     ready: ready,
-                    keyLabel: fresh != null ? '${fresh.name}的密钥' : '密钥',
-                    keyHint: fresh != null ? '只显示这一次，现在复制' : '对方工具里的 API Key',
+                    keyLabel: fresh != null ? 'API 密钥' : 'API 密钥',
+                    keyHint: fresh != null ? '仅显示一次' : '',
                     showKey: fresh != null || _showApiKey,
                     canHide: fresh == null,
                   ),
@@ -401,8 +396,7 @@ export OPENAI_API_KEY="$apiKey"''';
                   _CopyAction(
                     key: const ValueKey('share-friend'),
                     icon: Icons.forward_to_inbox_outlined,
-                    title: fresh != null ? '复制发给${fresh.name}的话' : '复制发给朋友的话',
-                    detail: '一段说明，直接发到聊天或邮件里',
+                    title: fresh != null ? '复制邀请文字' : '复制邀请文字',
                     primary: true,
                     onTap: ready
                         ? () => _copyToClipboard(
@@ -414,15 +408,14 @@ export OPENAI_API_KEY="$apiKey"''';
                                 me: me,
                                 to: fresh?.name,
                               ),
-                              '给朋友的说明',
+                              '邀请文字',
                             )
                         : null,
                   ),
                   const SizedBox(height: Sp.x2),
                   _CopyAction(
                     icon: Icons.integration_instructions_outlined,
-                    title: '复制给对方工具的配置说明',
-                    detail: '对方贴进自己的工具，工具会自己配好',
+                    title: '复制配置说明',
                     onTap: ready
                         ? () => _copyToClipboard(
                               context,
@@ -438,8 +431,7 @@ export OPENAI_API_KEY="$apiKey"''';
                   const SizedBox(height: Sp.x2),
                   _CopyAction(
                     icon: Icons.terminal_rounded,
-                    title: '终端环境变量',
-                    detail: 'OPENAI_BASE_URL 与 OPENAI_API_KEY',
+                    title: '复制环境变量',
                     onTap: ready
                         ? () => _copyToClipboard(
                               context,
@@ -452,7 +444,7 @@ export OPENAI_API_KEY="$apiKey"''';
                 // ── Who holds one ──
                 if (perPerson && keys.value!.isNotEmpty) ...[
                   const SizedBox(height: Sp.x5),
-                  const Text('拿着钥匙的人', style: Ty.label),
+                  const Text('有访问权限的人', style: Ty.label),
                   const SizedBox(height: Sp.x2),
                   _Holders(keys: keys.value!, onRevoke: _revoke),
                 ],
@@ -468,8 +460,7 @@ export OPENAI_API_KEY="$apiKey"''';
                     const SizedBox(width: Sp.x2),
                     Expanded(
                       child: Text(
-                        '${perPerson ? '钥匙只能用来给你发消息，不能替你回复；谁的钥匙出了问题，单独收回就行。' : '拿到密钥的人都能给你发消息，只发给信任的人。'}'
-                        '${fcmToken != null ? '手机推送已开启，锁屏也能收到。' : ''}',
+                        perPerson ? '密钥仅用于向你发送消息。' : '任何拥有此密钥的人都可以向你发送消息。',
                         style: Ty.small.copyWith(color: Dk.t3, fontSize: 12),
                       ),
                     ),
@@ -478,7 +469,7 @@ export OPENAI_API_KEY="$apiKey"''';
                 if (!connected) ...[
                   const SizedBox(height: Sp.x3),
                   Text(
-                    '连接服务器后才能用。',
+                    '未连接',
                     style: Ty.small.copyWith(color: Dk.t3, fontSize: 12),
                   ),
                 ],
@@ -520,7 +511,8 @@ class _SpecRow extends StatelessWidget {
       children: [
         Text(label, style: Ty.name),
         const SizedBox(height: 2),
-        Text(hint, style: Ty.small.copyWith(fontSize: 11.5, color: Dk.t3)),
+        if (hint.isNotEmpty)
+          Text(hint, style: Ty.small.copyWith(fontSize: 11.5, color: Dk.t3)),
       ],
     );
     final val = SelectableText(
@@ -602,10 +594,9 @@ class _CopyAction extends StatelessWidget {
     super.key,
     required this.icon,
     required this.title,
-    required this.detail,
     required this.onTap,
     this.primary = false,
-  });
+  }) : detail = '';
   final IconData icon;
   final String title;
   final String detail;
@@ -640,14 +631,16 @@ class _CopyAction extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(title, style: Ty.name.copyWith(color: fg)),
-                    const SizedBox(height: 2),
-                    Text(
-                      detail,
-                      style: Ty.small.copyWith(
-                        fontSize: 12,
-                        color: primary && on ? Dk.mineMuted : Dk.t3,
+                    if (detail.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        detail,
+                        style: Ty.small.copyWith(
+                          fontSize: 12,
+                          color: primary && on ? Dk.mineMuted : Dk.t3,
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -668,17 +661,13 @@ String friendNote({
   String? me,
   String? to,
 }) {
-  return '''${to == null ? '' : '$to，'}${me == null ? '我' : '我（$me）'}在用 OpenHuman，你可以在自己常用的工具里直接给我发消息。
+  return '''${to == null ? '' : '$to，你好。\n\n'}你可以在任何兼容 OpenAI API 的工具中向${me ?? '我'}发送消息。添加一个模型提供方，并填写以下信息：
 
-在 Claude Code、Cursor、WorkBuddy 这类支持「OpenAI 兼容」的工具里，新加一个模型服务，填这三项：
-
-接口地址（Base URL）：$baseUrl
-密钥（API Key）：$apiKey
+Base URL：$baseUrl
+API 密钥：$apiKey
 模型：$modelName
 
-然后选这个模型发消息就行。消息会直接到我这里，我回的话会出现在你那边。
-
-这把密钥是专门给你的，请别转发。''';
+此密钥仅供你使用，请勿转发。''';
 }
 
 /// Name someone and make them a key.
@@ -706,12 +695,7 @@ class _NewKey extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('给谁一把钥匙', style: Ty.name),
-          const SizedBox(height: 2),
-          Text(
-            '写上对方的名字，对方发来的消息就会以这个名字出现在你这里。',
-            style: Ty.small.copyWith(fontSize: 11.5, color: Dk.t3),
-          ),
+          const Text('添加联系人', style: Ty.name),
           const SizedBox(height: Sp.x3),
           Row(
             children: [
@@ -737,7 +721,7 @@ class _NewKey extends StatelessWidget {
                   onPressed: enabled && !busy && v.text.trim().isNotEmpty
                       ? onMake
                       : null,
-                  child: Text(busy ? '生成中…' : '生成钥匙'),
+                  child: Text(busy ? '正在创建…' : '创建密钥'),
                 ),
               ),
             ],
@@ -768,7 +752,7 @@ class _FreshBanner extends StatelessWidget {
           const SizedBox(width: Sp.x3),
           Expanded(
             child: Text(
-              '$name的钥匙做好了。密钥只显示这一次，关掉前把说明发给$name。',
+              '密钥仅显示一次。请立即复制。',
               style: Ty.small.copyWith(color: Dk.t1),
             ),
           ),
@@ -827,7 +811,7 @@ class _Holders extends StatelessWidget {
                     Padding(
                       padding: const EdgeInsets.only(right: Sp.x3),
                       child: Text(
-                        '已收回',
+                        '已停用',
                         style: Ty.small.copyWith(color: Dk.t3, fontSize: 12),
                       ),
                     )
@@ -835,7 +819,7 @@ class _Holders extends StatelessWidget {
                     TextButton(
                       key: ValueKey('share-revoke-${rows[i].id}'),
                       onPressed: () => onRevoke(rows[i]),
-                      child: const Text('收回'),
+                      child: const Text('停用'),
                     ),
                 ],
               ),

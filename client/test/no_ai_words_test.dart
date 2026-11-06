@@ -100,11 +100,11 @@ void main() {
     await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
     fake.caps.add(sampleCaps);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('技术详情'));
+    await tester.tap(find.text('高级'));
     await tester.pumpAndSettle();
     _expectNoAi(tester, 'details');
 
-    await tester.tap(find.byTooltip('让别人联系你'));
+    await tester.tap(find.byTooltip('分享联系方式'));
     await tester.pumpAndSettle();
     _expectNoAi(tester, 'the share sheet');
   });

@@ -122,7 +122,7 @@ const Map<String, String> toolCategories = {
 /// Invocation status, as words.
 String statusLabel(String status) => switch (status) {
       'success' => '已完成',
-      'error' => '出错了',
+      'error' => '出现错误',
       'timeout' => '已超时',
       'pending' => '执行中',
       'running' => '执行中',

@@ -269,7 +269,7 @@ void main() {
         );
       }
       // It is my move.
-      expect(find.text('对方在等你回复'), findsOneWidget);
+      expect(find.text('待回复'), findsWidgets);
     });
 
     testWidgets('an API request shows as a task card', (tester) async {
@@ -295,7 +295,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 200));
       await tester.pump(const Duration(milliseconds: 500));
       expect(find.byType(TaskCard), findsOneWidget);
-      expect(find.textContaining('请你生成一张图片'), findsWidgets);
+      expect(find.textContaining('生成图片'), findsWidgets);
     });
 
     testWidgets('a failed send says why and retries', (tester) async {
@@ -315,7 +315,7 @@ void main() {
       await tester.pump();
       await tester.tap(find.byKey(const ValueKey('composer-send')));
       await tester.pumpAndSettle(const Duration(milliseconds: 200));
-      expect(find.text('没连上，没发出去'), findsOneWidget);
+      expect(find.text('未连接，无法发送'), findsOneWidget);
       expect(find.byKey(const ValueKey('message-retry')), findsOneWidget);
 
       await tester.tap(find.byKey(const ValueKey('message-retry')));
@@ -323,7 +323,7 @@ void main() {
       expect(fakeClient.sends, 2);
       expect(fakeClient.sentText, '看了，晚点回你');
       expect(find.byKey(const ValueKey('message-retry')), findsNothing);
-      expect(find.textContaining('已发出'), findsOneWidget);
+      expect(find.textContaining('已发送'), findsOneWidget);
     });
 
     testWidgets('Ctrl+Enter ends the turn and the composer can reopen',

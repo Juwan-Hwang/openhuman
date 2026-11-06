@@ -107,7 +107,7 @@ void main() {
       await tester.tap(find.text('连接'));
       await tester.pump();
 
-      expect(find.textContaining('请填写'), findsOneWidget);
+      expect(find.textContaining('请输入'), findsOneWidget);
     });
 
     testWidgets('shows error when API key is empty', (tester) async {
@@ -122,7 +122,7 @@ void main() {
       await tester.tap(find.text('连接'));
       await tester.pump();
 
-      expect(find.textContaining('请填写'), findsOneWidget);
+      expect(find.textContaining('请输入'), findsOneWidget);
     });
   });
 
@@ -164,4 +164,3 @@ void main() {
     });
   });
 }
-

@@ -49,7 +49,7 @@ class Caller {
   /// The secondary line under a name: "经由 Claude Code".
   String? get via => tool == null ? null : '经由 $tool';
 
-  static const String unnamed = '未署名的联系人';
+  static const String unnamed = '未命名联系人';
 
   /// Known AI tools, in the casing their makers use. Matched case- and
   /// space-insensitively, longest first, so "Claude Code" wins over

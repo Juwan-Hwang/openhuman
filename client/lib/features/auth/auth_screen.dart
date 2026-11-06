@@ -37,7 +37,6 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   bool _obscureApiKey = true;
   bool _connecting = false;
   String? _error;
-  DateTime? _startedAt;
   Timer? _ticker;
 
   @override
@@ -91,7 +90,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     final apiKey = _apiKeyController.text.trim();
 
     if (url.isEmpty || apiKey.isEmpty) {
-      setState(() => _error = '请填写服务器地址和 API 密钥。');
+      setState(() => _error = '请输入服务器地址和 API 密钥。');
       return;
     }
 
@@ -104,7 +103,6 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     setState(() {
       _connecting = true;
       _error = null;
-      _startedAt = DateTime.now();
     });
     _ticker?.cancel();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -147,7 +145,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
         if (mounted) {
           setState(() {
             _connecting = false;
-            _error = '连接失败（状态：${client.currentState.name}）。请检查地址和密钥。';
+            _error = '无法连接。请检查地址和密钥。';
           });
         }
       }
@@ -156,7 +154,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       if (mounted) {
         setState(() {
           _connecting = false;
-          _error = '连接出错：$e';
+          _error = '无法连接：$e';
         });
       }
     }
@@ -183,9 +181,6 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final elapsed = _startedAt == null
-        ? 0
-        : DateTime.now().difference(_startedAt!).inSeconds;
 
     return Scaffold(
       backgroundColor: Dk.bg,
@@ -224,7 +219,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                   const Center(child: BrandWordmark(height: 26)),
                   const SizedBox(height: Sp.x3),
                   Text(
-                    '连上服务器，有人找你时就会在这里收到',
+                    '连接到你的服务器',
                     textAlign: TextAlign.center,
                     style: Ty.small.copyWith(fontSize: 13),
                   ),
@@ -261,7 +256,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                               ),
                               const SizedBox(height: 6),
                               Text(
-                                '公网用 wss://，本机或局域网可用 ws://',
+                                '例如 wss://example.com/ws',
                                 style: Ty.small.copyWith(
                                   fontSize: 11.5,
                                   color: Dk.t3,
@@ -360,10 +355,10 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                                   ),
                                   onPressed: _connecting ? null : _connect,
                                   child: _connecting
-                                      ? Row(
+                                      ? const Row(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
-                                            const SizedBox(
+                                            SizedBox(
                                               height: 14,
                                               width: 14,
                                               child: CircularProgressIndicator(
@@ -371,8 +366,8 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                                                 color: Dk.t2,
                                               ),
                                             ),
-                                            const SizedBox(width: 10),
-                                            Text('正在连接… $elapsed 秒'),
+                                            SizedBox(width: 10),
+                                            Text('正在连接…'),
                                           ],
                                         )
                                       : const Text('连接'),
@@ -381,9 +376,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                               const SizedBox(height: Sp.x3),
                               Center(
                                 child: Text(
-                                  Touch.primary
-                                      ? '连接成功后自动记住，下次打开直接连上'
-                                      : '按回车连接 · 成功后自动记住，下次启动直接连上',
+                                  Touch.primary ? '将自动登录' : '按 Return 键连接',
                                   style: Ty.small.copyWith(
                                     fontSize: 11.5,
                                     color: Dk.t3,

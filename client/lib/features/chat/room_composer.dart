@@ -167,7 +167,7 @@ class _ComposerState extends State<Composer> {
       setState(() => _files.addAll(picked));
       _focus.requestFocus();
     } catch (_) {
-      if (mounted) toast(context, '没能打开文件选择');
+      if (mounted) toast(context, '无法打开文件');
     }
   }
 
@@ -218,10 +218,10 @@ class _ComposerState extends State<Composer> {
   }
 
   String get _hint {
-    if (widget.offline) return '没连上服务器，连上后才能发送';
+    if (widget.offline) return '未连接';
     final to = widget.to;
-    if (widget.mentionNames.isNotEmpty) return '发到群里…  输入 @ 提及成员';
-    return to == null ? '写点什么…' : '写给 $to…';
+    if (widget.mentionNames.isNotEmpty) return '消息';
+    return to == null ? '消息' : '消息';
   }
 
   @override
@@ -280,7 +280,7 @@ class _ComposerState extends State<Composer> {
         DkIconButton(
           key: const ValueKey('composer-attach'),
           glyph: Glyph.attach,
-          label: _canAttach ? '添加文件' : '对方那边只收文字，这里发不了文件',
+          label: _canAttach ? '添加文件' : '对方仅支持文字',
           onTap: _canAttach ? _attach : null,
         ),
         const SizedBox(width: Sp.x2),
@@ -296,7 +296,7 @@ class _ComposerState extends State<Composer> {
                       const SizedBox(width: Sp.x2),
                       Flexible(
                         child: Text(
-                          widget.mentionNames.isEmpty ? '对方在等你回复' : '群里有人在等你回复',
+                          widget.mentionNames.isEmpty ? '待回复' : '待回复',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: Ty.small.copyWith(
@@ -316,7 +316,7 @@ class _ComposerState extends State<Composer> {
                           const Kbd('Shift ↵', label: '换行'),
                           if (widget.onEndTurn != null) ...[
                             const SizedBox(width: Sp.x3),
-                            Kbd(shortcutLabel('↵'), label: '发送完毕'),
+                            Kbd(shortcutLabel('↵'), label: '结束本轮'),
                           ],
                         ],
                       )
@@ -325,11 +325,10 @@ class _ComposerState extends State<Composer> {
         ),
         if (widget.onEndTurn != null) ...[
           Tooltip(
-            message:
-                touch ? '告诉对方你这一轮说完了' : '告诉对方你这一轮说完了  ${shortcutLabel('↵')}',
+            message: touch ? '结束本轮' : '结束本轮  ${shortcutLabel('↵')}',
             child: DkButton(
               key: const ValueKey('composer-end-turn'),
-              label: '发送完毕',
+              label: '结束本轮',
               glyph: Glyph.done,
               kind: DkButtonKind.quiet,
               dense: !touch,
@@ -452,7 +451,7 @@ class _Ended extends StatelessWidget {
           const SizedBox(width: Sp.x25),
           Expanded(
             child: Text(
-              '这一轮你说完了。对方再发消息时会自动打开。',
+              '已结束本轮。',
               style: Ty.small.copyWith(fontSize: 12.5),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
@@ -461,7 +460,7 @@ class _Ended extends StatelessWidget {
           if (onReopen != null)
             DkButton(
               key: const ValueKey('composer-reopen'),
-              label: '继续说',
+              label: '继续',
               kind: DkButtonKind.secondary,
               dense: !Touch.primary,
               onTap: onReopen,

@@ -24,7 +24,7 @@ class FilesIo {
   static Future<List<OutgoingFile>> _pick(List<String> extensions) async {
     final groups = extensions.isEmpty
         ? const <XTypeGroup>[]
-        : [XTypeGroup(label: '可用的文件', extensions: extensions)];
+        : [XTypeGroup(label: '支持的文件', extensions: extensions)];
     final picked = await openFiles(acceptedTypeGroups: groups);
     final out = <OutgoingFile>[];
     for (final f in picked) {

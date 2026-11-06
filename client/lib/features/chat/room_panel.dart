@@ -88,10 +88,10 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
               child: CircularProgressIndicator(strokeWidth: 1.6, color: Dk.t2),
             ),
           ),
-          error: (e, _) => Center(child: Text('加载失败：$e')),
+          error: (e, _) => Center(child: Text('无法加载：$e')),
           data: (room) {
             if (room == null) {
-              return const Center(child: Text('这不是一个群聊会话'));
+              return const Center(child: Text('不是群聊'));
             }
             final members = (room['members'] as List?)
                     ?.whereType<Map<String, dynamic>>()
@@ -130,14 +130,11 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                     dense: true,
                     contentPadding: EdgeInsets.zero,
                     leading: PersonAvatar(
-                      name: m['display_name'] as String? ??
-                          memberId(m) ??
-                          '?',
+                      name: m['display_name'] as String? ?? memberId(m) ?? '?',
                       size: 26,
                     ),
-                    title: Text(m['display_name'] as String? ??
-                        memberId(m) ??
-                        '?'),
+                    title: Text(
+                        m['display_name'] as String? ?? memberId(m) ?? '?'),
                     trailing: m['role'] == 'owner'
                         ? Container(
                             padding: const EdgeInsets.symmetric(
@@ -149,7 +146,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                               borderRadius: BorderRadius.circular(Rd.pill),
                             ),
                             child: Text(
-                              '房主',
+                              '群主',
                               style: Ty.small.copyWith(fontSize: 11.5),
                             ),
                           )
@@ -173,7 +170,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                               () => _lastInviteCode = res['code'] as String?);
                         }),
                         icon: const Icon(Icons.link, size: 16),
-                        label: const Text('生成邀请码'),
+                        label: const Text('创建邀请码'),
                       ),
                       if (_lastInviteCode != null) ...[
                         ActionChip(
@@ -195,7 +192,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                   const Divider(height: 32),
 
                   // ── 连接配置 ──
-                  const Text('连接配置', style: Ty.label),
+                  const Text('接入', style: Ty.label),
                   const SizedBox(height: 8),
                   _CopyRow(
                     label: 'Base URL',
@@ -211,7 +208,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                   FilledButton.icon(
                     onPressed: () => _mintCallerKey(context),
                     icon: const Icon(Icons.vpn_key_outlined, size: 16),
-                    label: const Text('生成 caller key'),
+                    label: const Text('创建密钥'),
                   ),
                   if (_lastCallerKey != null) ...[
                     const SizedBox(height: 8),
@@ -234,7 +231,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                             icon: const Icon(Icons.copy, size: 16),
                             onPressed: () =>
                                 _copy('caller key', _lastCallerKey!),
-                            tooltip: '复制（只显示这一次）',
+                            tooltip: '复制',
                           ),
                         ],
                       ),
@@ -247,7 +244,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                   const Divider(height: 32),
 
                   // ── 设置 ──
-                  const Text('房间设置', style: Ty.label),
+                  const Text('群聊设置', style: Ty.label),
                   const SizedBox(height: 8),
                   _SettingsEditor(
                     idleSecs: metadata['room_idle_secs'] as int?,
@@ -263,7 +260,7 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
                   ),
                 ] else ...[
                   Text(
-                    '邀请、连接配置与房间设置仅房主可见。',
+                    '仅群主可见。',
                     style: Ty.small.copyWith(
                       color: Dk.t2,
                     ),
@@ -282,11 +279,11 @@ class _RoomPanelSheetState extends ConsumerState<_RoomPanelSheet> {
     final name = await showDialog<String>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('生成 caller key'),
+        title: const Text('创建密钥'),
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(hintText: '显示名，如「小明的 Claude Code」'),
+          decoration: const InputDecoration(hintText: '名称'),
           onSubmitted: (v) => Navigator.of(dialogContext).pop(v.trim()),
         ),
         actions: [
@@ -380,7 +377,7 @@ class _SettingsEditorState extends State<_SettingsEditor> {
       children: [
         Row(
           children: [
-            const SizedBox(width: 120, child: Text('空闲释放秒数')),
+            const SizedBox(width: 120, child: Text('空闲超时（秒）')),
             SizedBox(
               width: 90,
               child: TextField(
@@ -394,14 +391,13 @@ class _SettingsEditorState extends State<_SettingsEditor> {
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('分段模式'),
-          subtitle: const Text('关闭后退回普通持续流（降级）'),
           value: _segmented,
           onChanged: (v) => setState(() => _segmented = v),
         ),
         FilledButton(
           onPressed: () =>
               widget.onSave(int.tryParse(_idle.text) ?? 60, _segmented),
-          child: const Text('保存设置'),
+          child: const Text('保存'),
         ),
       ],
     );
@@ -434,7 +430,7 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
       children: [
         Row(
           children: [
-            const Text('已接入的工具', style: Ty.label),
+            const Text('已连接的工具', style: Ty.label),
             const Spacer(),
             IconButton(
               icon: const Icon(Icons.refresh, size: 18),
@@ -452,11 +448,11 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
                 child: LinearProgressIndicator(),
               );
             }
-            if (snap.hasError) return Text('加载失败：${snap.error}');
+            if (snap.hasError) return const Text('无法加载');
             final callers = snap.data ?? const [];
             if (callers.isEmpty) {
               return const Text(
-                '还没有人从自己的工具接入这个群。',
+                '无已连接的工具',
                 style: Ty.small,
               );
             }
@@ -473,7 +469,7 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
                     ),
                     title: Text(c['display_name'] as String? ?? '?'),
                     subtitle: Text(
-                      '${c['live'] == true ? '在线' : '段间（下次请求时执行）'} · '
+                      '${c['live'] == true ? '在线' : '空闲'} · '
                       '${(c['tools'] as List?)?.length ?? 0} 个工具',
                     ),
                     trailing: ((c['tools'] as List?)?.isNotEmpty ?? false)
@@ -517,7 +513,7 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
               TextField(
                 controller: input,
                 maxLines: 4,
-                decoration: const InputDecoration(labelText: '参数（JSON）'),
+                decoration: const InputDecoration(labelText: '参数 (JSON)'),
               ),
             ],
           ),
@@ -546,9 +542,9 @@ class _CallersSectionState extends ConsumerState<_CallersSection> {
           );
       messenger.showSnackBar(const SnackBar(content: Text('已发送')));
     } on FormatException {
-      messenger.showSnackBar(const SnackBar(content: Text('参数不是合法的 JSON')));
+      messenger.showSnackBar(const SnackBar(content: Text('JSON 无效')));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('执行失败：$e')));
+      messenger.showSnackBar(SnackBar(content: Text('无法执行：$e')));
     }
   }
 }

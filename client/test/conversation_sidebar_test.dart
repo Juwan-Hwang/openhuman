@@ -97,8 +97,8 @@ void main() {
     await tester.pumpWidget(_host(_FakeClient()));
 
     expect(find.byType(CircularProgressIndicator), findsNothing);
-    expect(find.text('等待连接'), findsOneWidget);
-    expect(find.text('正在加载会话…'), findsNothing);
+    expect(find.text('未连接'), findsOneWidget);
+    expect(find.text('正在加载…'), findsNothing);
   });
 
   testWidgets('spinner while the fetch is genuinely in flight', (tester) async {
@@ -113,7 +113,7 @@ void main() {
     await tester.pump();
 
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
-    expect(find.text('正在加载会话…'), findsOneWidget);
+    expect(find.text('正在加载…'), findsOneWidget);
 
     gate.complete([]);
     await tester.pumpAndSettle();
@@ -132,7 +132,7 @@ void main() {
     await tester.pump();
 
     expect(find.byType(CircularProgressIndicator), findsNothing);
-    expect(find.text('加载超时'), findsOneWidget);
+    expect(find.text('连接超时'), findsOneWidget);
     expect(find.text('重试'), findsOneWidget);
     expect(_statusOf(tester), ConversationListStatus.error);
   });
@@ -162,7 +162,7 @@ void main() {
     expect(client.fetchCount, 2);
     expect(_statusOf(tester), ConversationListStatus.ready);
     // And the recovered row replaces the error message.
-    expect(find.text('加载超时'), findsNothing);
+    expect(find.text('连接超时'), findsNothing);
     expect(find.byType(PersonAvatar), findsOneWidget);
   });
 
@@ -178,7 +178,7 @@ void main() {
     await tester.pump();
 
     expect(find.byType(CircularProgressIndicator), findsNothing);
-    expect(find.text('还没有会话'), findsOneWidget);
+    expect(find.text('没有对话'), findsOneWidget);
   });
 
   testWidgets('retry works with no socket at all', (tester) async {
@@ -192,13 +192,13 @@ void main() {
       ],
     );
     await tester.pumpWidget(_host(client));
-    expect(find.text('等待连接'), findsOneWidget);
+    expect(find.text('未连接'), findsOneWidget);
 
     await tester.tap(find.text('重试'));
     await tester.pumpAndSettle();
 
     expect(client.fetchCount, 1);
-    expect(find.text('等待连接'), findsNothing);
+    expect(find.text('未连接'), findsNothing);
     expect(find.byType(PersonAvatar), findsOneWidget);
   });
 
@@ -225,11 +225,11 @@ void main() {
     final sheet = await _openTrash(tester);
 
     expect(
-      find.descendant(of: sheet, matching: find.text('回收站是空的')),
+      find.descendant(of: sheet, matching: find.text('废纸篓为空')),
       findsNothing,
     );
     expect(
-      find.descendant(of: sheet, matching: find.text('加载失败')),
+      find.descendant(of: sheet, matching: find.text('无法加载')),
       findsOneWidget,
     );
     expect(
@@ -243,7 +243,7 @@ void main() {
     final sheet = await _openTrash(tester);
 
     expect(
-      find.descendant(of: sheet, matching: find.text('回收站是空的')),
+      find.descendant(of: sheet, matching: find.text('废纸篓为空')),
       findsOneWidget,
     );
     expect(
@@ -257,7 +257,7 @@ void main() {
     await tester.pumpWidget(_host(client));
     final sheet = await _openTrash(tester);
     expect(
-      find.descendant(of: sheet, matching: find.text('加载失败')),
+      find.descendant(of: sheet, matching: find.text('无法加载')),
       findsOneWidget,
     );
 
@@ -272,11 +272,11 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.descendant(of: sheet, matching: find.text('加载失败')),
+      find.descendant(of: sheet, matching: find.text('无法加载')),
       findsNothing,
     );
     expect(
-      find.descendant(of: sheet, matching: find.text('回收站是空的')),
+      find.descendant(of: sheet, matching: find.text('废纸篓为空')),
       findsNothing,
     );
     // The restored list shows the caller the way the console names them.
@@ -298,7 +298,7 @@ void main() {
 
     final state = container.read(conversationListProvider);
     expect(state.status, ConversationListStatus.error);
-    expect(state.error, '加载超时');
+    expect(state.error, '连接超时');
   });
 
   test('a fetch before connect says so instead of "加载失败"', () async {
@@ -313,7 +313,7 @@ void main() {
 
     await container.read(conversationListProvider.notifier).retry();
 
-    expect(container.read(conversationListProvider).error, '还没连接上');
+    expect(container.read(conversationListProvider).error, '未连接');
   });
 
   test('a dead socket is told apart from a slow one', () async {
@@ -327,6 +327,6 @@ void main() {
 
     await container.read(conversationListProvider.notifier).retry();
 
-    expect(container.read(conversationListProvider).error, '网络连不上');
+    expect(container.read(conversationListProvider).error, '无法连接网络');
   });
 }

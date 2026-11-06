@@ -152,26 +152,26 @@ class ApiTask {
 
   /// The verb phrase after a person's name: "请你生成一张图片".
   String get ask => switch (kind) {
-        TaskKind.imageGenerate => count > 1 ? '请你生成 $count 张图片' : '请你生成一张图片',
-        TaskKind.imageEdit => '请你修改一张图片',
-        TaskKind.imageVariation => '请你给这张图片做个变体',
-        TaskKind.speech => '请你把一段文字读出来',
-        TaskKind.transcription => '请你把一段录音转成文字',
-        TaskKind.translation => '请你把一段录音翻译成英文',
-        TaskKind.completion => count > 1 ? '请你续写 $count 个版本' : '请你接着写一段',
-        TaskKind.moderation => '请你审核一下内容',
+        TaskKind.imageGenerate => count > 1 ? '生成 $count 张图片' : '生成图片',
+        TaskKind.imageEdit => '编辑图片',
+        TaskKind.imageVariation => '生成图片变体',
+        TaskKind.speech => '朗读文字',
+        TaskKind.transcription => '转写录音',
+        TaskKind.translation => '将录音翻译为英文',
+        TaskKind.completion => count > 1 ? '续写 $count 个版本' : '续写',
+        TaskKind.moderation => '内容审核',
         TaskKind.decision =>
-          questionCount > 1 ? '请你回答 $questionCount 个问题' : '请你回答一个问题',
+          questionCount > 1 ? '回答 $questionCount 个问题' : '回答问题',
         TaskKind.video => videoExtend
-            ? '请你把一段视频接着拍下去'
+            ? '延长视频'
             : videoEdit
-                ? '请你修改一段视频'
+                ? '编辑视频'
                 : videoRemix
-                    ? '请你翻拍一段视频'
-                    : '请你做一段视频',
-        TaskKind.vectorSearch => '请你在资料里帮忙找找',
-        TaskKind.grader => '请你给一份答案打分',
-        TaskKind.other => '请你处理一个请求',
+                    ? '重制视频'
+                    : '生成视频',
+        TaskKind.vectorSearch => '检索资料',
+        TaskKind.grader => '评分',
+        TaskKind.other => '处理请求',
       };
 
   /// A short noun for lists and notifications: "图片", "语音".
@@ -187,7 +187,7 @@ class ApiTask {
         TaskKind.moderation => '审核',
         TaskKind.decision => '问答',
         TaskKind.video => '视频',
-        TaskKind.vectorSearch => '资料查找',
+        TaskKind.vectorSearch => '检索',
         TaskKind.grader => '打分',
         TaskKind.other => '请求',
       };
@@ -243,7 +243,7 @@ class ApiTask {
           out.add(const {
                 'high': '高质量',
                 'medium': '中等质量',
-                'low': '草图质量',
+                'low': '草稿质量',
                 'hd': '高清',
                 'standard': '标准质量',
               }[q] ??
@@ -271,8 +271,8 @@ class ApiTask {
       case TaskKind.transcription || TaskKind.translation:
         final l = _field(RegExp(r'\(language ([^)]+)\)'));
         if (l != null) out.add('语言 $l');
-        out.add(wantsSrt ? '带时间轴（SRT）' : '纯文字');
-        if (wantsSpeakers) out.add('标出说话人');
+        out.add(wantsSrt ? 'SRT 字幕' : '纯文字');
+        if (wantsSpeakers) out.add('区分说话人');
       case TaskKind.completion:
         if (count > 1) out.add('$count 个版本');
       case TaskKind.moderation:
@@ -305,27 +305,25 @@ class ApiTask {
 
   /// A plain-language hint about how to answer.
   String get howTo => switch (media) {
-        AnswerMedia.image => count > 1
-            ? '附上 $count 张图片，一张一个文件。可以再写几句话，会作为修订后的描述发给对方。'
-            : '附上一张图片。可以再写几句话，会作为修订后的描述发给对方。',
+        AnswerMedia.image =>
+          count > 1 ? '附加 $count 张图片。可添加说明。' : '附加 1 张图片。可添加说明。',
         AnswerMedia.audio =>
-          '附上朗读的音频文件${audioFormat == null ? '' : '（${audioFormat!.toUpperCase()}）'}，逐字读出对方给的文字。',
-        AnswerMedia.video => '附上一段视频（MP4）。再附一张图片会成为视频的封面。',
+          '附加音频文件${audioFormat == null ? '' : '（${audioFormat!.toUpperCase()}）'}。',
+        AnswerMedia.video => '附加 1 段 MP4 视频，可另附封面图片。',
         AnswerMedia.json => switch (kind) {
-            TaskKind.moderation => '逐条标出违规类别，没问题的留空。',
-            TaskKind.decision => '逐题作答，不想答的可以跳过。',
-            TaskKind.vectorSearch => '列出找到的段落，最相关的放前面，没有就留空。',
-            TaskKind.grader => '给出一个标签或分数。',
-            _ => '按要求的格式作答。',
+            TaskKind.moderation => '为每条内容选择违规类别。',
+            TaskKind.decision => '逐题作答，可跳过。',
+            TaskKind.vectorSearch => '按相关度列出段落。',
+            TaskKind.grader => '给出标签或分数。',
+            _ => '按指定格式作答。',
           },
         AnswerMedia.text => switch (kind) {
-            TaskKind.transcription || TaskKind.translation => wantsSrt
-                ? '按 SRT 格式写：序号、时间轴（00:00:01,000 --> 00:00:03,000）、文字。'
-                : '只写听到的文字，不用加别的。',
-            TaskKind.completion => count > 1
-                ? '写 $count 个不同版本，每个版本之间单独一行写 @@@。只写续写的部分。'
-                : '只写续写的部分，不用重复开头。',
-            _ => '直接写下你的回答。',
+            TaskKind.transcription ||
+            TaskKind.translation =>
+              wantsSrt ? 'SRT 格式：序号、时间轴、文字。' : '仅填写转写文字。',
+            TaskKind.completion =>
+              count > 1 ? '写 $count 个版本，用单独一行 @@@ 分隔。' : '仅填写续写部分。',
+            _ => '',
           },
       };
 
@@ -509,7 +507,7 @@ AnswerCheck checkAnswer(ApiTask t, String text, List<DraftFile> files) {
     case AnswerMedia.image || AnswerMedia.audio || AnswerMedia.video:
       if (files.isEmpty) {
         return body.isEmpty
-            ? const AnswerCheck.error('还没有附文件，也没有写字。')
+            ? const AnswerCheck.error('请添加文件或文字。')
             : const AnswerCheck.refusal();
       }
       final want = t.media;
@@ -519,24 +517,24 @@ AnswerCheck checkAnswer(ApiTask t, String text, List<DraftFile> files) {
           (f) => f.media != AnswerMedia.video && f.media != AnswerMedia.image,
         );
         if (other.isNotEmpty) {
-          return AnswerCheck.error('「${other.first.name}」不是视频或图片。');
+          return AnswerCheck.error('“${other.first.name}”不是视频或图片。');
         }
-        if (videos == 0) return const AnswerCheck.error('要附一段视频，图片只能当封面。');
-        if (videos > 1) return const AnswerCheck.warn('只会用第一段视频。');
+        if (videos == 0) return const AnswerCheck.error('需要 1 段视频。');
+        if (videos > 1) return const AnswerCheck.warn('仅使用第一段视频。');
         return const AnswerCheck.ok();
       }
       final wrong = files.where((f) => f.media != want).toList();
       if (wrong.isNotEmpty) {
         final what = want == AnswerMedia.image ? '图片' : '音频';
-        return AnswerCheck.error('「${wrong.first.name}」不是$what文件。');
+        return AnswerCheck.error('“${wrong.first.name}”不是$what文件。');
       }
       if (want == AnswerMedia.image && files.length != t.count) {
         return AnswerCheck.warn(
-          '对方要 ${t.count} 张，你附了 ${files.length} 张。',
+          '需要 ${t.count} 张，已添加 ${files.length} 张。',
         );
       }
       if (want == AnswerMedia.audio && files.length > 1) {
-        return const AnswerCheck.warn('只会用第一个音频文件。');
+        return const AnswerCheck.warn('仅使用第一个音频文件。');
       }
       final fmt = want == AnswerMedia.image ? t.imageFormat : t.audioFormat;
       if (fmt != null) {
@@ -545,13 +543,12 @@ AnswerCheck checkAnswer(ApiTask t, String text, List<DraftFile> files) {
           (f) => !norm.contains(f.name.split('.').last.toLowerCase()),
         );
         if (off.isNotEmpty) {
-          return AnswerCheck.warn(
-              '对方要 ${fmt.toUpperCase()} 格式，「${off.first.name}」不是。');
+          return AnswerCheck.warn('需要 ${fmt.toUpperCase()} 格式。');
         }
       }
       return const AnswerCheck.ok();
     case AnswerMedia.json:
-      if (body.isEmpty) return const AnswerCheck.error('还没有作答。');
+      if (body.isEmpty) return const AnswerCheck.error('请作答。');
       final e = switch (t.kind) {
         TaskKind.moderation => checkModeration(body, t.spec),
         TaskKind.decision => checkDecisions(body, t.spec),
@@ -561,7 +558,7 @@ AnswerCheck checkAnswer(ApiTask t, String text, List<DraftFile> files) {
       };
       return e == null ? const AnswerCheck.ok() : AnswerCheck.error(e);
     case AnswerMedia.text:
-      if (body.isEmpty) return const AnswerCheck.error('还没有写回答。');
+      if (body.isEmpty) return const AnswerCheck.error('请输入回答。');
       if (t.wantsSrt) {
         final e = checkSrt(body);
         if (e != null) return AnswerCheck.error(e);
@@ -570,7 +567,7 @@ AnswerCheck checkAnswer(ApiTask t, String text, List<DraftFile> files) {
         final parts = body.split(RegExp(r'^\s*@@@\s*$', multiLine: true));
         if (parts.length != t.count) {
           return AnswerCheck.warn(
-            '对方要 ${t.count} 个版本，用单独一行 @@@ 隔开；现在是 ${parts.length} 个。',
+            '需要 ${t.count} 个版本，当前 ${parts.length} 个。',
           );
         }
       }
@@ -628,7 +625,7 @@ class _Bad {
 String? checkModeration(String text, Map<String, dynamic> spec) {
   final count = (spec['count'] as num?)?.toInt() ?? 1;
   var v = _json(text);
-  if (v is _Bad) return '要用 JSON 作答，每条内容一项，例如 [[], ["violence"]]。';
+  if (v is _Bad) return '需要 JSON 格式，例如 [[], ["violence"]]。';
   if (v is Map && v.containsKey('results')) v = v['results'];
   List list;
   if (v is List && count == 1 && v.every((x) => x is String)) {
@@ -638,10 +635,10 @@ String? checkModeration(String text, Map<String, dynamic> spec) {
   } else if (v is List) {
     list = v;
   } else {
-    return '要用 JSON 列表作答，每条内容一项。';
+    return '需要 JSON 列表。';
   }
   if (list.length != count) {
-    return '对方发来 $count 条内容，要逐条作答；现在是 ${list.length} 项。';
+    return '共 $count 条内容，当前 ${list.length} 项。';
   }
   bool known(String c) {
     final k = c.trim().toLowerCase().replaceAll('_', '-').replaceAll('/', '-');
@@ -654,8 +651,8 @@ String? checkModeration(String text, Map<String, dynamic> spec) {
     if (e == null) continue;
     if (e is List) {
       for (final c in e) {
-        if (c is! String) return '第 $n 项：类别名要是文字。';
-        if (!known(c)) return '第 $n 项：没有「$c」这个类别。';
+        if (c is! String) return '第 $n 项：类别名称无效。';
+        if (!known(c)) return '第 $n 项：未知类别“$c”。';
       }
     } else if (e is Map) {
       final o = e['categories'] is Map ? e['categories'] as Map : e;
@@ -663,14 +660,14 @@ String? checkModeration(String text, Map<String, dynamic> spec) {
         final s = entry.value;
         final score =
             s is bool ? (s ? 1.0 : 0.0) : (s is num ? s.toDouble() : null);
-        if (score == null) return '第 $n 项：「${entry.key}」要填分数或 true/false。';
+        if (score == null) return '第 $n 项：“${entry.key}”需为分数或 true/false。';
         if (score < 0 || score > 1) {
-          return '第 $n 项：「${entry.key}」的分数要在 0 到 1 之间。';
+          return '第 $n 项：“${entry.key}”需在 0 到 1 之间。';
         }
-        if (!known('${entry.key}')) return '第 $n 项：没有「${entry.key}」这个类别。';
+        if (!known('${entry.key}')) return '第 $n 项：未知类别“${entry.key}”。';
       }
     } else {
-      return '第 $n 项：要么是类别列表，要么是分数对象。';
+      return '第 $n 项：格式无效。';
     }
   }
   return null;
@@ -680,7 +677,7 @@ String? checkModeration(String text, Map<String, dynamic> spec) {
 String? checkDecisions(String text, Map<String, dynamic> spec) {
   final qs = (spec['questions'] as List?) ?? const [];
   var v = _json(text);
-  if (v is _Bad) return '要用 JSON 列表作答，每题一项。';
+  if (v is _Bad) return '需要 JSON 列表。';
   if (v is Map && v.containsKey('answers')) v = v['answers'];
   final List list;
   if (v is List) {
@@ -688,10 +685,10 @@ String? checkDecisions(String text, Map<String, dynamic> spec) {
   } else if (qs.length == 1) {
     list = [v];
   } else {
-    return '要用 JSON 列表作答，每题一项。';
+    return '需要 JSON 列表。';
   }
   if (list.length != qs.length) {
-    return '一共 ${qs.length} 个问题，要逐题作答；现在是 ${list.length} 项。';
+    return '共 ${qs.length} 个问题，当前 ${list.length} 项。';
   }
   for (var i = 0; i < qs.length; i++) {
     final n = i + 1;
@@ -704,13 +701,13 @@ String? checkDecisions(String text, Map<String, dynamic> spec) {
       a = a['answer'];
     }
     if (conf != null && (conf < 0 || conf > 1)) {
-      return '第 $n 题：把握程度要在 0 到 1 之间。';
+      return '第 $n 题：需在 0 到 1 之间。';
     }
     if (a == null) continue;
     switch (q['type']) {
       case 'predicate':
         final p = a is bool ? 0.5 : (a is num ? a.toDouble() : -1.0);
-        if (p < 0 || p > 1) return '第 $n 题：判断题填 0 到 1 的概率，或 true/false。';
+        if (p < 0 || p > 1) return '第 $n 题：需为 0 到 1 或 true/false。';
       case 'choice':
         final values = (q['values'] as List?) ?? const [];
         final hit = values.any(
@@ -720,16 +717,16 @@ String? checkDecisions(String text, Map<String, dynamic> spec) {
                   a is String &&
                   x.toLowerCase() == a.trim().toLowerCase()),
         );
-        if (!hit) return '第 $n 题：要从 ${values.join('、')} 里选一个。';
+        if (!hit) return '第 $n 题：请选择 ${values.join('、')}。';
       case 'score':
         final labels = (q['labels'] as List?) ?? const [];
         final hit = a is String
             ? labels.any(
                 (l) => l is String && l.toLowerCase() == a.trim().toLowerCase())
             : a is int && a >= 0 && a < labels.length;
-        if (!hit) return '第 $n 题：要从等级 ${labels.join('、')} 里选一个。';
+        if (!hit) return '第 $n 题：请选择 ${labels.join('、')}。';
       default:
-        return '第 $n 题：题型不认识。';
+        return '第 $n 题：不支持的题型。';
     }
   }
   return null;
@@ -741,25 +738,25 @@ String? checkHits(String text, Map<String, dynamic> spec) {
   final files = (spec['files'] as List?) ?? const [];
   var v = _json(text);
   if (v is _Bad) {
-    return '要用 JSON 作答：[{"file": "资料名", "score": 0.9, "text": "段落"}]，没有就写 []。';
+    return '需要 JSON 格式：[{"file": "…", "score": 0.9, "text": "…"}]。';
   }
   if (v is Map) v = v['data'] ?? v['results'] ?? v;
-  if (v is! List) return '要用 JSON 列表作答。';
-  if (v.length > max) return '最多 $max 条，现在是 ${v.length} 条。';
+  if (v is! List) return '需要 JSON 列表。';
+  if (v.length > max) return '最多 $max 条，当前 ${v.length} 条。';
   for (var i = 0; i < v.length; i++) {
     final h = v[i];
     final n = i + 1;
-    if (h is! Map) return '第 $n 条要是一个对象。';
+    if (h is! Map) return '第 $n 条：格式无效。';
     final f = h['file'] ?? h['file_id'] ?? h['filename'];
-    if (f is! String) return '第 $n 条：要写出自哪份资料（file）。';
+    if (f is! String) return '第 $n 条：缺少 file。';
     final ok =
         files.any((x) => x is Map && (x['id'] == f || x['filename'] == f));
-    if (!ok) return '第 $n 条：「$f」不在这个资料库里。';
+    if (!ok) return '第 $n 条：未找到“$f”。';
     final t = h['text'] ?? h['content'];
-    if (t is! String) return '第 $n 条：要写出找到的段落（text）。';
+    if (t is! String) return '第 $n 条：缺少 text。';
     final s = h['score'];
     if (s != null && (s is! num || s < 0 || s > 1)) {
-      return '第 $n 条：相关度要在 0 到 1 之间。';
+      return '第 $n 条：score 需在 0 到 1 之间。';
     }
   }
   return null;
@@ -768,20 +765,20 @@ String? checkHits(String text, Map<String, dynamic> spec) {
 /// Mirrors `evals::check_grade`.
 String? checkGrade(String text, Map<String, dynamic> spec) {
   final v = _json(text);
-  if (v is! Map) return '要用 JSON 作答，例如 {"score": 0.8} 或 {"label": "通过"}。';
+  if (v is! Map) return '需要 JSON 格式，例如 {"score": 0.8}。';
   final labels = spec['labels'];
   if (labels is List) {
     final l = v['label'];
-    if (l is! String) return '要给出标签：{"label": "..."}。';
-    if (!labels.contains(l)) return '标签要是 ${labels.join('、')} 之一。';
+    if (l is! String) return '缺少 label。';
+    if (!labels.contains(l)) return '标签需为 ${labels.join('、')}。';
     return null;
   }
   final s = v['score'];
-  if (s is! num) return '要给出分数：{"score": 数字}。';
+  if (s is! num) return '缺少 score。';
   final r = spec['range'];
   if (r is List && r.length == 2 && r[0] is num && r[1] is num) {
     if (s < (r[0] as num) || s > (r[1] as num)) {
-      return '分数要在 ${_num(r[0])} 到 ${_num(r[1])} 之间。';
+      return '分数需在 ${_num(r[0])} 到 ${_num(r[1])} 之间。';
     }
   }
   return null;
@@ -795,7 +792,7 @@ String? checkSrt(String text) {
       .split(RegExp(r'\n\s*\n'))
       .where((c) => c.trim().isNotEmpty)
       .toList();
-  if (cues.isEmpty) return '还没有字幕。';
+  if (cues.isEmpty) return '请输入字幕。';
   final time = RegExp(
     r'^\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}',
   );
@@ -803,9 +800,9 @@ String? checkSrt(String text) {
     final lines = cues[i].trim().split('\n');
     final tl = lines.indexWhere((l) => time.hasMatch(l.trim()));
     if (tl < 0) {
-      return '第 ${i + 1} 段缺时间轴，格式像 00:00:01,000 --> 00:00:03,500。';
+      return '第 ${i + 1} 段：缺少时间轴。';
     }
-    if (tl >= lines.length - 1) return '第 ${i + 1} 段只有时间轴，没有文字。';
+    if (tl >= lines.length - 1) return '第 ${i + 1} 段：缺少文字。';
   }
   return null;
 }

@@ -701,7 +701,7 @@ class _BubbleState extends State<_Bubble> {
           ),
           const SizedBox(height: Sp.x15),
           _TextLink(
-            label: _open ? '收起' : '展开全文 · ${widget.text.length} 字',
+            label: _open ? '收起' : '显示更多',
             onTap: () => setState(() => _open = !_open),
           ),
         ],
@@ -783,7 +783,7 @@ class _DeliveryLine extends StatelessWidget {
           const SizedBox(width: Sp.x15),
           Flexible(
             child: Text(
-              failure ?? '没发出去',
+              failure ?? '未发送',
               style: Ty.small.copyWith(fontSize: 12, color: Dk.dangerInk),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
@@ -804,9 +804,9 @@ class _DeliveryLine extends StatelessWidget {
       );
     } else {
       final (label, glyph, color) = switch (status) {
-        types.Status.sending => ('发送中…', Glyph.clock, Dk.t3),
+        types.Status.sending => ('正在发送…', Glyph.clock, Dk.t3),
         types.Status.delivered => ('已送达', Glyph.delivered, Dk.t3),
-        _ => ('已发出', Glyph.check, Dk.t3),
+        _ => ('已发送', Glyph.check, Dk.t3),
       };
       line = Row(
         mainAxisSize: MainAxisSize.min,
@@ -866,7 +866,7 @@ class _JumpPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hasNew = count > 0;
-    final label = hasNew ? '$count 条新消息' : '回到最新';
+    final label = hasNew ? '$count 条新消息' : '最新消息';
     final ink = hasNew ? Dk.signalInk : Dk.t1;
     return Pressable(
       key: const ValueKey('jump-latest'),
@@ -926,13 +926,7 @@ class _EmptyStream extends StatelessWidget {
                 ),
               ),
             ),
-            Text('这里还没有消息', style: Ty.title.copyWith(fontSize: 17)),
-            const SizedBox(height: Sp.x2),
-            Text(
-              '对方在自己的工具里写下第一句话，就会出现在这里。',
-              textAlign: TextAlign.center,
-              style: Ty.small.copyWith(fontSize: 13),
-            ),
+            Text('没有消息', style: Ty.title.copyWith(fontSize: 17)),
           ],
         ),
       ),

@@ -140,7 +140,7 @@ class _TitleBarState extends State<TitleBar> with WindowListener {
             onTap: _toggleMax,
           ),
           _CaptionButton(
-            tooltip: '关闭到托盘',
+            tooltip: '关闭',
             icon: Icons.close_rounded,
             ink: ink,
             danger: true,

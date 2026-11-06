@@ -98,7 +98,7 @@ class RuntimeTools extends ConsumerWidget {
           Padding(
             padding: const EdgeInsets.symmetric(vertical: Sp.x2),
             child: Text(
-              '对方的工具没有声明可调用的功能',
+              '无可用工具',
               style: Ty.small.copyWith(color: Dk.t3, fontSize: 12),
             ),
           )
@@ -116,7 +116,7 @@ class RuntimeTools extends ConsumerWidget {
         if (model != null) ...[
           const SizedBox(height: Sp.x3),
           _InfoRow(
-            label: '对方用的模型',
+            label: '模型',
             value: model is Map
                 ? (model['name'] as String? ?? model.toString())
                 : model.toString(),
@@ -164,7 +164,7 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
   String get _toolGloss {
     final category = toolCategory(_toolName);
     final total = _properties.length;
-    if (total == 0) return '$category · 无需填写';
+    if (total == 0) return category;
     final needed = _required.length;
     return needed == 0 ? '$category · $total 项可选' : '$category · 需填 $needed 项';
   }
@@ -325,7 +325,7 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
     final properties = _properties;
     if (properties.isEmpty) {
       return [
-        Text('这个工具不需要填写参数', style: Ty.small.copyWith(color: Dk.t2)),
+        Text('无参数', style: Ty.small.copyWith(color: Dk.t2)),
       ];
     }
 
@@ -407,7 +407,7 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
     // failing this one call.
     final connection = ref.read(connectionStateProvider).valueOrNull;
     if (connection != oh.ConnectionState.connected) {
-      _showError('连接已断开，请先点顶栏的重连按钮');
+      _showError('未连接');
       return;
     }
 
@@ -461,7 +461,7 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _invocationId = null);
-      _showError('执行失败：${_messageFor(e)}');
+      _showError('无法执行：${_messageFor(e)}');
     }
   }
 
@@ -540,7 +540,7 @@ class _OptionalSection extends StatelessWidget {
                 ),
                 const SizedBox(width: 4),
                 Text(
-                  '更多选项（可选 · $count 项）',
+                  '可选参数（$count）',
                   style: Ty.small.copyWith(
                     fontSize: 11.5,
                     color: Dk.t2,
@@ -666,7 +666,7 @@ class _FormField extends StatelessWidget {
               const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           border:
               OutlineInputBorder(borderRadius: BorderRadius.circular(Rd.sm)),
-          hintText: '请选择…',
+          hintText: '选择',
         ),
         style: Ty.small,
         items: enumValues!
@@ -723,7 +723,7 @@ class _FormField extends StatelessWidget {
                 const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             border:
                 OutlineInputBorder(borderRadius: BorderRadius.circular(Rd.sm)),
-            hintText: '多个用逗号分隔，如 a, b',
+            hintText: '用逗号分隔',
           ),
           style: Ty.small,
           onChanged: (_) => onChanged(),
@@ -737,7 +737,6 @@ class _FormField extends StatelessWidget {
                 const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             border:
                 OutlineInputBorder(borderRadius: BorderRadius.circular(Rd.sm)),
-            hintText: '请输入…',
           ),
           style: Ty.small,
           onChanged: (_) => onChanged(),
@@ -800,7 +799,7 @@ class _ResultView extends StatelessWidget {
             children: [
               _StatusDot(status: state.status),
               const SizedBox(width: 6),
-              Text('执行结果 · ${statusLabel(state.status)}',
+              Text('结果 · ${statusLabel(state.status)}',
                   style: Ty.small
                       .copyWith(fontSize: 11.5, fontWeight: FontWeight.w600)),
             ],
@@ -852,7 +851,7 @@ class _SystemPromptButton extends StatelessWidget {
       child: OutlinedButton.icon(
         onPressed: () => _openFullScreen(context),
         icon: const Icon(Icons.description_outlined, size: 18, color: Dk.t2),
-        label: Text('查看完整提示词（$lineCount 行）'),
+        label: Text('显示全部（$lineCount 行）'),
         style: OutlinedButton.styleFrom(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         ),
@@ -888,7 +887,7 @@ class _SystemPromptFullScreen extends StatelessWidget {
               Clipboard.setData(ClipboardData(text: prompt));
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
-                  content: Text('已复制到剪贴板'),
+                  content: Text('已复制'),
                   duration: Duration(seconds: 2),
                 ),
               );

@@ -110,7 +110,7 @@ class _Nothing extends StatelessWidget {
   Widget build(BuildContext context) {
     return Center(
       child: Text(
-        '打开一个对话后，这里会显示对方的信息',
+        '未选择对话',
         style: Ty.small.copyWith(color: Dk.t3),
         textAlign: TextAlign.center,
       ),
@@ -133,10 +133,10 @@ class _PersonDetails extends ConsumerWidget {
     final caps = ref.watch(capabilityCacheProvider);
     // The cache holds the latest report from anyone; only show it here
     // when it is this person's.
-    final mine = caps != null &&
-        (caps.agentId == info.agentId || caps.agentId.isEmpty)
-        ? caps
-        : null;
+    final mine =
+        caps != null && (caps.agentId == info.agentId || caps.agentId.isEmpty)
+            ? caps
+            : null;
 
     return ListView(
       key: const ValueKey('details-person'),
@@ -178,8 +178,8 @@ class _PersonDetails extends ConsumerWidget {
           children: [
             _Row(
               key: const ValueKey('details-remark'),
-              label: '备注名',
-              value: caller.anonymous ? '还没有名字' : caller.name,
+              label: '名称',
+              value: caller.anonymous ? '添加名称' : caller.name,
               valueMuted: caller.anonymous,
               trailing: const GlyphIcon(Glyph.edit, size: 14, color: Dk.t3),
               onTap: () => askForName(context, ref, info),
@@ -189,7 +189,7 @@ class _PersonDetails extends ConsumerWidget {
             if (caller.raw != caller.name &&
                 caller.raw != remarkToStoredName(caller.name, caller.tool))
               _Row(
-                label: '对方报上的名字',
+                label: '原始名称',
                 value: caller.raw,
                 mono: true,
               ),
@@ -201,18 +201,17 @@ class _PersonDetails extends ConsumerWidget {
         _Group(
           children: [
             _Row(
-              label: '保存会话记录',
-              hint: '消息默认不留在服务器上',
+              label: '保存记录',
               trailing: const GlyphIcon(Glyph.save, size: 14, color: Dk.t3),
               onTap: () async {
                 final ok = await ref
                     .read(conversationListProvider.notifier)
                     .saveConversation(info.id);
-                if (context.mounted) toast(context, ok ? '已保存' : '没保存成功');
+                if (context.mounted) toast(context, ok ? '已保存' : '无法保存');
               },
             ),
             _Row(
-              label: '移到回收站',
+              label: '移到废纸篓',
               danger: true,
               trailing:
                   const GlyphIcon(Glyph.trash, size: 14, color: Dk.danger),
@@ -225,15 +224,13 @@ class _PersonDetails extends ConsumerWidget {
         // ── Technical details, folded ──
         _Fold(
           key: const ValueKey('details-tech'),
-          title: '技术详情',
-          summary: mine == null
-              ? '标识与对话编号'
-              : '标识、对话编号、${mine.capabilities.length} 个工具',
+          title: '高级',
+          summary: mine == null ? '' : '${mine.capabilities.length} 个工具',
           children: [
             _Group(
               children: [
-                _Row(label: '标识', value: info.agentId, mono: true, copy: true),
-                _Row(label: '对话编号', value: info.id, mono: true, copy: true),
+                _Row(label: 'ID', value: info.agentId, mono: true, copy: true),
+                _Row(label: '对话 ID', value: info.id, mono: true, copy: true),
                 if (info.origin != null)
                   _Row(label: '来自', value: info.origin!, mono: true),
               ],
@@ -250,7 +247,7 @@ class _PersonDetails extends ConsumerWidget {
               Padding(
                 padding: const EdgeInsets.only(left: Sp.x1),
                 child: Text(
-                  '对方的工具上报后会出现在这里',
+                  '无工具',
                   style: Ty.small.copyWith(color: Dk.t3, fontSize: 12),
                 ),
               )
@@ -270,8 +267,8 @@ class _TurnChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (text, color, floor) = waitingOnMe
-        ? ('在等你回复', Dk.signal, Dk.signalSoft)
-        : ('没有待回复的消息', Dk.t3, Dk.p3);
+        ? ('待回复', Dk.signal, Dk.signalSoft)
+        : ('无待回复', Dk.t3, Dk.p3);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: Sp.x25, vertical: 3),
       decoration: BoxDecoration(
@@ -324,7 +321,7 @@ class _RoomDetailsState extends ConsumerState<_RoomDetails> {
       await action();
       ref.invalidate(roomInfoProvider(widget.info.id));
     } catch (e) {
-      if (mounted) toast(context, '没成功：${_plain(e)}');
+      if (mounted) toast(context, '出现错误：${_plain(e)}');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -370,7 +367,7 @@ class _RoomDetailsState extends ConsumerState<_RoomDetails> {
         Text(
           [
             '${members.isEmpty ? (info.memberCount ?? 0) : members.length} 人',
-            if (isOwner) '你是群主',
+            if (isOwner) '群主',
           ].join(' · '),
           textAlign: TextAlign.center,
           style: Ty.small.copyWith(color: Dk.t3),
@@ -388,7 +385,7 @@ class _RoomDetailsState extends ConsumerState<_RoomDetails> {
           Padding(
             padding: const EdgeInsets.all(Sp.x2),
             child: Text(
-              '没能读取成员，稍后再打开看看',
+              '无法加载成员',
               style: Ty.small.copyWith(color: Dk.t3),
             ),
           )
@@ -406,7 +403,7 @@ class _RoomDetailsState extends ConsumerState<_RoomDetails> {
                           memberId(m) != me &&
                           m['role'] != 'owner'
                       ? () => _confirmRemove(
-                            m['display_name'] as String? ?? '这位成员',
+                            m['display_name'] as String? ?? '此成员',
                             memberId(m)!,
                           )
                       : null,
@@ -423,8 +420,7 @@ class _RoomDetailsState extends ConsumerState<_RoomDetails> {
               if (_invite == null)
                 _Row(
                   key: const ValueKey('details-invite'),
-                  label: '生成邀请码',
-                  hint: '发给对方，在「加入群聊」里输入就能进来',
+                  label: '创建邀请码',
                   trailing:
                       const GlyphIcon(Glyph.invite, size: 14, color: Dk.t3),
                   onTap: () => _run(() async {
@@ -441,7 +437,7 @@ class _RoomDetailsState extends ConsumerState<_RoomDetails> {
                   emphasis: true,
                 ),
                 _Row(
-                  label: '作废这个邀请码',
+                  label: '停用邀请码',
                   danger: true,
                   onTap: () => _run(() async {
                     await client.revokeInvite(info.id, _invite!);
@@ -459,19 +455,18 @@ class _RoomDetailsState extends ConsumerState<_RoomDetails> {
           children: [
             if (isOwner)
               _Row(
-                label: '更多群设置',
-                hint: '接入地址、调用密钥、发言规则',
+                label: '群聊设置',
                 trailing: const GlyphIcon(Glyph.more, size: 14, color: Dk.t3),
                 onTap: () => RoomPanel.show(context, info.id),
               ),
             _Row(
-              label: '保存会话记录',
+              label: '保存记录',
               trailing: const GlyphIcon(Glyph.save, size: 14, color: Dk.t3),
               onTap: () async {
                 final ok = await ref
                     .read(conversationListProvider.notifier)
                     .saveConversation(info.id);
-                if (context.mounted) toast(context, ok ? '已保存' : '没保存成功');
+                if (context.mounted) toast(context, ok ? '已保存' : '无法保存');
               },
             ),
             if (!isOwner && room != null)
@@ -484,12 +479,12 @@ class _RoomDetailsState extends ConsumerState<_RoomDetails> {
         ),
         const SizedBox(height: Sp.x4),
         _Fold(
-          title: '技术详情',
-          summary: '群编号',
+          title: '高级',
+          summary: '群聊 ID',
           children: [
             _Group(
               children: [
-                _Row(label: '群编号', value: info.id, mono: true, copy: true),
+                _Row(label: '群聊 ID', value: info.id, mono: true, copy: true),
               ],
             ),
           ],
@@ -501,17 +496,17 @@ class _RoomDetailsState extends ConsumerState<_RoomDetails> {
   Future<void> _confirmRemove(String name, String participantId) async {
     final ok = await _confirm(
       context,
-      title: '移出群聊',
-      body: '「$name」会被移出这个群，之后的消息都收不到。',
-      action: '移出',
+      title: '移除',
+      body: '要移除“$name”吗？',
+      action: '移除',
     );
     if (!ok) return;
     await _run(() async {
       final done = await ref
           .read(openHumanClientProvider)
           .removeRoomMember(widget.info.id, participantId);
-      if (!done) throw StateError('服务器拒绝了');
-      if (mounted) toast(context, '已移出「$name」');
+      if (!done) throw StateError('操作未完成');
+      if (mounted) toast(context, '已移除');
     });
   }
 
@@ -519,14 +514,14 @@ class _RoomDetailsState extends ConsumerState<_RoomDetails> {
     final ok = await _confirm(
       context,
       title: '退出群聊',
-      body: '退出后就收不到「${widget.info.displayName}」的消息了，需要群主重新邀请才能回来。',
+      body: '退出后将不再收到此群聊的消息。',
       action: '退出',
     );
     if (!ok) return;
     await _run(() async {
       final done =
           await ref.read(openHumanClientProvider).leaveRoom(widget.info.id);
-      if (!done) throw StateError('服务器拒绝了');
+      if (!done) throw StateError('操作未完成');
       ref.read(activeConversationIdProvider.notifier).state = null;
       await ref.read(conversationListProvider.notifier).retry();
     });
@@ -604,7 +599,7 @@ class _MemberRow extends StatelessWidget {
           if (onRemove != null)
             DkIconButton(
               glyph: Glyph.close,
-              label: '移出群聊',
+              label: '移除',
               glyphSize: Sz.glyphXs,
               onTap: onRemove,
             ),
@@ -682,7 +677,6 @@ class _Row extends StatelessWidget {
     super.key,
     required this.label,
     this.value,
-    this.hint,
     this.trailing,
     this.onTap,
     this.mono = false,
@@ -690,7 +684,7 @@ class _Row extends StatelessWidget {
     this.danger = false,
     this.valueMuted = false,
     this.emphasis = false,
-  });
+  }) : hint = null;
 
   final String label;
   final String? value;
@@ -743,7 +737,7 @@ class _Row extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ],
-                if (hint != null) ...[
+                if (hint != null && hint!.isNotEmpty) ...[
                   const SizedBox(height: 2),
                   Text(
                     hint!,

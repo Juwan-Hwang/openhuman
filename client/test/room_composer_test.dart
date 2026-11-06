@@ -69,7 +69,7 @@ void main() {
         onEndTurn: () => ended++,
       )),
     );
-    expect(find.text('发送完毕'), findsWidgets);
+    expect(find.text('结束本轮'), findsWidgets);
     await tester.tap(find.byKey(const ValueKey('composer-end-turn')));
     await tester.pump();
     expect(ended, 1);
@@ -87,7 +87,7 @@ void main() {
       )),
     );
     expect(find.byType(TextField), findsNothing);
-    expect(find.textContaining('这一轮你说完了'), findsOneWidget);
+    expect(find.textContaining('已结束本轮'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('composer-reopen')));
     await tester.pump();
     expect(reopened, 1);
@@ -106,7 +106,7 @@ void main() {
       )),
     );
     // Offline outranks "your move": the field says why nothing sends.
-    expect(find.text('对方在等你回复'), findsNothing);
+    expect(find.text('待回复'), findsNothing);
     await tester.enterText(find.byType(TextField), '在吗');
     await tester.pump();
     await tester.tap(find.byKey(_send));
@@ -122,7 +122,7 @@ void main() {
       )),
     );
     await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('对方在等你回复'), findsOneWidget);
+    expect(find.text('待回复'), findsOneWidget);
   });
 
   test('mentionSpans highlights exact member names only', () {
