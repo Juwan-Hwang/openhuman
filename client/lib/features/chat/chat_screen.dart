@@ -29,6 +29,7 @@ import '../../widgets/controls.dart';
 import '../../widgets/glyphs.dart';
 import '../../widgets/motion.dart';
 import '../../widgets/phone_stack.dart';
+import 'shortcuts_sheet.dart';
 import 'message_adapter.dart';
 import 'share_sheet.dart';
 import 'details_panel.dart';
@@ -72,6 +73,40 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   /// Phones show one pane at a time: the list, or the open conversation.
   bool _phoneList = true;
+
+  /// Alt+↑/↓ walks the list in the order it is shown (people, then
+  /// groups); with [waiting] it jumps to the next one waiting on me.
+  void _step(int d, {bool waiting = false}) {
+    final all = ref.read(conversationListProvider).entries;
+    final ordered = [
+      ...all.where((c) => !c.isGroup),
+      ...all.where((c) => c.isGroup),
+    ];
+    if (ordered.isEmpty) return;
+    final at = ordered.indexWhere(
+      (c) => c.id == ref.read(activeConversationIdProvider),
+    );
+    ConversationInfo? next;
+    if (waiting) {
+      for (var i = 1; i <= ordered.length; i++) {
+        final c = ordered[(at + i) % ordered.length];
+        if (c.waiting && i < ordered.length) {
+          next = c;
+          break;
+        }
+      }
+      if (next == null) {
+        toast(context, '没有待回复的对话');
+        return;
+      }
+    } else {
+      final i = at < 0 ? 0 : (at + d).clamp(0, ordered.length - 1);
+      if (i == at) return;
+      next = ordered[i];
+    }
+    ref.read(conversationListProvider.notifier).selectConversation(next.id);
+    setState(() => _phoneList = false);
+  }
 
   void _focusSearch() {
     setState(() {
@@ -171,6 +206,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         : const <String>[];
 
     final shortcuts = <ShortcutActivator, VoidCallback>{
+      const SingleActivator(LogicalKeyboardKey.arrowUp, alt: true): () =>
+          _step(-1),
+      const SingleActivator(LogicalKeyboardKey.arrowDown, alt: true): () =>
+          _step(1),
       for (final mod in const [true, false]) ...{
         SingleActivator(LogicalKeyboardKey.keyK, control: mod, meta: !mod):
             _focusSearch,
@@ -178,6 +217,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             () => setState(() => _showSidebar = !_showSidebar),
         SingleActivator(LogicalKeyboardKey.keyI, control: mod, meta: !mod):
             _toggleRuntime,
+        SingleActivator(
+          LogicalKeyboardKey.keyJ,
+          control: mod,
+          meta: !mod,
+        ): () => _step(1, waiting: true),
+        SingleActivator(LogicalKeyboardKey.slash, control: mod, meta: !mod):
+            () => showShortcuts(context),
       },
     };
 
