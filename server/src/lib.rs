@@ -519,6 +519,15 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/seat/model-name",
             post(seat::model_name).get(seat::model_name_get),
         )
+        // A key of their own for each person who may reach the seat.
+        .route(
+            "/v1/seat/caller-keys",
+            post(api::contacts::create).get(api::contacts::list),
+        )
+        .route(
+            "/v1/seat/caller-keys/:key_id",
+            delete(api::contacts::revoke),
+        )
         // Observation runs *inside* auth: only authenticated requests are
         // captured, so an anonymous caller cannot fill the disk.
         .layer(axum::middleware::from_fn(observation::observe_request))

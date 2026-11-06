@@ -242,3 +242,16 @@ impl ApiKey {
         crate::crypto::sha256_hex(raw_key)
     }
 }
+
+/// A caller key a human handed to someone, as the owner sees it: never
+/// the key itself (only its hash is stored), but who it is for and
+/// whether it still works.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallerKeyInfo {
+    pub id: String,
+    pub agent_id: String,
+    /// What the caller is called — the name given when the key was made,
+    /// or a rename since.
+    pub name: String,
+    pub scope: KeyScope,
+}

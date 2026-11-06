@@ -50,6 +50,21 @@ pub trait IdentityRepository: Send + Sync {
         None
     }
 
+    /// The 1:1 caller keys a human handed out (not bound to a room),
+    /// oldest first. The default knows none.
+    async fn list_caller_keys(&self, human_id: &str) -> Vec<crate::model::identity::CallerKeyInfo> {
+        let _ = human_id;
+        Vec::new()
+    }
+
+    /// Revoke one key the human owns. `false` when the human owns no
+    /// such key. The default revokes nothing (fails closed: the key keeps
+    /// its scope, and the caller is told it did not happen).
+    async fn revoke_key(&self, human_id: &str, key_id: &str) -> bool {
+        let _ = (human_id, key_id);
+        false
+    }
+
     /// Get a human by ID.
     async fn get_human(&self, id: &str) -> Option<HumanIdentity>;
 

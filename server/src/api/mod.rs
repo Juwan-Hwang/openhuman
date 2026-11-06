@@ -11,6 +11,7 @@ pub mod audio;
 pub mod batches;
 pub mod chatkit;
 pub mod completions;
+pub mod contacts;
 pub mod decisions;
 pub mod evals;
 pub mod files;

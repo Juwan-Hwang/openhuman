@@ -348,6 +348,42 @@ impl IdentityRepository for PostgresStore {
         Some(crate::model::identity::KeyScope::parse(&scope))
     }
 
+    async fn list_caller_keys(&self, human_id: &str) -> Vec<crate::model::identity::CallerKeyInfo> {
+        use crate::model::identity::{CallerKeyInfo, KeyScope};
+        let rows = sqlx::query(
+            "SELECT k.id, k.agent_id, k.scope, COALESCE(a.name, '') AS name \
+             FROM api_keys k LEFT JOIN agent_identities a ON a.id = k.agent_id \
+             WHERE k.human_id = $1 AND k.room_id IS NULL \
+               AND k.scope IN ('caller', 'revoked') AND k.id <> 'key_demo_001' \
+             ORDER BY k.created_at, k.id",
+        )
+        .bind(human_id)
+        .fetch_all(&*self.pool)
+        .await
+        .unwrap_or_default();
+        rows.into_iter()
+            .filter_map(|r| {
+                let scope: String = r.try_get("scope").ok()?;
+                Some(CallerKeyInfo {
+                    id: r.try_get("id").ok()?,
+                    agent_id: r.try_get("agent_id").ok()?,
+                    name: r.try_get("name").ok()?,
+                    scope: KeyScope::parse(&scope),
+                })
+            })
+            .collect()
+    }
+
+    async fn revoke_key(&self, human_id: &str, key_id: &str) -> bool {
+        sqlx::query("UPDATE api_keys SET scope = 'revoked' WHERE id = $1 AND human_id = $2")
+            .bind(key_id)
+            .bind(human_id)
+            .execute(&*self.pool)
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .unwrap_or(false)
+    }
+
     async fn get_human(&self, id: &str) -> Option<HumanIdentity> {
         self.get_human_inner(id).await
     }

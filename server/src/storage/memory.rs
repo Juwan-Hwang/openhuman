@@ -225,6 +225,50 @@ impl IdentityRepository for MemoryStore {
         data.api_keys.values().find(|k| k.id == id).map(|k| k.scope)
     }
 
+    async fn list_caller_keys(&self, human_id: &str) -> Vec<crate::model::identity::CallerKeyInfo> {
+        use crate::model::identity::{CallerKeyInfo, KeyScope};
+        let data = self.data.lock().await;
+        let mut out: Vec<CallerKeyInfo> = data
+            .api_keys
+            .values()
+            .filter(|k| {
+                k.human_id == human_id
+                    && k.room_id.is_none()
+                    && matches!(k.scope, KeyScope::Caller | KeyScope::Revoked)
+                    && k.id.starts_with("key_")
+                    && k.id != "key_demo_001"
+            })
+            .map(|k| CallerKeyInfo {
+                id: k.id.clone(),
+                agent_id: k.agent_id.clone(),
+                name: data
+                    .agents
+                    .get(&k.agent_id)
+                    .map(|a| a.name.clone())
+                    .unwrap_or_default(),
+                scope: k.scope,
+            })
+            .collect();
+        // Key ids are UUIDv7: sorting by id is sorting by creation.
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+
+    async fn revoke_key(&self, human_id: &str, key_id: &str) -> bool {
+        let mut data = self.data.lock().await;
+        match data
+            .api_keys
+            .values_mut()
+            .find(|k| k.id == key_id && k.human_id == human_id)
+        {
+            Some(k) => {
+                k.scope = crate::model::identity::KeyScope::Revoked;
+                true
+            }
+            None => false,
+        }
+    }
+
     async fn get_human(&self, id: &str) -> Option<HumanIdentity> {
         let data = self.data.lock().await;
         data.humans.get(id).cloned()
