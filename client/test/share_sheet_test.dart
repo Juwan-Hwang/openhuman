@@ -58,7 +58,14 @@ void main() {
         home: const Scaffold(body: ShareSheet()),
       ),
     ));
+    // First frame, before the list arrives: no seat key, no flash of the
+    // old layout, just the placeholder list.
+    expect(find.textContaining('ohk_seat'), findsNothing);
+    expect(find.text('复制环境变量'), findsNothing);
+    expect(find.byKey(const ValueKey('share-holders-loading')), findsOneWidget);
+
     await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('share-holders-loading')), findsNothing);
 
     // The seat's own key is never on offer once people have keys.
     expect(find.textContaining('ohk_seat'), findsNothing);

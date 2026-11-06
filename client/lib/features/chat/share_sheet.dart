@@ -25,8 +25,10 @@ final modelNameProvider = FutureProvider.autoDispose<oh.ModelName>((ref) async {
 /// The people who hold a key of their own from this seat. `null` when
 /// the server predates per-person keys: the sheet then hands out the
 /// seat's own key, as before.
-final callerKeysProvider =
-    FutureProvider.autoDispose<List<oh.CallerKey>?>((ref) async {
+///
+/// Kept alive across openings so the sheet opens on the last known list
+/// and refreshes it in place, instead of flashing an empty state first.
+final callerKeysProvider = FutureProvider<List<oh.CallerKey>?>((ref) async {
   ref.watch(serverConfigProvider);
   try {
     return await ref.read(openHumanClientProvider).callerKeys();
@@ -63,6 +65,17 @@ class _ShareSheetState extends ConsumerState<ShareSheet> {
   oh.CallerKey? _fresh;
   bool _making = false;
   final _name = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    // Refresh in the background; the previous list stays on screen.
+    Future.microtask(() {
+      if (mounted && ref.read(callerKeysProvider).hasValue) {
+        ref.invalidate(callerKeysProvider);
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -317,7 +330,11 @@ export OPENAI_API_KEY="$apiKey"''';
     final keys = ref.watch(callerKeysProvider);
     // Per-person keys when the server has them; the seat's own key only
     // on a server that predates them.
-    final perPerson = keys.valueOrNull != null;
+    // Until the first answer arrives we don't know which kind of server
+    // this is. Show the per-person layout with a placeholder list rather
+    // than the seat's own key: the legacy view would flash, then vanish.
+    final loading = !keys.hasValue;
+    final perPerson = loading || keys.valueOrNull != null;
     final fresh = _fresh;
     final apiKey = perPerson ? (fresh?.apiKey ?? '') : serverConfig.apiKey;
     final model = ref.watch(modelNameProvider).valueOrNull;
@@ -367,7 +384,7 @@ export OPENAI_API_KEY="$apiKey"''';
                   _NewKey(
                     controller: _name,
                     busy: _making,
-                    enabled: connected,
+                    enabled: connected && !loading,
                     onMake: _make,
                   ),
                   const SizedBox(height: Sp.x4),
@@ -442,7 +459,12 @@ export OPENAI_API_KEY="$apiKey"''';
                   ),
                 ],
                 // ── Who holds one ──
-                if (perPerson && keys.value!.isNotEmpty) ...[
+                if (loading) ...[
+                  const SizedBox(height: Sp.x5),
+                  const Text('有访问权限的人', style: Ty.label),
+                  const SizedBox(height: Sp.x2),
+                  const _HoldersPlaceholder(),
+                ] else if (perPerson && keys.value!.isNotEmpty) ...[
                   const SizedBox(height: Sp.x5),
                   const Text('有访问权限的人', style: Ty.label),
                   const SizedBox(height: Sp.x2),
@@ -821,6 +843,58 @@ class _Holders extends StatelessWidget {
                       onPressed: () => onRevoke(rows[i]),
                       child: const Text('停用'),
                     ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Same frame as [_Holders] while the list loads, so nothing jumps.
+class _HoldersPlaceholder extends StatelessWidget {
+  const _HoldersPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const ValueKey('share-holders-loading'),
+      decoration: BoxDecoration(
+        color: Dk.bg,
+        borderRadius: BorderRadius.circular(Rd.lg),
+        border: Border.all(color: Dk.line),
+      ),
+      child: Column(
+        children: [
+          for (var i = 0; i < 3; i++)
+            Container(
+              height: 48,
+              padding: const EdgeInsets.symmetric(horizontal: Sp.x4),
+              decoration: BoxDecoration(
+                border: i == 2
+                    ? null
+                    : const Border(bottom: BorderSide(color: Dk.line)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 26,
+                    height: 26,
+                    decoration: const BoxDecoration(
+                      color: Dk.line,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: Sp.x3),
+                  Container(
+                    width: 120.0 - i * 24,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: Dk.line,
+                      borderRadius: BorderRadius.circular(5),
+                    ),
+                  ),
                 ],
               ),
             ),
