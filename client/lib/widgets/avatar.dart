@@ -59,8 +59,12 @@ class PersonAvatar extends StatelessWidget {
         child: GlyphIcon(Glyph.person, size: size * 0.56, color: Dk.t3),
       );
     } else {
-      final letters = initialsOf(name);
-      final cjk = RegExp(r'[\u3400-\u9fff]').hasMatch(letters);
+      final all = initialsOf(name);
+      final cjk = RegExp(r'[\u3400-\u9fff]').hasMatch(all);
+      // Two characters only fit a face big enough to read them.
+      final letters = cjk && size < 30 && all.characters.length > 1
+          ? all.characters.last
+          : all;
       face = Container(
         width: size,
         height: size,
@@ -72,8 +76,11 @@ class PersonAvatar extends StatelessWidget {
         child: Text(
           letters,
           maxLines: 1,
+          // The face is a fixed size; the system text size must not
+          // push its letters past the edge.
+          textScaler: TextScaler.noScaling,
           style: Ty.name.copyWith(
-            fontSize: size * (cjk && letters.length > 1 ? 0.36 : 0.4),
+            fontSize: size * (cjk && letters.length > 1 ? 0.33 : 0.4),
             color: me ? Dk.ink : Dk.onHue,
             fontWeight: FontWeight.w700,
             height: 1,
@@ -152,6 +159,7 @@ class RoomAvatar extends StatelessWidget {
                 ),
                 child: Text(
                   initialsOf(m).characters.first,
+                  textScaler: TextScaler.noScaling,
                   style: Ty.name.copyWith(
                     fontSize: cell * 0.52,
                     height: 1,

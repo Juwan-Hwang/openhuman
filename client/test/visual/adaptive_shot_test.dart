@@ -81,6 +81,31 @@ Future<void> _open(
 void main() {
   final enabled = Platform.environment['OH_SHOT'] == '1';
 
+  testWidgets('phone shots, largest everyday text size', (tester) async {
+    tester.platformDispatcher.textScaleFactorTestValue = 1.35;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    final (_, container) = await _boot(
+      tester,
+      size: const Size(390, 844),
+      dpr: 3,
+      touch: true,
+      padding: const EdgeInsets.only(top: 47, bottom: 34),
+    );
+    await tester.pumpAndSettle(const Duration(milliseconds: 100));
+    await settleImages(tester);
+    await expectLater(
+      find.byType(MaterialApp),
+      matchesGoldenFile('shots/phone_list_large.png'),
+    );
+    await tester.tap(find.byKey(const ValueKey('conv-cnv_zhou')));
+    await tester.pumpAndSettle();
+    await _open(tester, container, 'cnv_zhou');
+    await expectLater(
+      find.byType(MaterialApp),
+      matchesGoldenFile('shots/phone_chat_large.png'),
+    );
+  }, skip: !enabled);
+
   testWidgets('phone shots', (tester) async {
     final (fake, container) = await _boot(
       tester,
