@@ -151,6 +151,35 @@ class FakeClient extends oh.OpenHumanClient {
   Future<oh.ModelName> modelName() async =>
       const oh.ModelName(name: 'huang-zhiwen');
 
+  /// People holding a key of their own; grows and shrinks in a test.
+  final callers = <oh.CallerKey>[
+    const oh.CallerKey(id: 'key_wang', name: '王磊', revoked: true),
+    const oh.CallerKey(id: 'key_lin', name: '林晓'),
+    const oh.CallerKey(id: 'key_chen', name: '陈一舟'),
+  ];
+
+  @override
+  Future<List<oh.CallerKey>> callerKeys() async => List.of(callers);
+
+  @override
+  Future<oh.CallerKey> createCallerKey(String name) async {
+    final k = oh.CallerKey(
+      id: 'key_${callers.length}',
+      name: name.trim(),
+      apiKey: 'ohk_7f3a9c2e51d84b06a1e9f0c4d2b8e637',
+    );
+    callers.add(oh.CallerKey(id: k.id, name: k.name));
+    return k;
+  }
+
+  @override
+  Future<bool> revokeCallerKey(String keyId) async {
+    final i = callers.indexWhere((k) => k.id == keyId);
+    if (i < 0) return false;
+    callers[i] = oh.CallerKey(id: keyId, name: callers[i].name, revoked: true);
+    return true;
+  }
+
   /// Files removed from the sample library during a test.
   final deletedFiles = <String>{};
 

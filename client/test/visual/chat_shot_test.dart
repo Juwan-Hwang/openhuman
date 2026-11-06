@@ -164,6 +164,17 @@ void main() {
         matchesGoldenFile('shots/share.png'),
       );
     }
+    // A key for someone new: shown once, with the words to send them.
+    await tester.enterText(find.byKey(const ValueKey('share-new-name')), '周叙白');
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('share-make-key')));
+    await tester.pumpAndSettle();
+    if (enabled) {
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('shots/share_fresh.png'),
+      );
+    }
 
     // The file library.
     Navigator.of(tester.element(find.byType(ChatScreen))).pop();

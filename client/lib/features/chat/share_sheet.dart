@@ -8,18 +8,31 @@ import 'package:openhuman_sdk_dart/openhuman.dart' as oh;
 import '../../core/notification_service.dart';
 import '../../core/sdk_provider.dart';
 import '../../app/adaptive.dart';
+import '../../widgets/avatar.dart';
 import '../../widgets/controls.dart';
 import '../../widgets/sheet.dart';
 
 /// The model name callers pick, as the server has it (it can be renamed
 /// and pinned there). Falls back to the protocol default.
-final modelNameProvider =
-    FutureProvider.autoDispose<oh.ModelName>((ref) async {
+final modelNameProvider = FutureProvider.autoDispose<oh.ModelName>((ref) async {
   ref.watch(serverConfigProvider);
   try {
     return await ref.read(openHumanClientProvider).modelName();
   } catch (_) {
     return const oh.ModelName(name: 'openhuman-human');
+  }
+});
+
+/// The people who hold a key of their own from this seat. `null` when
+/// the server predates per-person keys: the sheet then hands out the
+/// seat's own key, as before.
+final callerKeysProvider =
+    FutureProvider.autoDispose<List<oh.CallerKey>?>((ref) async {
+  ref.watch(serverConfigProvider);
+  try {
+    return await ref.read(openHumanClientProvider).callerKeys();
+  } catch (_) {
+    return null;
   }
 });
 
@@ -46,6 +59,62 @@ class ShareSheet extends ConsumerStatefulWidget {
 
 class _ShareSheetState extends ConsumerState<ShareSheet> {
   bool _showApiKey = false;
+
+  /// The key just made, the one time its value is known.
+  oh.CallerKey? _fresh;
+  bool _making = false;
+  final _name = TextEditingController();
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  Future<void> _make() async {
+    final name = _name.text.trim();
+    if (name.isEmpty || _making) return;
+    setState(() => _making = true);
+    try {
+      final k = await ref.read(openHumanClientProvider).createCallerKey(name);
+      if (!mounted) return;
+      setState(() {
+        _fresh = k;
+        _name.clear();
+      });
+      ref.invalidate(callerKeysProvider);
+    } catch (_) {
+      if (mounted) toast(context, '没生成出来，名字最长 48 个字');
+    } finally {
+      if (mounted) setState(() => _making = false);
+    }
+  }
+
+  Future<void> _revoke(oh.CallerKey k) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text('收回${k.name}的钥匙？'),
+        content: const Text('收回后对方就发不进来了。以前的对话还在。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(c).pop(true),
+            child: const Text('收回'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final done = await ref.read(openHumanClientProvider).revokeCallerKey(k.id);
+    if (!mounted) return;
+    if (_fresh?.id == k.id) setState(() => _fresh = null);
+    ref.invalidate(callerKeysProvider);
+    toast(context, done ? '已收回${k.name}的钥匙' : '没收回成功，再试一次');
+  }
 
   /// Automatically derives the OpenAI-compatible HTTP Base URL
   /// from the user's WebSocket URL.
@@ -169,16 +238,97 @@ class _ShareSheetState extends ConsumerState<ShareSheet> {
 export OPENAI_API_KEY="$apiKey"''';
   }
 
+  Widget _specSheet(
+    BuildContext context, {
+    required String baseUrl,
+    required String apiKey,
+    required oh.ModelName? model,
+    required String modelName,
+    required bool ready,
+    required String keyLabel,
+    required String keyHint,
+    required bool showKey,
+    required bool canHide,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Dk.bg,
+        borderRadius: BorderRadius.circular(Rd.lg),
+        border: Border.all(color: Dk.line),
+      ),
+      child: Column(
+        children: [
+          _SpecRow(
+            label: '接口地址',
+            hint: '对方工具里的 Base URL',
+            value: baseUrl.isNotEmpty ? baseUrl : '未连接',
+            empty: baseUrl.isEmpty,
+            onCopy: baseUrl.isNotEmpty
+                ? () => _copyToClipboard(context, baseUrl, '接口地址')
+                : null,
+          ),
+          _SpecRow(
+            label: keyLabel,
+            hint: keyHint,
+            value: apiKey.isEmpty
+                ? '未配置'
+                : showKey
+                    ? apiKey
+                    : '${apiKey.substring(0, apiKey.length.clamp(0, 4))}'
+                        '••••••••••••••••',
+            empty: apiKey.isEmpty,
+            extra: apiKey.isEmpty || !canHide
+                ? null
+                : _MiniIcon(
+                    icon: _showApiKey
+                        ? Icons.visibility_off_outlined
+                        : Icons.visibility_outlined,
+                    tooltip: _showApiKey ? '隐藏' : '显示',
+                    onTap: () => setState(() => _showApiKey = !_showApiKey),
+                  ),
+            onCopy: apiKey.isNotEmpty
+                ? () => _copyToClipboard(context, apiKey, '密钥')
+                : null,
+          ),
+          _SpecRow(
+            label: '模型',
+            hint: '对方要选的模型名',
+            last: true,
+            value: modelName,
+            // A name of your own reads better in a friend's
+            // model list than the protocol default — unless
+            // the server owner pinned it.
+            extra: model == null || model.locked || !ready
+                ? null
+                : _MiniIcon(
+                    key: const ValueKey('share-rename-model'),
+                    icon: Icons.edit_outlined,
+                    tooltip: '改模型名',
+                    onTap: () => _renameModel(modelName),
+                  ),
+            onCopy: () => _copyToClipboard(context, modelName, '模型名'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final serverConfig = ref.watch(serverConfigProvider);
     final baseUrl = _deriveBaseUrl(serverConfig.serverUrl);
-    final apiKey = serverConfig.apiKey;
+    final keys = ref.watch(callerKeysProvider);
+    // Per-person keys when the server has them; the seat's own key only
+    // on a server that predates them.
+    final perPerson = keys.valueOrNull != null;
+    final fresh = _fresh;
+    final apiKey = perPerson ? (fresh?.apiKey ?? '') : serverConfig.apiKey;
     final model = ref.watch(modelNameProvider).valueOrNull;
     final modelName = model?.name ?? 'openhuman-human';
     final me = ref.watch(currentHumanProvider)?.displayName;
     final fcmToken = NotificationService.fcmToken;
     final ready = baseUrl.isNotEmpty && apiKey.isNotEmpty;
+    final connected = baseUrl.isNotEmpty;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -196,8 +346,8 @@ export OPENAI_API_KEY="$apiKey"''';
                     Text('让别人联系你', style: Ty.title.copyWith(fontSize: 18)),
                     const SizedBox(height: 4),
                     const Text(
-                      '对方在自己常用的工具里填这三项，打的字就会到你这里，'
-                      '你在这里回复。',
+                      '对方在自己常用的工具里填三项，打的字就会到你这里，'
+                      '你在这里回复。每人一把钥匙，随时能单独收回。',
                       style: Ty.small,
                     ),
                   ],
@@ -217,122 +367,95 @@ export OPENAI_API_KEY="$apiKey"''';
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                // ── Who gets a key (per-person keys) ──
+                if (perPerson) ...[
+                  _NewKey(
+                    controller: _name,
+                    busy: _making,
+                    enabled: connected,
+                    onMake: _make,
+                  ),
+                  const SizedBox(height: Sp.x4),
+                ],
+                if (perPerson && fresh != null) ...[
+                  _FreshBanner(name: fresh.name),
+                  const SizedBox(height: Sp.x3),
+                ],
                 // ── Spec sheet ──
-                Container(
-                  decoration: BoxDecoration(
-                    color: Dk.bg,
-                    borderRadius: BorderRadius.circular(Rd.lg),
-                    border: Border.all(color: Dk.line),
+                if (!perPerson || fresh != null) ...[
+                  _specSheet(
+                    context,
+                    baseUrl: baseUrl,
+                    apiKey: apiKey,
+                    model: model,
+                    modelName: modelName,
+                    ready: ready,
+                    keyLabel: fresh != null ? '${fresh.name}的密钥' : '密钥',
+                    keyHint: fresh != null ? '只显示这一次，现在复制' : '对方工具里的 API Key',
+                    showKey: fresh != null || _showApiKey,
+                    canHide: fresh == null,
                   ),
-                  child: Column(
-                    children: [
-                      _SpecRow(
-                        label: '接口地址',
-                        hint: '对方工具里的 Base URL',
-                        value: baseUrl.isNotEmpty ? baseUrl : '未连接',
-                        empty: baseUrl.isEmpty,
-                        onCopy: baseUrl.isNotEmpty
-                            ? () => _copyToClipboard(context, baseUrl, '接口地址')
-                            : null,
-                      ),
-                      _SpecRow(
-                        label: '密钥',
-                        hint: '对方工具里的 API Key',
-                        value: apiKey.isEmpty
-                            ? '未配置'
-                            : _showApiKey
-                                ? apiKey
-                                : '${apiKey.substring(0, apiKey.length.clamp(0, 4))}'
-                                    '••••••••••••••••',
-                        empty: apiKey.isEmpty,
-                        extra: apiKey.isEmpty
-                            ? null
-                            : _MiniIcon(
-                                icon: _showApiKey
-                                    ? Icons.visibility_off_outlined
-                                    : Icons.visibility_outlined,
-                                tooltip: _showApiKey ? '隐藏' : '显示',
-                                onTap: () =>
-                                    setState(() => _showApiKey = !_showApiKey),
+                  const SizedBox(height: Sp.x5),
+                  const Text('复制', style: Ty.label),
+                  const SizedBox(height: Sp.x2),
+                  _CopyAction(
+                    key: const ValueKey('share-friend'),
+                    icon: Icons.forward_to_inbox_outlined,
+                    title: fresh != null ? '复制发给${fresh.name}的话' : '复制发给朋友的话',
+                    detail: '一段说明，直接发到聊天或邮件里',
+                    primary: true,
+                    onTap: ready
+                        ? () => _copyToClipboard(
+                              context,
+                              friendNote(
+                                baseUrl: baseUrl,
+                                apiKey: apiKey,
+                                modelName: modelName,
+                                me: me,
+                                to: fresh?.name,
                               ),
-                        onCopy: apiKey.isNotEmpty
-                            ? () => _copyToClipboard(context, apiKey, '密钥')
-                            : null,
-                      ),
-                      _SpecRow(
-                        label: '模型',
-                        hint: '对方要选的模型名',
-                        last: true,
-                        value: modelName,
-                        // A name of your own reads better in a friend's
-                        // model list than the protocol default — unless
-                        // the server owner pinned it.
-                        extra: model == null || model.locked || !ready
-                            ? null
-                            : _MiniIcon(
-                                key: const ValueKey('share-rename-model'),
-                                icon: Icons.edit_outlined,
-                                tooltip: '改模型名',
-                                onTap: () => _renameModel(modelName),
-                              ),
-                        onCopy: () =>
-                            _copyToClipboard(context, modelName, '模型名'),
-                      ),
-                    ],
+                              '给朋友的说明',
+                            )
+                        : null,
                   ),
-                ),
-                const SizedBox(height: Sp.x5),
-                const Text('复制', style: Ty.label),
-                const SizedBox(height: Sp.x2),
-                _CopyAction(
-                  key: const ValueKey('share-friend'),
-                  icon: Icons.forward_to_inbox_outlined,
-                  title: '复制发给朋友的话',
-                  detail: '一段说明，直接发到聊天或邮件里',
-                  primary: true,
-                  onTap: ready
-                      ? () => _copyToClipboard(
-                            context,
-                            friendNote(
-                              baseUrl: baseUrl,
-                              apiKey: apiKey,
-                              modelName: modelName,
-                              me: me,
-                            ),
-                            '给朋友的说明',
-                          )
-                      : null,
-                ),
-                const SizedBox(height: Sp.x2),
-                _CopyAction(
-                  icon: Icons.integration_instructions_outlined,
-                  title: '复制给对方工具的配置说明',
-                  detail: '对方贴进自己的工具，工具会自己配好',
-                  onTap: ready
-                      ? () => _copyToClipboard(
-                            context,
-                            _buildAgentPrompt(
-                              baseUrl: baseUrl,
-                              apiKey: apiKey,
-                              modelName: modelName,
-                            ),
-                            '配置说明',
-                          )
-                      : null,
-                ),
-                const SizedBox(height: Sp.x2),
-                _CopyAction(
-                  icon: Icons.terminal_rounded,
-                  title: '终端环境变量',
-                  detail: 'OPENAI_BASE_URL 与 OPENAI_API_KEY',
-                  onTap: ready
-                      ? () => _copyToClipboard(
-                            context,
-                            _buildShellEnv(baseUrl: baseUrl, apiKey: apiKey),
-                            '环境变量',
-                          )
-                      : null,
-                ),
+                  const SizedBox(height: Sp.x2),
+                  _CopyAction(
+                    icon: Icons.integration_instructions_outlined,
+                    title: '复制给对方工具的配置说明',
+                    detail: '对方贴进自己的工具，工具会自己配好',
+                    onTap: ready
+                        ? () => _copyToClipboard(
+                              context,
+                              _buildAgentPrompt(
+                                baseUrl: baseUrl,
+                                apiKey: apiKey,
+                                modelName: modelName,
+                              ),
+                              '配置说明',
+                            )
+                        : null,
+                  ),
+                  const SizedBox(height: Sp.x2),
+                  _CopyAction(
+                    icon: Icons.terminal_rounded,
+                    title: '终端环境变量',
+                    detail: 'OPENAI_BASE_URL 与 OPENAI_API_KEY',
+                    onTap: ready
+                        ? () => _copyToClipboard(
+                              context,
+                              _buildShellEnv(baseUrl: baseUrl, apiKey: apiKey),
+                              '环境变量',
+                            )
+                        : null,
+                  ),
+                ],
+                // ── Who holds one ──
+                if (perPerson && keys.value!.isNotEmpty) ...[
+                  const SizedBox(height: Sp.x5),
+                  const Text('拿着钥匙的人', style: Ty.label),
+                  const SizedBox(height: Sp.x2),
+                  _Holders(keys: keys.value!, onRevoke: _revoke),
+                ],
                 const SizedBox(height: Sp.x4),
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -345,17 +468,17 @@ export OPENAI_API_KEY="$apiKey"''';
                     const SizedBox(width: Sp.x2),
                     Expanded(
                       child: Text(
-                        '拿到密钥的人都能给你发消息，只发给信任的人。'
+                        '${perPerson ? '钥匙只能用来给你发消息，不能替你回复；谁的钥匙出了问题，单独收回就行。' : '拿到密钥的人都能给你发消息，只发给信任的人。'}'
                         '${fcmToken != null ? '手机推送已开启，锁屏也能收到。' : ''}',
                         style: Ty.small.copyWith(color: Dk.t3, fontSize: 12),
                       ),
                     ),
                   ],
                 ),
-                if (!ready) ...[
+                if (!connected) ...[
                   const SizedBox(height: Sp.x3),
                   Text(
-                    '连接服务器后才能复制。',
+                    '连接服务器后才能用。',
                     style: Ty.small.copyWith(color: Dk.t3, fontSize: 12),
                   ),
                 ],
@@ -543,8 +666,9 @@ String friendNote({
   required String apiKey,
   required String modelName,
   String? me,
+  String? to,
 }) {
-  return '''${me == null ? '我' : '我（$me）'}在用 OpenHuman，你可以在自己常用的工具里直接给我发消息。
+  return '''${to == null ? '' : '$to，'}${me == null ? '我' : '我（$me）'}在用 OpenHuman，你可以在自己常用的工具里直接给我发消息。
 
 在 Claude Code、Cursor、WorkBuddy 这类支持「OpenAI 兼容」的工具里，新加一个模型服务，填这三项：
 
@@ -554,5 +678,170 @@ String friendNote({
 
 然后选这个模型发消息就行。消息会直接到我这里，我回的话会出现在你那边。
 
-这把密钥只给你，请别转发。''';
+这把密钥是专门给你的，请别转发。''';
+}
+
+/// Name someone and make them a key.
+class _NewKey extends StatelessWidget {
+  const _NewKey({
+    required this.controller,
+    required this.busy,
+    required this.enabled,
+    required this.onMake,
+  });
+  final TextEditingController controller;
+  final bool busy;
+  final bool enabled;
+  final VoidCallback onMake;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(Sp.x4, Sp.x3, Sp.x3, Sp.x3),
+      decoration: BoxDecoration(
+        color: Dk.bg,
+        borderRadius: BorderRadius.circular(Rd.lg),
+        border: Border.all(color: Dk.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('给谁一把钥匙', style: Ty.name),
+          const SizedBox(height: 2),
+          Text(
+            '写上对方的名字，对方发来的消息就会以这个名字出现在你这里。',
+            style: Ty.small.copyWith(fontSize: 11.5, color: Dk.t3),
+          ),
+          const SizedBox(height: Sp.x3),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const ValueKey('share-new-name'),
+                  controller: controller,
+                  enabled: enabled && !busy,
+                  maxLength: 48,
+                  decoration: const InputDecoration(
+                    hintText: '例如：林晓',
+                    counterText: '',
+                    isDense: true,
+                  ),
+                  onSubmitted: (_) => onMake(),
+                ),
+              ),
+              const SizedBox(width: Sp.x2),
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: controller,
+                builder: (context, v, _) => FilledButton(
+                  key: const ValueKey('share-make-key'),
+                  onPressed: enabled && !busy && v.text.trim().isNotEmpty
+                      ? onMake
+                      : null,
+                  child: Text(busy ? '生成中…' : '生成钥匙'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The key just made: say plainly it shows once.
+class _FreshBanner extends StatelessWidget {
+  const _FreshBanner({required this.name});
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x3),
+      decoration: BoxDecoration(
+        color: Dk.signalSoft,
+        borderRadius: BorderRadius.circular(Rd.lg),
+        border: Border.all(color: Dk.signalEdge),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.key_rounded, size: 16, color: Dk.signal),
+          const SizedBox(width: Sp.x3),
+          Expanded(
+            child: Text(
+              '$name的钥匙做好了。密钥只显示这一次，关掉前把说明发给$name。',
+              style: Ty.small.copyWith(color: Dk.t1),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Everyone holding a key, with the one control that matters: take it back.
+class _Holders extends StatelessWidget {
+  const _Holders({required this.keys, required this.onRevoke});
+  final List<oh.CallerKey> keys;
+  final void Function(oh.CallerKey) onRevoke;
+
+  @override
+  Widget build(BuildContext context) {
+    // Live keys first (newest on top), then the ones already taken back.
+    final rows = [
+      ...keys.where((k) => !k.revoked).toList().reversed,
+      ...keys.where((k) => k.revoked).toList().reversed,
+    ];
+    return Container(
+      decoration: BoxDecoration(
+        color: Dk.bg,
+        borderRadius: BorderRadius.circular(Rd.lg),
+        border: Border.all(color: Dk.line),
+      ),
+      child: Column(
+        children: [
+          for (var i = 0; i < rows.length; i++)
+            Container(
+              padding: const EdgeInsets.fromLTRB(Sp.x4, Sp.x2, Sp.x2, Sp.x2),
+              decoration: BoxDecoration(
+                border: i == rows.length - 1
+                    ? null
+                    : const Border(bottom: BorderSide(color: Dk.line)),
+              ),
+              child: Row(
+                children: [
+                  Opacity(
+                    opacity: rows[i].revoked ? 0.4 : 1,
+                    child: PersonAvatar(name: rows[i].name, size: 26),
+                  ),
+                  const SizedBox(width: Sp.x3),
+                  Expanded(
+                    child: Text(
+                      rows[i].name,
+                      overflow: TextOverflow.ellipsis,
+                      style: Ty.name.copyWith(
+                        color: rows[i].revoked ? Dk.t3 : Dk.t1,
+                      ),
+                    ),
+                  ),
+                  if (rows[i].revoked)
+                    Padding(
+                      padding: const EdgeInsets.only(right: Sp.x3),
+                      child: Text(
+                        '已收回',
+                        style: Ty.small.copyWith(color: Dk.t3, fontSize: 12),
+                      ),
+                    )
+                  else
+                    TextButton(
+                      key: ValueKey('share-revoke-${rows[i].id}'),
+                      onPressed: () => onRevoke(rows[i]),
+                      child: const Text('收回'),
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }

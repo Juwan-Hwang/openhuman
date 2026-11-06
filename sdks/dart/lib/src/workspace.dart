@@ -107,3 +107,33 @@ class ModelName {
   final String name;
   final bool locked;
 }
+
+/// Someone who holds a caller key from this seat (`/v1/seat/caller-keys`).
+/// The key itself is never listed: it is shown once, when made.
+class CallerKey {
+  const CallerKey({
+    required this.id,
+    required this.name,
+    this.agentId,
+    this.revoked = false,
+    this.apiKey,
+  });
+
+  factory CallerKey.fromJson(Map<String, dynamic> j) => CallerKey(
+        id: j['id'] as String? ?? '',
+        name: j['name'] as String? ?? '',
+        agentId: j['agent_id'] as String?,
+        revoked: j['revoked'] == true,
+        apiKey: j['api_key'] as String?,
+      );
+
+  final String id;
+  final String name;
+
+  /// The identity their messages arrive under.
+  final String? agentId;
+  final bool revoked;
+
+  /// Only on the key just made.
+  final String? apiKey;
+}

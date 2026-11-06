@@ -950,6 +950,26 @@ class OpenHumanClient {
     return j['model'] as String? ?? name;
   }
 
+  /// The people who hold a caller key from this seat, oldest first.
+  Future<List<CallerKey>> callerKeys() async {
+    final j = await _getJson('/v1/seat/caller-keys');
+    final data = (j['data'] as List?) ?? const [];
+    return [
+      for (final e in data)
+        if (e is Map<String, dynamic>) CallerKey.fromJson(e),
+    ];
+  }
+
+  /// Make a key for one person. The raw key is on the result only now.
+  Future<CallerKey> createCallerKey(String name) async {
+    final j = await _sendJson('/v1/seat/caller-keys', body: {'name': name});
+    return CallerKey.fromJson(j);
+  }
+
+  /// Revoke one person's key; their past conversations stay.
+  Future<bool> revokeCallerKey(String keyId) =>
+      _send('/v1/seat/caller-keys/$keyId', method: 'DELETE');
+
   Map<String, dynamic> _decodeObject(Uint8List bytes) {
     try {
       final v = jsonDecode(utf8.decode(bytes));
