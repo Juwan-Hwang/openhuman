@@ -40,6 +40,7 @@ class Composer extends StatefulWidget {
   const Composer({
     super.key,
     required this.enabled,
+    this.ended = false,
     required this.onSend,
     this.onEndTurn,
     this.onReopen,
@@ -52,6 +53,8 @@ class Composer extends StatefulWidget {
   });
 
   /// False after I ended the turn ([onReopen] opens it again).
+  /// The turn was ended; the composer waits for their next message.
+  final bool ended;
   final bool enabled;
   final void Function(String text) onSend;
 
@@ -220,6 +223,9 @@ class _ComposerState extends State<Composer> {
 
   String get _hint {
     if (widget.offline) return '未连接';
+    // After 结束本轮: listening for their next message. Writing is still
+    // allowed; it opens the next turn.
+    if (widget.ended) return '等待对方消息';
     final to = widget.to;
     if (widget.mentionNames.isNotEmpty) return '消息';
     return to == null ? '消息' : '消息';

@@ -327,7 +327,7 @@ void main() {
       expect(find.textContaining('已发送'), findsOneWidget);
     });
 
-    testWidgets('Ctrl+Enter ends the turn and the composer can reopen',
+    testWidgets('Ctrl+Enter ends the turn and the composer stays ready',
         (tester) async {
       await pumpChatScreen(tester);
       fakeClient.injectMessage(const oh.MessageReceivedData(
@@ -345,10 +345,23 @@ void main() {
       await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
       await tester.pumpAndSettle(const Duration(milliseconds: 200));
       expect(fakeClient.ended, ['cnv_test']);
-      expect(find.byKey(const ValueKey('composer-ended')), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('composer-reopen')));
-      await tester.pumpAndSettle(const Duration(milliseconds: 200));
+      // No locked "ended" state: the field is still there, and the
+      // end button has nothing left to end.
       expect(find.byKey(const ValueKey('composer-ended')), findsNothing);
+      expect(find.byKey(const ValueKey('composer-end-turn')), findsNothing);
+      expect(find.text('等待对方消息'), findsOneWidget);
+
+      // Their next message opens the next turn on its own.
+      fakeClient.injectMessage(const oh.MessageReceivedData(
+        conversationId: 'cnv_test',
+        messageId: 'msg_002',
+        senderId: 'agt_zhou',
+        senderType: 'agent',
+        senderName: '周子航 via Cursor',
+        text: '再问一个',
+      ));
+      await tester.pumpAndSettle(const Duration(milliseconds: 200));
+      expect(find.byKey(const ValueKey('composer-end-turn')), findsOneWidget);
     });
   });
 }

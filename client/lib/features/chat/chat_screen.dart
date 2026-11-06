@@ -201,6 +201,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final humanUser = controller.humanUser;
 
     void sendText(String text) {
+      // After 结束本轮 the composer stays open: writing again simply
+      // starts the next turn, no 继续 step in between.
+      if (_turnEnded) controller.reopenTurn();
       final sent = controller.sendReply(text);
       if (!sent && mounted) toast(context, '未选择对话');
     }
@@ -508,10 +511,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       // A fresh composer per conversation: a draft never
                       // leaks into someone else's chat.
                       key: ValueKey('composer-$activeConvId'),
-                      enabled: !_turnEnded,
+                      enabled: true,
+                      ended: _turnEnded,
                       onSend: sendText,
-                      // Nothing to end before anyone has written.
-                      onEndTurn: showOwnerControls && messages.isNotEmpty
+                      // Nothing to end before anyone has written, and
+                      // nothing left to end once it is.
+                      onEndTurn: showOwnerControls &&
+                              messages.isNotEmpty &&
+                              !_turnEnded
                           ? _endTurn
                           : null,
                       onReopen:
