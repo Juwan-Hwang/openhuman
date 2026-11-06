@@ -28,6 +28,7 @@ import '../../widgets/avatar.dart';
 import '../../widgets/controls.dart';
 import '../../widgets/glyphs.dart';
 import '../../widgets/motion.dart';
+import '../../widgets/phone_stack.dart';
 import 'message_adapter.dart';
 import 'share_sheet.dart';
 import 'details_panel.dart';
@@ -38,6 +39,7 @@ import 'stream/message_stream.dart';
 import '../../app/adaptive.dart';
 import '../../widgets/pane_divider.dart';
 import '../../widgets/sheet.dart';
+import '../../widgets/haptics.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -435,32 +437,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         backgroundColor: Dk.bg,
         body: SafeArea(
           bottom: false,
-          child: AnimatedSwitcher(
-            duration: Mo.base,
-            switchInCurve: Mo.expo,
-            switchOutCurve: Curves.easeIn,
-            transitionBuilder: (child, a) {
-              final list = child.key == const ValueKey('phone-list');
-              return SlideTransition(
-                position: Tween(
-                  begin: Offset(list ? -0.25 : 0.25, 0),
-                  end: Offset.zero,
-                ).animate(a),
-                child: FadeTransition(opacity: a, child: child),
-              );
-            },
-            child: phoneList
-                ? KeyedSubtree(
-                    key: const ValueKey('phone-list'),
-                    child: ConversationSidebar(
-                      width: w,
-                      onPicked: () => setState(() => _phoneList = false),
-                    ),
-                  )
-                : KeyedSubtree(
-                    key: const ValueKey('phone-stream'),
-                    child: stream,
-                  ),
+          child: PhoneStack(
+            deep: !phoneList,
+            onBack: () => setState(() => _phoneList = true),
+            list: KeyedSubtree(
+              key: const ValueKey('phone-list'),
+              child: ConversationSidebar(
+                width: w,
+                onPicked: () => setState(() => _phoneList = false),
+              ),
+            ),
+            conversation: KeyedSubtree(
+              key: const ValueKey('phone-stream'),
+              child: stream,
+            ),
           ),
         ),
       );
@@ -553,6 +543,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // (`finish_reason: stop` + [DONE]), so their tool shows my reply as
     // complete.
     final ended = ref.read(chatControllerProvider.notifier).endTurn();
+    if (ended) Haptic.tick();
     if (!ended && mounted) toast(context, '没有进行中的对话');
   }
 

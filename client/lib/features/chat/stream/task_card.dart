@@ -26,6 +26,7 @@ import '../../../widgets/motion.dart';
 import '../chat_controller.dart';
 import 'attachments.dart';
 import 'rich_text.dart';
+import '../../../widgets/haptics.dart';
 
 Glyph glyphForTask(ApiTask t) => switch (t.kind) {
       TaskKind.imageGenerate ||
@@ -173,7 +174,10 @@ class _TaskCardState extends ConsumerState<TaskCard> {
     if (!decline) {
       final c = _check();
       setState(() {});
-      if (!c.ok) return;
+      if (!c.ok) {
+        Haptic.warn();
+        return;
+      }
       if (c.refusal) {
         final ok = await _confirmRefusal();
         if (ok != true) return;

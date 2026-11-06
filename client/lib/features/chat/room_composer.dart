@@ -23,6 +23,7 @@ import '../../core/tasks.dart';
 import '../../widgets/controls.dart';
 import '../../widgets/glyphs.dart';
 import 'stream/attachments.dart';
+import '../../widgets/haptics.dart';
 
 /// Member display names of a room, for completion + highlight.
 List<String> roomMemberNames(Map<String, dynamic>? room) {
@@ -147,6 +148,7 @@ class _ComposerState extends State<Composer> {
     } else {
       return false;
     }
+    Haptic.sent();
     _controller.clear();
     setState(_files.clear);
     return true;

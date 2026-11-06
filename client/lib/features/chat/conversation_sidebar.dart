@@ -19,6 +19,7 @@ import '../../widgets/glyphs.dart';
 import '../../widgets/sheet.dart';
 import '../../core/identity.dart';
 import '../files/file_library.dart';
+import '../../widgets/haptics.dart';
 import 'stream/message_stream.dart' show beijing;
 
 /// Sidebar width limits; the pane is resizable from its right edge.
@@ -1054,6 +1055,7 @@ class _ConversationTileState extends State<_ConversationTile> {
   bool _menuOpen = false;
 
   Future<void> _menu(Offset at) async {
+    Haptic.menu();
     setState(() => _menuOpen = true);
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
     final value = await showMenu<String>(

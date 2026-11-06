@@ -68,6 +68,27 @@ void main() {
     expect(find.byType(ConversationSidebar), findsOneWidget);
   });
 
+  testWidgets('phone: a swipe from the left edge goes back, a short one '
+      'springs back', (tester) async {
+    await _boot(tester, const Size(390, 844));
+    await tester.tap(find.byKey(const ValueKey('conv-cnv_lin')));
+    await tester.pumpAndSettle();
+    final edge = find.byKey(const ValueKey('phone-edge-swipe'));
+
+    // A short, slow pull: the conversation stays.
+    await tester.timedDrag(edge, const Offset(60, 0),
+        const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+    expect(find.byType(Composer), findsOneWidget);
+    expect(find.byType(ConversationSidebar), findsNothing);
+
+    // Past the middle: back to the list.
+    await tester.timedDrag(edge, const Offset(260, 0),
+        const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
+    expect(find.byType(ConversationSidebar), findsOneWidget);
+  });
+
   testWidgets('tablet: list and stream side by side, runtime overlays',
       (tester) async {
     await _boot(tester, const Size(1024, 768));
