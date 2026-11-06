@@ -45,7 +45,7 @@ class ShortcutsSheet extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('快捷键', style: Ty.title),
+          const Text('快捷键', style: Ty.title),
           const SizedBox(height: Sp.x4),
           for (final (what, keys) in shortcutRows)
             Padding(

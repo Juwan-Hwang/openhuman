@@ -14,6 +14,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:window_manager/window_manager.dart';
 import 'package:flutter_chat_types/flutter_chat_types.dart' as types;
 import 'package:openhuman_client/app/theme.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -29,6 +30,7 @@ import '../../widgets/controls.dart';
 import '../../widgets/glyphs.dart';
 import '../../widgets/motion.dart';
 import '../../widgets/phone_stack.dart';
+import '../../widgets/window_chrome.dart';
 import 'shortcuts_sheet.dart';
 import 'message_adapter.dart';
 import 'share_sheet.dart';
@@ -73,6 +75,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   /// Phones show one pane at a time: the list, or the open conversation.
   bool _phoneList = true;
+
+  int? _titleCount;
+
+  /// The browser tab and the task switcher read "(2) OpenHuman" while
+  /// two conversations wait on me.
+  void _titleWithWaiting(int n) {
+    if (_titleCount == n) return;
+    _titleCount = n;
+    SystemChrome.setApplicationSwitcherDescription(
+      ApplicationSwitcherDescription(
+        label: n > 0 ? '($n) OpenHuman' : 'OpenHuman',
+        primaryColor: 0xFF16171C,
+      ),
+    );
+    // The desktop window (taskbar, Alt+Tab) on Windows.
+    if (WindowChrome.enabled) {
+      windowManager.setTitle(n > 0 ? '($n) OpenHuman' : 'OpenHuman');
+    }
+  }
 
   /// Alt+↑/↓ walks the list in the order it is shown (people, then
   /// groups); with [waiting] it jumps to the next one waiting on me.
@@ -153,6 +174,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    _titleWithWaiting(
+      ref
+          .watch(conversationListProvider)
+          .entries
+          .where((c) => c.waiting)
+          .length,
+    );
     // A step the server turned down (left the room, owner only, a tool
     // the other side no longer has) is said once, plainly.
     ref.listen(serverNoticeProvider, (_, next) {
