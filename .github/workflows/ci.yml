@@ -48,7 +48,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       # The room suite and the storage compat suite against a real
       # database; one thread so the suites never race on shared tables.
-      - run: cargo test --test rooms --test postgres_compat -- --include-ignored --test-threads=1
+      - run: cargo test --test rooms --test postgres_compat --test caller_keys -- --include-ignored --test-threads=1
 
   sdk-dart:
     name: SDK (Dart)

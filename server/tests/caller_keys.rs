@@ -9,8 +9,24 @@ use serde_json::{json, Value};
 
 const SEAT: &str = "ohk_demo_alice_codex";
 
+/// The memory store by default; the live database when the postgres CI
+/// cell sets `OPENHUMAN_BACKEND=postgres` (other suites share it, so the
+/// assertions below look up the key they made instead of counting rows).
 async fn serve() -> String {
-    let app = build_router(AppState::from_store(MemoryStore::seeded()));
+    let state = if std::env::var("OPENHUMAN_BACKEND").ok().as_deref() == Some("postgres") {
+        // Keeps the seeded demo seat live; migrate() revokes it otherwise.
+        std::env::set_var("OPENHUMAN_DEMO", "1");
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL (postgres cell)");
+        let store = openhuman_server::storage::postgres::PostgresStore::new(&url)
+            .await
+            .expect("connect postgres");
+        store.migrate().await.expect("migrations apply");
+        let reply = openhuman_server::storage::postgres::InMemoryReplyRegistry::new();
+        AppState::from_postgres(store, reply)
+    } else {
+        AppState::from_store(MemoryStore::seeded())
+    };
+    let app = build_router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -53,10 +69,9 @@ async fn a_friend_gets_a_key_of_their_own_and_loses_it_alone() {
         .json()
         .await
         .unwrap();
-    let rows = list["data"].as_array().unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["name"], "林晓");
-    assert_eq!(rows[0]["revoked"], false);
+    let mine = row(&list, &id);
+    assert_eq!(mine["name"], "林晓");
+    assert_eq!(mine["revoked"], false);
     assert!(!list.to_string().contains(&key));
 
     // The friend's key can ask (models list) but not manage keys.
@@ -103,7 +118,17 @@ async fn a_friend_gets_a_key_of_their_own_and_loses_it_alone() {
         .unwrap();
     assert_eq!(seat.status(), 200);
     let list: Value = seat.json().await.unwrap();
-    assert_eq!(list["data"][0]["revoked"], true);
+    assert_eq!(row(&list, &id)["revoked"], true);
+}
+
+/// The listed row for key [id].
+fn row<'a>(list: &'a Value, id: &str) -> &'a Value {
+    list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id)
+        .unwrap_or_else(|| panic!("key {id} not listed: {list}"))
 }
 
 #[tokio::test]
