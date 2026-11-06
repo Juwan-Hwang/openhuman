@@ -63,7 +63,34 @@ information: `OpenHuman · 2 人在等你回复`.
 | Ctrl/⌘ B | Show / hide the list |
 | Ctrl/⌘ I | Show / hide details |
 | Enter / Shift Enter | Send / new line |
-| Ctrl/⌘ Enter | 发送完毕 — end my turn (`end.turn`) |
+| Ctrl/⌘ Enter | 发送并结束本轮 — end my turn (`end.turn`) |
+| Ctrl/⌘ J | Next conversation waiting on me |
+| Alt/⌥ ↑ ↓ | Previous / next conversation |
+| Ctrl/⌘ / | Every shortcut on one card |
+
+### Touch
+
+- Phone: the conversation slides over the list; a drag from the left edge
+  pulls it back and follows the finger (`widgets/phone_stack.dart`).
+  Android back does the same.
+- Haptics on touch screens only: send, long-press menu, end turn, a check
+  that failed (`widgets/haptics.dart`).
+- Avatars keep their letters at any system text size; faces under 30 px
+  show one character.
+
+## Platforms
+
+| Target | Project | CI build | Notes |
+|---|---|---|---|
+| Windows | `windows/` | `flutter build windows` | own title bar, tray, fvp video |
+| macOS | `macos/` | `flutter build macos` | dark title bar, sandbox: network + chosen files |
+| Linux | `linux/` | `flutter build linux` | GTK dark, fvp video; needs GStreamer for audio |
+| Android | `android/` | `flutter build apk` | push only with `google-services.json` |
+| iOS / iPadOS | `ios/` | `flutter build ios --no-codesign` | push needs APNs + `GoogleService-Info.plist`; files show in the Files app |
+| Web | `web/` | `flutter build web` | Blob downloads and playback, brand splash, waiting count in the tab title |
+
+Files go through `core/platform/files_platform.dart`: native file system
+and system opener on devices, Blob + download in the browser.
 
 ## Server coverage
 
