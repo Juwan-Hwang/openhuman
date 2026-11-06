@@ -89,12 +89,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: android, os: ubuntu-latest, cmd: 'flutter build apk --debug' }
-          - { target: web, os: ubuntu-latest, cmd: 'flutter build web --release' }
-          - { target: linux, os: ubuntu-latest, cmd: 'flutter build linux --release' }
-          - { target: windows, os: windows-latest, cmd: 'flutter build windows --release' }
-          - { target: macos, os: macos-latest, cmd: 'flutter build macos --release' }
-          - { target: ios, os: macos-latest, cmd: 'flutter build ios --release --no-codesign' }
+          - { target: android, os: ubuntu-latest, cmd: 'flutter build apk --release', out: 'build/app/outputs/flutter-apk/app-release.apk' }
+          - { target: web, os: ubuntu-latest, cmd: 'flutter build web --release', out: 'build/web' }
+          - { target: linux, os: ubuntu-latest, cmd: 'flutter build linux --release', out: 'build/linux/x64/release/bundle' }
+          - { target: windows, os: windows-latest, cmd: 'flutter build windows --release', out: 'build/windows/x64/runner/Release' }
+          - { target: macos, os: macos-latest, cmd: 'flutter build macos --release', out: 'build/macos/Build/Products/Release/OpenHuman.app' }
+          - { target: ios, os: macos-latest, cmd: 'flutter build ios --release --no-codesign', out: '' }
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -117,3 +117,11 @@ jobs:
             libayatana-appindicator3-dev
       - run: flutter pub get
       - run: ${{ matrix.cmd }}
+      # Unsigned builds to try on a real machine: download from the run's
+      # Artifacts. iOS needs signing to install, so it is built, not kept.
+      - if: matrix.out != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: openhuman-${{ matrix.target }}
+          path: client/${{ matrix.out }}
+          retention-days: 14
