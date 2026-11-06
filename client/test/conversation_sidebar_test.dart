@@ -166,6 +166,31 @@ void main() {
     expect(find.byType(PersonAvatar), findsOneWidget);
   });
 
+  testWidgets('ending the turn clears the row\'s 待回复', (tester) async {
+    final client = _FakeClient(
+      result: [
+        const oh.HistoryConversation(id: 'conv_e', agentId: 'agent_trae'),
+      ],
+    );
+    await tester.pumpWidget(_host(client));
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ConversationSidebar)),
+    );
+    final list = container.read(conversationListProvider.notifier);
+    await list.retry();
+    final row = container
+        .read(conversationListProvider)
+        .entries
+        .firstWhere((c) => c.id == 'conv_e');
+    row.waiting = true;
+
+    list.markTurnEnded('conv_e');
+    expect(row.waiting, isFalse);
+
+    list.markTurnEnded('conv_e', ended: false);
+    expect(row.waiting, isTrue);
+  });
+
   testWidgets('an empty account reads as empty, not as loading', (
     tester,
   ) async {

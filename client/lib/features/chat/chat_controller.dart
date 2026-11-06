@@ -372,6 +372,9 @@ class ChatController extends StateNotifier<List<types.Message>> {
       ..._ref.read(turnEndedProvider),
       conversationId,
     };
+    _ref
+        .read(conversationListProvider.notifier)
+        .markTurnEnded(conversationId);
     return true;
   }
 
@@ -382,6 +385,9 @@ class ChatController extends StateNotifier<List<types.Message>> {
     _ref.read(turnEndedProvider.notifier).state = {
       ..._ref.read(turnEndedProvider),
     }..remove(conversationId);
+    _ref
+        .read(conversationListProvider.notifier)
+        .markTurnEnded(conversationId, ended: false);
   }
 
   void _setOutcome(String taskMessageId, TaskOutcome o) {

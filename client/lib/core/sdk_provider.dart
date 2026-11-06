@@ -500,6 +500,15 @@ class ConversationListNotifier extends StateNotifier<ConversationListState> {
     state = state.copyWith(entries: [...state.entries]..sort(_newestFirst));
   }
 
+  /// I ended the turn: the row stops asking for a reply. [ended] false
+  /// undoes it, and the row asks again when their message is newest.
+  void markTurnEnded(String id, {bool ended = true}) {
+    final c = state.entries.where((c) => c.id == id).firstOrNull;
+    if (c == null) return;
+    c.waiting = ended ? false : (!c.lastFromMe || c.lastFailed);
+    state = state.copyWith(entries: [...state.entries]);
+  }
+
   /// My reply did not go out: they are still waiting, and the row shows
   /// the failure rather than the text as if it had been said.
   void markFailed(String id) {
