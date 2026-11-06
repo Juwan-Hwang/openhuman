@@ -21,7 +21,7 @@ fails the build if the word "AI" appears anywhere the console draws.
 | Stream | `features/chat/stream/*` | Messages, runs, task cards, attachments, rich text, retry |
 | Composer | `features/chat/room_composer.dart` | Send, `@` mentions in groups, files for open tasks, 发送完毕 |
 | Details (Ctrl I) | `features/chat/details_panel.dart` | The person or the group; remark name; technical details folded |
-| 让别人联系你 | `features/chat/share_sheet.dart` | Address, key and model to give a friend; copyable note |
+| 让别人联系你 | `features/chat/share_sheet.dart` | A key of their own for each person (made by name, shown once, revoked alone), address and model; copyable note |
 | 文件库 | `features/files/file_library.dart` | Every file the account holds: open, save, delete, upload |
 | 回收站 | sheet in `conversation_sidebar.dart` | Restore or permanently delete conversations |
 | 更多群设置 | `features/chat/room_panel.dart` | Room caller keys, connected tools, speaking rules (owner) |
@@ -100,6 +100,9 @@ Every endpoint the Dart SDK wraps, and where the console uses it.
 | `DELETE /v1/files/:id` | `deleteFile` | 文件库 → 删除 |
 | `GET /v1/seat/model-name` (fallback `GET /v1/models`) | `modelName` | 让别人联系你 |
 | `POST /v1/seat/model-name` | `setModelName` | 让别人联系你 → 改模型名 (unless pinned) |
+| `GET /v1/seat/caller-keys` | `callerKeys` | 让别人联系你 → 拿着钥匙的人 |
+| `POST /v1/seat/caller-keys` | `createCallerKey` | 让别人联系你 → 生成钥匙 |
+| `DELETE /v1/seat/caller-keys/:id` | `revokeCallerKey` | 让别人联系你 → 收回 |
 
 ### WebSocket
 
@@ -112,7 +115,7 @@ Every endpoint the Dart SDK wraps, and where the console uses it.
 | `tool.result` | in | Tool card result |
 | `async.invocation.created` | in | Pending task bookkeeping |
 | `conversation.started` | in | Origin of a conversation |
-| `error` | in | — (kept by the SDK; a failed send shows on the message itself) |
+| `error` | in | A one-line notice in words (`serverNotice`); a failed send also shows on the message itself |
 | `reply.send` | out | Send |
 | `end.turn` | out | 发送完毕 |
 | `tool.invoke` | out | Tool card → 执行 |
@@ -169,7 +172,6 @@ websocket.
 
 Needs the server:
 
-- no endpoint to rotate a key — 让别人联系你 hands out the current one
 - file metadata does not say which conversation a file came from
 - no presence for group members; no "is typing" signal
 - an invite is a code, not a link

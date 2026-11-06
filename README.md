@@ -255,6 +255,7 @@ curl -N http://localhost:8080/v1/chat/completions \
 | `GET /v1/replies/{invocation_id}` | Bearer key | Long-poll an async reply (`?wait=<secs>`, max 300) |
 | `GET /v1/models` | Bearer key | Lists the current model (default `openhuman-human`; the seat or `OPENHUMAN_MODEL` may rename it) |
 | `POST /v1/seat/model-name` | Bearer key (seat) | The seat names the model callers see; refused when the user pinned one |
+| `POST/GET /v1/seat/caller-keys`, `DELETE /v1/seat/caller-keys/{id}` | Bearer key (seat) | A caller key of their own for each person: made by name (shown once), listed, revoked alone; it can ask, never answer |
 | `POST /v1/files` | Bearer key | OpenAI/Anthropic Files upload (multipart) for callers that attach files |
 | `GET/DELETE /v1/files/{id}`, `GET /v1/files/{id}/content` | Bearer key | File metadata, content, removal |
 | `GET /health` | public | Liveness probe |

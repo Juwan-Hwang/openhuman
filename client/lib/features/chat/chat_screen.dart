@@ -116,6 +116,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // A step the server turned down (left the room, owner only, a tool
+    // the other side no longer has) is said once, plainly.
+    ref.listen(serverNoticeProvider, (_, next) {
+      final t = next.valueOrNull;
+      if (t != null) toast(context, t);
+    });
     final messages = ref.watch(chatControllerProvider);
     final connState = ref.watch(connectionStateProvider).valueOrNull ??
         oh.ConnectionState.idle;

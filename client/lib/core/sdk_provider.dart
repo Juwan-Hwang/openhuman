@@ -744,3 +744,41 @@ final agentNamesProvider = FutureProvider<Map<String, String>>((ref) async {
       if (c.agentId != null) c.agentId!: c.agentName ?? c.agentId!,
   };
 });
+
+// ═══════════════════════════════════════════════════════════════
+//  Server notices — the `error` event, in words a person reads
+// ═══════════════════════════════════════════════════════════════
+
+/// What to tell the person when the server turns a step down. `null`
+/// for codes that need no word from us (the step is retried, or another
+/// part of the screen already shows it).
+String? serverNotice(String code, String message) {
+  switch (code) {
+    case 'not_a_member':
+      return '你已经不在这个群里，消息没发出去';
+    case 'owner_only':
+      return '只有群主能这么做';
+    case 'tool_not_found':
+      return '对方现在没有这个工具，调用没发出去';
+    case 'target_not_found':
+      return '对方已经不在线，调用没发出去';
+    case 'target_required':
+      return '好几个人都有这个工具，先选一个人再调用';
+    case 'queued':
+      return '对方现在没在等回复，这一步会在对方下次发消息时带过去';
+    case 'serialize_failed':
+      return '服务器出了点问题，刚才那一步没成功';
+    default:
+      return '服务器没接受刚才那一步';
+  }
+}
+
+/// Each `error` event the server sends, already in words.
+final serverNoticeProvider = StreamProvider.autoDispose<String>((ref) {
+  final client = ref.watch(openHumanClientProvider);
+  return client.rawEvents.where((e) => e.eventType == 'error').map((e) {
+    final code = e.data['code'] as String? ?? '';
+    final message = e.data['message'] as String? ?? '';
+    return serverNotice(code, message);
+  }).where((t) => t != null).cast<String>();
+});
