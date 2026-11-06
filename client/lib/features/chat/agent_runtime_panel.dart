@@ -162,11 +162,17 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
 
   /// What the tool is for, in words, plus how much it wants from you.
   String get _toolGloss {
+    // The section is already headed 工具: only a real category adds news.
     final category = toolCategory(_toolName);
     final total = _properties.length;
-    if (total == 0) return category;
     final needed = _required.length;
-    return needed == 0 ? '$category · $total 项可选' : '$category · 需填 $needed 项';
+    final ask = total == 0
+        ? ''
+        : needed == 0
+            ? '$total 项可选'
+            : '$needed 项必填';
+    return [if (category != '工具') category, if (ask.isNotEmpty) ask]
+        .join(' · ');
   }
 
   Map<String, dynamic>? get _inputSchema =>
@@ -256,13 +262,18 @@ class _ToolCardState extends ConsumerState<_ToolCard> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        const SizedBox(height: 3),
-                        Text(
-                          _toolGloss,
-                          style: Ty.meta.copyWith(fontSize: 10.5),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                        if (_toolGloss.isNotEmpty) ...[
+                          const SizedBox(height: 3),
+                          Text(
+                            _toolGloss,
+                            style: Ty.small.copyWith(
+                              fontSize: 11.5,
+                              color: Dk.t3,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
                       ],
                     ),
                   ),

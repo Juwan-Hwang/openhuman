@@ -26,6 +26,8 @@ dependencies:
   file_selector: ^1.1.0
   path_provider: ^2.1.6
   url_launcher: ^6.3.3
+  video_player: ^2.14.1
+  fvp: ^0.39.1
 
 dev_dependencies:
   flutter_test:

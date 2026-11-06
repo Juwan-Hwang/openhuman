@@ -17,6 +17,7 @@ import '../../../core/tasks.dart';
 import '../../../widgets/controls.dart';
 import '../../../widgets/glyphs.dart';
 import '../../../widgets/motion.dart';
+import 'video_viewer.dart';
 
 /// The image provider for an attachment URI, or null when unreadable.
 ImageProvider? imageFor(String uri) {
@@ -480,7 +481,7 @@ class _AudioTileState extends State<AudioTile> {
             child: Center(
               child: CustomPaint(
                 size: const Size.square(Sz.glyphXs),
-                painter: _PlayGlyph(playing: playing),
+                painter: PlayGlyph(playing: playing),
               ),
             ),
           ),
@@ -515,8 +516,8 @@ class _AudioTileState extends State<AudioTile> {
   }
 }
 
-class _PlayGlyph extends CustomPainter {
-  _PlayGlyph({required this.playing});
+class PlayGlyph extends CustomPainter {
+  PlayGlyph({required this.playing});
   final bool playing;
 
   @override
@@ -544,11 +545,11 @@ class _PlayGlyph extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_PlayGlyph old) => old.playing != playing;
+  bool shouldRepaint(PlayGlyph old) => old.playing != playing;
 }
 
-/// A clip: shown as a dark frame with a play mark; opens in the system
-/// player (the console does not decode video itself), or saves.
+/// A clip: shown as a dark frame with a play mark; plays in the app,
+/// or in the system player when it cannot be decoded here.
 class VideoTile extends StatelessWidget {
   const VideoTile({
     super.key,
@@ -567,7 +568,17 @@ class VideoTile extends StatelessWidget {
       child: Pressable(
         semanticLabel: '打开 $name',
         radius: Rd.lg,
-        onTap: () => openAttachment(context, name, uri),
+        onTap: () async {
+          final played = await playVideo(
+            context,
+            name: name,
+            uri: uri,
+            onSave: () => saveAttachment(context, name, uri),
+          );
+          if (!played && context.mounted) {
+            await openAttachment(context, name, uri);
+          }
+        },
         builder: (context, s) => AspectRatio(
           aspectRatio: 16 / 9,
           child: AnimatedContainer(

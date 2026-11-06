@@ -179,4 +179,4 @@ Needs the server:
 
 Client:
 
-- video opens in the system player rather than inline
+- none known. Video plays in the app (video_player, with fvp/libmdk on Windows and Linux) and falls back to the system player when a clip cannot be decoded.

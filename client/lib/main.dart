@@ -8,6 +8,7 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:fvp/fvp.dart' as fvp;
 
 import 'app/app.dart';
 
@@ -16,6 +17,11 @@ import 'core/tray_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // video_player has no Windows or Linux backend of its own; fvp (libmdk)
+  // plays clips there, and also handles formats the platform players skip.
+  fvp.registerWith(options: {
+    'platforms': ['windows', 'linux'],
+  });
   await NotificationService.initialize();
   await TrayService.instance.initialize();
 
