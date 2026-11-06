@@ -306,23 +306,23 @@ class ApiTask {
   /// A plain-language hint about how to answer.
   String get howTo => switch (media) {
         AnswerMedia.image =>
-          count > 1 ? '附加 $count 张图片。可添加说明。' : '附加 1 张图片。可添加说明。',
+          '附加 $count 张图片',
         AnswerMedia.audio =>
-          '附加音频文件${audioFormat == null ? '' : '（${audioFormat!.toUpperCase()}）'}。',
-        AnswerMedia.video => '附加 1 段 MP4 视频，可另附封面图片。',
+          '附加音频${audioFormat == null ? '' : '（${audioFormat!.toUpperCase()}）'}',
+        AnswerMedia.video => '附加 1 段 MP4 视频',
         AnswerMedia.json => switch (kind) {
-            TaskKind.moderation => '为每条内容选择违规类别。',
-            TaskKind.decision => '逐题作答，可跳过。',
-            TaskKind.vectorSearch => '按相关度列出段落。',
-            TaskKind.grader => '给出标签或分数。',
-            _ => '按指定格式作答。',
+            TaskKind.moderation => '为每条内容选择类别',
+            TaskKind.decision => '逐题作答，可跳过',
+            TaskKind.vectorSearch => '按相关度排序',
+            TaskKind.grader => '选择标签或打分',
+            _ => '按指定格式作答',
           },
         AnswerMedia.text => switch (kind) {
             TaskKind.transcription ||
             TaskKind.translation =>
-              wantsSrt ? 'SRT 格式：序号、时间轴、文字。' : '仅填写转写文字。',
+              wantsSrt ? 'SRT 格式' : '仅填写文字',
             TaskKind.completion =>
-              count > 1 ? '写 $count 个版本，用单独一行 @@@ 分隔。' : '仅填写续写部分。',
+              count > 1 ? '$count 个版本，用单独一行 @@@ 分隔' : '仅填写续写部分',
             _ => '',
           },
       };
@@ -558,7 +558,7 @@ AnswerCheck checkAnswer(ApiTask t, String text, List<DraftFile> files) {
       };
       return e == null ? const AnswerCheck.ok() : AnswerCheck.error(e);
     case AnswerMedia.text:
-      if (body.isEmpty) return const AnswerCheck.error('请输入回答。');
+      if (body.isEmpty) return const AnswerCheck.error('请输入回复。');
       if (t.wantsSrt) {
         final e = checkSrt(body);
         if (e != null) return AnswerCheck.error(e);

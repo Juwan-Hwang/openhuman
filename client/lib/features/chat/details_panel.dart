@@ -169,8 +169,10 @@ class _PersonDetails extends ConsumerWidget {
             if (caller.tag != null) Tag(caller.tag!, mono: true),
           ],
         ),
-        const SizedBox(height: Sp.x3),
-        Center(child: _TurnChip(waitingOnMe: waitingOnMe)),
+        if (waitingOnMe) ...[
+          const SizedBox(height: Sp.x3),
+          const Center(child: _TurnChip(waitingOnMe: true)),
+        ],
         const SizedBox(height: Sp.x6),
 
         // ── Remark name ──

@@ -412,7 +412,7 @@ class _Ended extends StatelessWidget {
           const SizedBox(width: Sp.x25),
           Expanded(
             child: Text(
-              '已结束本轮。',
+              '已结束本轮',
               style: Ty.small.copyWith(fontSize: 12.5),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,

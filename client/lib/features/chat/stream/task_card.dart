@@ -316,7 +316,7 @@ class _TaskCardState extends ConsumerState<TaskCard> {
         children: [
           Row(
             children: [
-              const Text('回答', style: Ty.label),
+              const Text('回复', style: Ty.label),
               const Spacer(),
               if (t.media == AnswerMedia.json &&
                   t.kind != TaskKind.vectorSearch)

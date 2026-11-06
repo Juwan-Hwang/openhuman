@@ -342,7 +342,7 @@ export OPENAI_API_KEY="$apiKey"''';
                     Text('分享联系方式', style: Ty.title.copyWith(fontSize: 18)),
                     const SizedBox(height: 4),
                     const Text(
-                      '任何兼容 OpenAI API 的工具都可以给你发消息。',
+                      '适用于兼容 OpenAI API 的工具',
                       style: Ty.small,
                     ),
                   ],
@@ -386,7 +386,7 @@ export OPENAI_API_KEY="$apiKey"''';
                     modelName: modelName,
                     ready: ready,
                     keyLabel: fresh != null ? 'API 密钥' : 'API 密钥',
-                    keyHint: fresh != null ? '仅显示一次' : '',
+                    keyHint: '',
                     showKey: fresh != null || _showApiKey,
                     canHide: fresh == null,
                   ),
@@ -460,7 +460,7 @@ export OPENAI_API_KEY="$apiKey"''';
                     const SizedBox(width: Sp.x2),
                     Expanded(
                       child: Text(
-                        perPerson ? '密钥仅用于向你发送消息。' : '任何拥有此密钥的人都可以向你发送消息。',
+                        perPerson ? '密钥仅可用于向你发送消息' : '持有此密钥的人可以向你发送消息',
                         style: Ty.small.copyWith(color: Dk.t3, fontSize: 12),
                       ),
                     ),
@@ -706,7 +706,7 @@ class _NewKey extends StatelessWidget {
                   enabled: enabled && !busy,
                   maxLength: 48,
                   decoration: const InputDecoration(
-                    hintText: '例如：林晓',
+                    hintText: '姓名',
                     counterText: '',
                     isDense: true,
                   ),
@@ -752,7 +752,7 @@ class _FreshBanner extends StatelessWidget {
           const SizedBox(width: Sp.x3),
           Expanded(
             child: Text(
-              '密钥仅显示一次。请立即复制。',
+              '密钥仅显示一次，请立即复制',
               style: Ty.small.copyWith(color: Dk.t1),
             ),
           ),

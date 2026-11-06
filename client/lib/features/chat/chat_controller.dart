@@ -514,7 +514,7 @@ class ChatController extends StateNotifier<List<types.Message>> {
         mark(types.Status.error, '对方已离开，未送达');
         out = const TaskOutcome(
           TaskState.expired,
-          note: '对方已离开，回答未送达。',
+          note: '对方已离开，回复未送达。',
         );
       } else {
         mark(types.Status.delivered);

@@ -718,7 +718,7 @@ Future<void> askForName(
           autofocus: true,
           maxLength: 32,
           decoration: const InputDecoration(
-            hintText: '例如：林晓',
+            hintText: '名称',
           ),
           onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
         ),
@@ -1169,8 +1169,11 @@ class _ConversationTileState extends State<_ConversationTile> {
                                   if (c.isGroup && c.memberCount != null) ...[
                                     const SizedBox(width: 6),
                                     Text(
-                                      '${c.memberCount} 人',
-                                      style: Ty.meta.copyWith(color: Dk.t3),
+                                      '${c.memberCount}人',
+                                      style: Ty.small.copyWith(
+                                        fontSize: 11.5,
+                                        color: Dk.t3,
+                                      ),
                                     ),
                                   ],
                                 ],
