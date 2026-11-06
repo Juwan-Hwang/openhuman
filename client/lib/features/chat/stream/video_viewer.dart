@@ -3,17 +3,15 @@
 /// the clip cannot be decoded here.
 library;
 
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../../app/theme.dart';
 import '../../../app/tokens.dart';
 import '../../../core/files_io.dart';
+import '../../../core/platform/files_platform.dart' as plat;
+import '../../../core/tasks.dart';
 import '../../../widgets/controls.dart';
 import '../../../widgets/glyphs.dart';
 import 'attachments.dart';
@@ -30,14 +28,12 @@ Future<VideoPlayerController?> _controllerFor(String name, String uri) async {
     } else {
       final bytes = await bytesOf(uri);
       if (bytes == null) return null;
-      final dir = await getTemporaryDirectory();
       final safe = name.replaceAll(RegExp(r'[\\/:*?"<>|\s]'), '_');
-      final f = File(p.join(
-        dir.path,
-        'openhuman-play-${safe.endsWith('.mp4') ? safe : '$safe.mp4'}',
-      ));
-      await f.writeAsBytes(bytes);
-      c = VideoPlayerController.file(f);
+      c = await plat.videoFromBytes(
+        safe.contains('.') ? safe : '$safe.mp4',
+        bytes,
+        decodeDataUrl(uri)?.$1 ?? 'video/mp4',
+      );
     }
     await c.initialize();
     return c;

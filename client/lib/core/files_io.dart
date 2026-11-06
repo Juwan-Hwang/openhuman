@@ -3,14 +3,12 @@
 /// them, and opening them with the system's own app.
 library;
 
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
-import 'package:flutter/foundation.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:http/http.dart' as http;
+
+import 'platform/files_platform.dart' as plat;
 
 import 'tasks.dart';
 
@@ -39,31 +37,11 @@ class FilesIo {
     return out;
   }
 
-  static bool get _desktop =>
-      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+  static Future<String?> _save(String name, Uint8List bytes) =>
+      plat.saveBytes(name, bytes, mimeForName(name));
 
-  /// Save to a place the person picks (desktop) or the app's documents
-  /// folder (phones). Returns where it went, or null when cancelled.
-  static Future<String?> _save(String name, Uint8List bytes) async {
-    if (_desktop) {
-      final loc = await getSaveLocation(suggestedName: name);
-      if (loc == null) return null;
-      await File(loc.path).writeAsBytes(bytes);
-      return loc.path;
-    }
-    final dir = await getApplicationDocumentsDirectory();
-    final f = File(p.join(dir.path, name));
-    await f.writeAsBytes(bytes);
-    return f.path;
-  }
-
-  /// Write to a temp file and hand it to the system player or viewer.
-  static Future<bool> _open(String name, Uint8List bytes) async {
-    final dir = await getTemporaryDirectory();
-    final f = File(p.join(dir.path, 'openhuman-$name'));
-    await f.writeAsBytes(bytes);
-    return launchUrl(Uri.file(f.path));
-  }
+  static Future<bool> _open(String name, Uint8List bytes) =>
+      plat.openBytes(name, bytes, mimeForName(name));
 }
 
 /// The bytes behind an attachment URI.
@@ -71,20 +49,11 @@ Future<Uint8List?> bytesOf(String uri) async {
   final d = decodeDataUrl(uri);
   if (d != null) return Uint8List.fromList(d.$2);
   if (!uri.startsWith('http://') && !uri.startsWith('https://')) return null;
-  final client = HttpClient();
   try {
-    final req = await client.getUrl(Uri.parse(uri));
-    final res = await req.close();
-    if (res.statusCode != 200) return null;
-    final b = BytesBuilder(copy: false);
-    await for (final c in res) {
-      b.add(c);
-    }
-    return b.takeBytes();
+    final res = await http.get(Uri.parse(uri));
+    return res.statusCode == 200 ? res.bodyBytes : null;
   } catch (_) {
     return null;
-  } finally {
-    client.close(force: true);
   }
 }
 

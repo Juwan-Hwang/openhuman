@@ -13,9 +13,11 @@ class NotificationService {
   /// Initialize Firebase and request notification permissions on supported platforms.
   static Future<void> initialize() async {
     // Only Android and iOS are configured for Firebase
-    if (defaultTargetPlatform != TargetPlatform.android &&
-        defaultTargetPlatform != TargetPlatform.iOS) {
-      debugPrint('[FCM] Push notifications not active on $defaultTargetPlatform (mobile only).');
+    if (kIsWeb ||
+        defaultTargetPlatform != TargetPlatform.android &&
+            defaultTargetPlatform != TargetPlatform.iOS) {
+      debugPrint(
+          '[FCM] Push notifications not active on $defaultTargetPlatform (mobile only).');
       return;
     }
 
@@ -34,7 +36,8 @@ class NotificationService {
         provisional: false,
       );
 
-      debugPrint('[FCM] Notification authorization status: ${settings.authorizationStatus}');
+      debugPrint(
+          '[FCM] Notification authorization status: ${settings.authorizationStatus}');
 
       // Get device FCM token
       _fcmToken = await messaging.getToken();
@@ -48,9 +51,9 @@ class NotificationService {
 
       // Handle foreground notifications
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-        debugPrint('[FCM] Received foreground message: ${message.notification?.title}');
+        debugPrint(
+            '[FCM] Received foreground message: ${message.notification?.title}');
       });
-
     } catch (e) {
       debugPrint('[FCM] Failed to initialize Firebase Messaging: $e');
     }

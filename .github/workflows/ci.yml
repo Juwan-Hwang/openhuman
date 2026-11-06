@@ -77,3 +77,39 @@ jobs:
       - run: flutter pub get
       - run: dart analyze
       - run: flutter test
+
+  client-build:
+    name: Client build (${{ matrix.target }})
+    needs: client
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: android, os: ubuntu-latest, cmd: 'flutter build apk --debug' }
+          - { target: web, os: ubuntu-latest, cmd: 'flutter build web --release' }
+          - { target: linux, os: ubuntu-latest, cmd: 'flutter build linux --release' }
+          - { target: windows, os: windows-latest, cmd: 'flutter build windows --release' }
+          - { target: macos, os: macos-latest, cmd: 'flutter build macos --release' }
+          - { target: ios, os: macos-latest, cmd: 'flutter build ios --release --no-codesign' }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - if: matrix.target == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libayatana-appindicator3-dev
+      - run: flutter pub get
+      - run: ${{ matrix.cmd }}

@@ -28,6 +28,8 @@ dependencies:
   url_launcher: ^6.3.3
   video_player: ^2.14.1
   fvp: ^0.39.1
+  http: ^1.6.0
+  web: ^1.1.2
 
 dev_dependencies:
   flutter_test:

@@ -305,8 +305,7 @@ class ApiTask {
 
   /// A plain-language hint about how to answer.
   String get howTo => switch (media) {
-        AnswerMedia.image =>
-          '附加 $count 张图片',
+        AnswerMedia.image => '附加 $count 张图片',
         AnswerMedia.audio =>
           '附加音频${audioFormat == null ? '' : '（${audioFormat!.toUpperCase()}）'}',
         AnswerMedia.video => '附加 1 段 MP4 视频',

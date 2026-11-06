@@ -8,6 +8,7 @@ library;
 
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:tray_manager/tray_manager.dart';
@@ -29,7 +30,7 @@ class TrayService with WindowListener, TrayListener {
 
   /// Wires the window listener, the tray and its menu.
   Future<void> initialize() async {
-    if (_initialised || !Platform.isWindows) return;
+    if (_initialised || kIsWeb || !Platform.isWindows) return;
     _initialised = true;
     WindowChrome.enabled = true;
 
