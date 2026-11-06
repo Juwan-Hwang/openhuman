@@ -22,7 +22,6 @@ import '../../core/files_io.dart';
 import '../../core/tasks.dart';
 import '../../widgets/controls.dart';
 import '../../widgets/glyphs.dart';
-import '../../widgets/motion.dart';
 import 'stream/attachments.dart';
 
 /// Member display names of a room, for completion + highlight.
@@ -284,45 +283,7 @@ class _ComposerState extends State<Composer> {
           onTap: _canAttach ? _attach : null,
         ),
         const SizedBox(width: Sp.x2),
-        Expanded(
-          child: Swap(
-            value: hot,
-            alignment: Alignment.centerLeft,
-            child: hot
-                ? Row(
-                    key: const ValueKey('composer-waiting'),
-                    children: [
-                      const BreathingDot(color: Dk.signal, size: Sz.dotSm),
-                      const SizedBox(width: Sp.x2),
-                      Flexible(
-                        child: Text(
-                          widget.mentionNames.isEmpty ? '待回复' : '待回复',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Ty.small.copyWith(
-                            fontSize: 12,
-                            color: Dk.signal,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
-                  )
-                : !touch && !phone
-                    ? Row(
-                        children: [
-                          const Kbd('↵', label: '发送'),
-                          const SizedBox(width: Sp.x3),
-                          const Kbd('Shift ↵', label: '换行'),
-                          if (widget.onEndTurn != null) ...[
-                            const SizedBox(width: Sp.x3),
-                            Kbd(shortcutLabel('↵'), label: '结束本轮'),
-                          ],
-                        ],
-                      )
-                    : const SizedBox.shrink(),
-          ),
-        ),
+        const Spacer(),
         if (widget.onEndTurn != null) ...[
           Tooltip(
             message: touch ? '结束本轮' : '结束本轮  ${shortcutLabel('↵')}',

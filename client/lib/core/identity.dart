@@ -47,7 +47,7 @@ class Caller {
   bool get anonymous => person == null;
 
   /// The secondary line under a name: "经由 Claude Code".
-  String? get via => tool == null ? null : '经由 $tool';
+  String? get via => tool == null ? null : '通过 $tool';
 
   static const String unnamed = '未命名联系人';
 
@@ -165,7 +165,7 @@ class Caller {
     // "周子航 · Cursor" / "周子航 - Cursor" / "周子航 | Cursor".
     if (tool == null) {
       final sep = RegExp(
-        r'^(.*?)\s*(?:\svia\s|经由|\s@\s|·|\s-\s|\s\|\s|/)\s*(.+)$',
+        r'^(.*?)\s*(?:\svia\s|经由|通过|\s@\s|·|\s-\s|\s\|\s|/)\s*(.+)$',
         caseSensitive: false,
       ).firstMatch(s);
       if (sep != null) {

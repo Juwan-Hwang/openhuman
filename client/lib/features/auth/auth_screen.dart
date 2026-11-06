@@ -17,7 +17,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/notification_service.dart';
 import '../../core/sdk_provider.dart';
-import '../../app/adaptive.dart';
 import '../../widgets/brand.dart';
 
 /// Screen for entering server URL and API key.
@@ -254,14 +253,6 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                                 enabled: !_connecting,
                                 autofocus: true,
                               ),
-                              const SizedBox(height: 6),
-                              Text(
-                                '例如 wss://example.com/ws',
-                                style: Ty.small.copyWith(
-                                  fontSize: 11.5,
-                                  color: Dk.t3,
-                                ),
-                              ),
                               const SizedBox(height: Sp.x5),
                               const _FieldLabel('API 密钥'),
                               _Field(
@@ -371,16 +362,6 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                                           ],
                                         )
                                       : const Text('连接'),
-                                ),
-                              ),
-                              const SizedBox(height: Sp.x3),
-                              Center(
-                                child: Text(
-                                  Touch.primary ? '将自动登录' : '按 Return 键连接',
-                                  style: Ty.small.copyWith(
-                                    fontSize: 11.5,
-                                    color: Dk.t3,
-                                  ),
                                 ),
                               ),
                             ],

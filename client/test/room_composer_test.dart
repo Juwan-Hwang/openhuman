@@ -122,7 +122,7 @@ void main() {
       )),
     );
     await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('待回复'), findsOneWidget);
+    expect(find.byKey(const ValueKey('composer-send')), findsOneWidget);
   });
 
   test('mentionSpans highlights exact member names only', () {

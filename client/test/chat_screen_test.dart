@@ -157,9 +157,10 @@ void main() {
       expect(find.text('Alice Chen'), findsOneWidget);
     });
 
-    testWidgets('renders connection state indicator', (tester) async {
+    testWidgets('stays quiet while connected', (tester) async {
       await pumpChatScreen(tester);
-      expect(find.textContaining('已连接'), findsWidgets);
+      expect(find.textContaining('已断开'), findsNothing);
+      expect(find.textContaining('已连接'), findsNothing);
     });
 
     testWidgets('renders chat input field', (tester) async {
@@ -256,8 +257,8 @@ void main() {
       await tester.pumpAndSettle(const Duration(milliseconds: 200));
       // Name in the header and on the run.
       expect(find.text('林晓'), findsWidgets);
-      expect(find.text('经由 Claude Code'), findsWidgets);
-      expect(find.text('a3f9'), findsOneWidget);
+      expect(find.text('通过 Claude Code'), findsWidgets);
+      expect(find.text('a3f9'), findsNothing);
       expect(find.text('林晓的 Claude Code · a3f9'), findsNothing);
       for (final part in [MessageStream, Composer]) {
         expect(

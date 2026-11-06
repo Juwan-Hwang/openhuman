@@ -532,10 +532,6 @@ class _NameLine extends StatelessWidget {
               ),
             ),
           ],
-          if (caller.tag != null) ...[
-            const SizedBox(width: Sp.x15),
-            Tag(caller.tag!, mono: true, color: Dk.t3),
-          ],
           const SizedBox(width: Sp.x2),
           Text(time, style: Ty.meta.copyWith(fontSize: 10.5)),
         ],

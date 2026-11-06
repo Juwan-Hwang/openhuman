@@ -38,7 +38,7 @@ void main() {
   });
 
   test('no message yet names the tool, never a false "no messages"', () {
-    expect(rowPreview(_c()), '经由 Cursor');
+    expect(rowPreview(_c()), '通过 Cursor');
     expect(rowPreview(_c(group: true)), '群聊');
   });
 

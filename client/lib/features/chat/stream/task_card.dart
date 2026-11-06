@@ -601,10 +601,9 @@ class _Head extends StatelessWidget {
     final title = Text.rich(
       TextSpan(
         children: [
-          TextSpan(text: person, style: Ty.name.copyWith(fontSize: 14.5)),
           TextSpan(
-            text: ' ${task.ask}',
-            style: Ty.body.copyWith(
+            text: task.ask,
+            style: Ty.name.copyWith(
               fontSize: 14.5,
               color: state == TaskState.expired ? Dk.t3 : Dk.t1,
             ),

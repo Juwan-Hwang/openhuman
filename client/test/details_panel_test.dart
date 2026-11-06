@@ -61,7 +61,7 @@ void main() {
     await _pump(tester, 'cnv_lin');
     expect(find.byKey(const ValueKey('details-person')), findsOneWidget);
     expect(find.text('林晓'), findsWidgets);
-    expect(find.text('经由 Claude Code'), findsOneWidget);
+    expect(find.text('通过 Claude Code'), findsOneWidget);
     expect(find.text('名称'), findsOneWidget);
     // The technical side is there, but closed.
     expect(find.text('高级'), findsOneWidget);

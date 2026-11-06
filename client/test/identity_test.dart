@@ -50,7 +50,7 @@ void main() {
       final c = Caller.parse('Claude Code');
       expect(c.anonymous, isTrue);
       expect(c.name, Caller.unnamed);
-      expect(c.via, '经由 Claude Code');
+      expect(c.via, '通过 Claude Code');
     });
 
     test('ids and blanks have nobody to name', () {

@@ -316,7 +316,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               : '群聊 · ${activeInfo!.memberCount} 人')
           : caller?.via,
       // My own connection only speaks up when it is not fine.
-      connection: activeInfo != null && connected
+      connection: activeInfo != null || connected
           ? null
           : _connectionStateLabel(connState, human),
       conn: connState,
@@ -931,7 +931,7 @@ class _ConnBanner extends StatelessWidget {
         state == oh.ConnectionState.reconnecting;
     final (fg, bg, edge, text) = retrying
         ? (Dk.warn, Dk.warnSoft, Dk.warnSoft, '正在重新连接…')
-        : (Dk.danger, Dk.dangerSoft, Dk.dangerEdge, '已断开连接。');
+        : (Dk.danger, Dk.dangerSoft, Dk.dangerEdge, '已断开连接');
     return Semantics(
       liveRegion: true,
       child: Container(

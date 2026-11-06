@@ -1139,6 +1139,7 @@ class _ConversationTileState extends State<_ConversationTile> {
                         )
                       : PersonAvatar(
                           name: c.displayName,
+                          anonymous: c.caller.anonymous,
                           size: touch ? 34 : 30,
                         ),
                   SizedBox(width: touch ? 14 : 11),
@@ -1252,7 +1253,7 @@ String rowPreview(ConversationInfo c) {
     if (c.task != null) return '请求';
     if (c.isGroup) return '群聊';
     final via = c.caller.tool;
-    return via == null ? '' : '经由 $via';
+    return via == null ? '' : '通过 $via';
   }
   if (c.lastFailed) return '未发送：$raw';
   return c.lastFromMe ? '你：$raw' : raw;

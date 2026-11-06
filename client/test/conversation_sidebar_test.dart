@@ -280,7 +280,7 @@ void main() {
       findsNothing,
     );
     // The restored list shows the caller the way the console names them.
-    expect(find.descendant(of: sheet, matching: find.text('经由 Trae')),
+    expect(find.descendant(of: sheet, matching: find.text('通过 Trae')),
         findsOneWidget);
   });
 

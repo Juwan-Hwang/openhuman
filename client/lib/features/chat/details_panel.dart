@@ -165,7 +165,7 @@ class _PersonDetails extends ConsumerWidget {
           spacing: Sp.x15,
           runSpacing: Sp.x1,
           children: [
-            if (caller.tool != null) Tag('经由 ${caller.tool}'),
+            if (caller.tool != null) Tag('通过 ${caller.tool}'),
             if (caller.tag != null) Tag(caller.tag!, mono: true),
           ],
         ),
